@@ -18,7 +18,7 @@ jobs:
     name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -57,7 +57,7 @@ jobs:
       DATABASE_URL: postgres://shortener:shortener@localhost:5432/shortener
       REDIS_URL: redis://localhost:6379
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # When projects start using sqlx `query!` macros, either commit an offline
