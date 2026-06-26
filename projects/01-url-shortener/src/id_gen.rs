@@ -24,7 +24,7 @@ pub const CUSTOM_EPOCH_MS: u64 = 1_704_067_200_000;
 
 pub struct IdGenerator {
     node_id: u16,
-    _state: AtomicU64,
+    state: AtomicU64,
 }
 
 /// A mask to extract the 12-bit sequence portion from the packed state.
@@ -41,7 +41,7 @@ impl IdGenerator {
         assert!(node_id < 1024, "node_id must fit in 10 bits (0..=1023)");
         Self {
             node_id,
-            _state: AtomicU64::new(0),
+            state: AtomicU64::new(0),
         }
     }
 
@@ -53,8 +53,13 @@ impl IdGenerator {
     /// overflows within the same millisecond.
     pub fn next_id(&self) -> i64 {
         loop {
-            let state = self._state.load(Ordering::Acquire);
-            let (last_timestamp, mut seq) = Self::extract_timestamp_and_sequence(state);
+            let state = self.state.load(Ordering::Acquire);
+            let (last_timestamp, mut seq) = {
+                let last_timestamp = state >> 12;
+                let sequence = state & SEQUENCE_MASK;
+                (last_timestamp, sequence)
+            };
+
             let mut current_timestamp = Self::current_timestamp_ms();
 
             if current_timestamp < last_timestamp {
@@ -78,7 +83,7 @@ impl IdGenerator {
 
             let new_state = (current_timestamp << 12) | seq;
             if self
-                ._state
+                .state
                 .compare_exchange_weak(state, new_state, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
@@ -88,8 +93,20 @@ impl IdGenerator {
         }
     }
 
+    /// Returns the next unique ID as a Base62-encoded string ("slug").
+    ///
+    /// This generates a unique 64-bit ID and encodes it into a URL-friendly Base62 string.
+    /// The output slug contains only 0-9, A-Z, and a-z characters and is compact for use in URLs.
     pub fn next_slug(&self) -> String {
-        Self::base62_encode(self.next_id() as u64)
+        self.next_id_and_slug().1
+    }
+
+    /// A fresh id together with its base62 slug, from a *single* generated id.
+    /// `create_link` needs both: the id is the row primary key, the slug is its
+    /// public short code (the same underlying number, base62-encoded).
+    pub fn next_id_and_slug(&self) -> (i64, String) {
+        let id = self.next_id();
+        (id, Self::base62_encode(id as u64))
     }
 
     fn current_timestamp_ms() -> u64 {
@@ -98,12 +115,6 @@ impl IdGenerator {
             .expect("system clock before Unix epoch")
             .as_millis() as u64)
             .saturating_sub(CUSTOM_EPOCH_MS)
-    }
-
-    fn extract_timestamp_and_sequence(state: u64) -> (u64, u64) {
-        let last_timestamp = state >> 12;
-        let sequence = state & SEQUENCE_MASK;
-        (last_timestamp, sequence)
     }
 
     fn assemble_id(timestamp: u64, sequence: u64, node_id: u16) -> u64 {
@@ -117,7 +128,14 @@ impl IdGenerator {
             result.push(BASE62_CHARS[(n % 62) as usize] as char);
             n /= 62;
         }
-        result.chars().rev().collect()
+
+        // Digits are pushed least-significant first; reverse in place so we don't
+        // pay for a second String (e.g. `result.chars().rev().collect()`).
+        // SAFETY: only ASCII bytes from BASE62_CHARS were pushed — always valid UTF-8.
+        unsafe {
+            result.as_mut_vec().reverse();
+        }
+        result
     }
 }
 
@@ -160,17 +178,6 @@ mod tests {
             prop_assert_eq!(id >> 22, timestamp);
             prop_assert_eq!((id >> 12) & 0x3ff, node_id as u64);
             prop_assert_eq!(id & SEQUENCE_MASK, sequence);
-        }
-
-        #[test]
-        fn prop_state_packing_roundtrip(
-            timestamp in 0u64..(1u64 << 41),
-            sequence in 0u64..MAX_SEQUENCE,
-        ) {
-            let state = (timestamp << 12) | sequence;
-            let (ts, seq) = IdGenerator::extract_timestamp_and_sequence(state);
-            prop_assert_eq!(ts, timestamp);
-            prop_assert_eq!(seq, sequence);
         }
 
         #[test]
