@@ -40,6 +40,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 # --- config ---
 dotenvy = "0.15"
 
+# --- testing ---
+proptest = "1"
+
 # --- internal shared crates ---
 common-telemetry = { path = "crates/common-telemetry" }
 common-config = { path = "crates/common-config" }
