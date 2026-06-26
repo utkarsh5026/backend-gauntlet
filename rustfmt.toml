@@ -1,0 +1,6 @@
+# Stable-only rustfmt options (nightly-only ones like imports_granularity are
+# intentionally omitted so `cargo fmt` works on the stable toolchain).
+edition = "2021"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true

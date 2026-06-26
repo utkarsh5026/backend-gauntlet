@@ -1,0 +1,35 @@
+---
+description: Core rules for the backend-gauntlet learning repo
+globs:
+alwaysApply: true
+---
+
+# backend-gauntlet — Cursor rules
+
+This is a **LEARNING repo**. The owner is strengthening Rust + backend + scale skills
+by implementing infrastructure primitives themselves. The full project conventions
+live in `CLAUDE.md` at the repo root — read it.
+
+## Hard rule: do not solve the exercises
+Projects are scaffolded with `todo!()` markers and a `SPEC.md` "ticket". **Do NOT
+implement `todo!()` bodies or solve SPEC challenges unless explicitly asked.** Default
+to, in order: explain the concept → give graduated hints (not full solutions) →
+review the user's own code → scaffold structure only. `todo!()` panicking at runtime
+is by design, not a bug to fix.
+
+## Conventions
+- Cargo workspace: dependency versions live ONLY in the root `[workspace.dependencies]`;
+  member crates use `name = { workspace = true }`.
+- `crates/common-*` are fully-implemented shared helpers (the exception to the rule
+  above) — reuse them for telemetry (`common-telemetry`) and config (`common-config`).
+- Each `projects/NN-name/SPEC.md` is two-axis: Vertical (Vx internals to build from
+  scratch) + Horizontal checklist (protocols/caching/security/observability). No spoilers.
+- Errors: `thiserror`/`anyhow`; axum handlers return `Result<T, AppError>` and use `?`.
+- Use `sqlx` compile-time-checked queries; never string-concatenate SQL.
+- Never log secrets/API keys; never commit `.env` (gitignored).
+- Idiomatic async Rust (tokio/axum); match surrounding style; format with `cargo fmt`.
+
+## Useful commands
+`cargo check --workspace` · `cargo clippy --workspace -- -D warnings` ·
+`cargo fmt --all` · `cargo run -p <crate>`. Per project: `docker compose up -d`,
+`sqlx migrate run`.

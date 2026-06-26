@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        # NOTE: not using `-D warnings` yet — the scaffold has intentional
+        # dead-code warnings from unimplemented `todo!()`s. Flip this to
+        # `-- -D warnings` once a project's SPEC is implemented.
+        run: cargo clippy --workspace --all-targets
+
+  test:
+    name: check + test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shortener
+          POSTGRES_PASSWORD: shortener
+          POSTGRES_DB: shortener
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shortener"
+          --health-interval 5s --health-timeout 3s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 5
+    env:
+      DATABASE_URL: postgres://shortener:shortener@localhost:5432/shortener
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # When projects start using sqlx `query!` macros, either commit an offline
+      # cache (`cargo sqlx prepare` → .sqlx/) and set SQLX_OFFLINE=true, or run
+      # migrations here against the postgres service:
+      #   - run: cargo install sqlx-cli --no-default-features --features postgres
+      #   - run: cargo sqlx migrate run --source projects/01-url-shortener/migrations
+      - name: check
+        run: cargo check --workspace --all-targets
+      - name: test
+        run: cargo test --workspace

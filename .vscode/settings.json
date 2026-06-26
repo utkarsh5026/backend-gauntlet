@@ -1,0 +1,38 @@
+{
+  // ---- Rust / rust-analyzer ----
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.allTargets": true,
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+  "rust-analyzer.inlayHints.typeHints.enable": true,
+  "rust-analyzer.inlayHints.chainingHints.enable": true,
+  "rust-analyzer.completion.callable.snippets": "fill_arguments",
+  // sqlx uses compile-time-checked queries; with a live DATABASE_URL r-a can
+  // verify them. Set SQLX_OFFLINE=true here (and run `cargo sqlx prepare`) if you
+  // want offline checking instead.
+  "rust-analyzer.cargo.extraEnv": {},
+
+  // ---- Editor ----
+  "editor.formatOnSave": true,
+  "editor.rulers": [100],
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+
+  // ---- Noise reduction ----
+  "files.watcherExclude": {
+    "**/target/**": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/Cargo.lock": false
+  }
+}
