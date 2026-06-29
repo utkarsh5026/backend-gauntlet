@@ -23,7 +23,7 @@ hyper = "1"
 
 # --- data ---
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.3", features = ["tokio-comp", "connection-manager"] }
 
 # --- serde / errors / time ---
 serde = { version = "1", features = ["derive"] }
