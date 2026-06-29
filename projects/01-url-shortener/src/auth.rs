@@ -12,16 +12,15 @@ use crate::AppState;
 
 /// Reject requests that don't present a valid API key.
 ///
-/// Expected header: `Authorization: Bearer <key>`.
+/// Expected header: `Authorization: Bearer <key>`. On success the request is
+/// forwarded to `next`; otherwise the chain is short-circuited before the
+/// handler runs.
 ///
-/// TODO(security):
-/// - Parse the bearer token from the `Authorization` header.
-/// - Check it against `state.api_keys` using a **constant-time** comparison
-///   (avoid leaking validity via timing — see the `subtle` crate or hash both
-///   sides and compare). A plain `HashSet::contains` is the easy version; note
-///   in docs/01-design.md why constant-time matters and what you chose.
-/// - Never log the key itself.
-/// - In a real system keys would be hashed at rest in the DB, not held in memory.
+/// # Errors
+///
+/// Returns [`AppError::Unauthorized`] when the `Authorization` header is
+/// missing, not valid UTF-8, lacks the `Bearer ` prefix, or carries a token
+/// that isn't in `state.api_keys`.
 pub async fn require_api_key(
     State(state): State<AppState>,
     req: Request<axum::body::Body>,
@@ -43,40 +42,18 @@ pub async fn require_api_key(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::body::Body;
     use axum::http::{header, HeaderValue, Request, StatusCode};
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use axum::Router;
-    use redis::Client;
-    use sqlx::postgres::PgPoolOptions;
-    use tokio::sync::mpsc;
     use tower::ServiceExt;
 
-    use crate::cache::Cache;
-    use crate::id_gen::IdGenerator;
+    use crate::test_support::{app_state_with_db, lazy_pg_pool, test_cache};
     use crate::AppState;
 
     async fn test_state(api_keys: &[&str]) -> AppState {
-        let db = PgPoolOptions::new()
-            .connect_lazy("postgres://localhost:5432/unused")
-            .expect("lazy pool");
-        let redis = Client::open("redis://127.0.0.1:6379/").expect("redis client");
-        let conn = redis::aio::ConnectionManager::new(redis)
-            .await
-            .expect("redis connection manager");
-        let (clicks_tx, _clicks_rx) = mpsc::channel(1);
-
-        AppState {
-            db,
-            cache: Cache::new(conn),
-            ids: Arc::new(IdGenerator::new(0)),
-            clicks: clicks_tx,
-            api_keys: Arc::new(api_keys.iter().map(|s| (*s).to_string()).collect()),
-            base_url: Arc::from("http://localhost:8080"),
-        }
+        app_state_with_db(test_cache().await, api_keys, lazy_pg_pool()).await
     }
 
     fn auth_router(state: AppState) -> Router {
