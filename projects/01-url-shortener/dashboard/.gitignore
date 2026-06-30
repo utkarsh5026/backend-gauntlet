@@ -1,0 +1,6 @@
+node_modules
+# Ignore build output, but keep the empty dist/ folder so `rust-embed`'s
+# `#[folder = "dashboard/dist"]` always has a path to embed (otherwise a fresh
+# checkout that hasn't run `npm run build` fails to compile).
+/dist/*
+!/dist/.gitkeep
