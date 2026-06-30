@@ -6,6 +6,10 @@
     "usernamehw.errorlens",
     "ms-azuretools.vscode-docker",
     "fill-labs.dependi",
-    "editorconfig.editorconfig"
+    "editorconfig.editorconfig",
+    "serayuzgur.crates"
+  ],
+  "unwantedRecommendations": [
+    "rust-lang.rust"
   ]
 }

@@ -10,7 +10,8 @@
         "filter": { "name": "url-shortener", "kind": "bin" }
       },
       "args": [],
-      "cwd": "${workspaceFolder}/projects/01-url-shortener"
+      "cwd": "${workspaceFolder}/projects/01-url-shortener",
+      "envFile": "${workspaceFolder}/projects/01-url-shortener/.env"
     }
   ]
 }

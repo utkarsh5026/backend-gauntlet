@@ -2,20 +2,29 @@
   // ---- Rust / rust-analyzer ----
   "rust-analyzer.check.command": "clippy",
   "rust-analyzer.check.allTargets": true,
+  "rust-analyzer.check.extraArgs": ["--", "-D", "warnings"],
+  "rust-analyzer.cargo.buildScripts.enable": true,
   "rust-analyzer.cargo.features": "all",
   "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.lens.run.enable": true,
+  "rust-analyzer.lens.debug.enable": true,
   "rust-analyzer.inlayHints.parameterHints.enable": true,
   "rust-analyzer.inlayHints.typeHints.enable": true,
   "rust-analyzer.inlayHints.chainingHints.enable": true,
   "rust-analyzer.completion.callable.snippets": "fill_arguments",
-  // sqlx uses compile-time-checked queries; with a live DATABASE_URL r-a can
-  // verify them. Set SQLX_OFFLINE=true here (and run `cargo sqlx prepare`) if you
-  // want offline checking instead.
-  "rust-analyzer.cargo.extraEnv": {},
+  // Dev DB URL for sqlx compile-time query checking (matches .env.example).
+  // Toggle SQLX_OFFLINE=true + `cargo sqlx prepare` when working without Postgres.
+  "rust-analyzer.cargo.extraEnv": {
+    "DATABASE_URL": "postgres://shortener:shortener@localhost:5432/shortener"
+  },
 
   // ---- Editor ----
   "editor.formatOnSave": true,
   "editor.rulers": [100],
+  "editor.codeActionsOnSave": {
+    "source.fixAll.rust": "explicit",
+    "source.organizeImports.rust": "explicit"
+  },
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
 
@@ -26,13 +35,21 @@
   "[toml]": {
     "editor.defaultFormatter": "tamasfe.even-better-toml"
   },
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "files.trimTrailingWhitespace": false
+  },
+
+  // ---- Terminal (Makefile lives under projects/01-url-shortener) ----
+  "terminal.integrated.cwd": "${workspaceFolder}/projects/01-url-shortener",
+  "terminal.integrated.envFile": "${workspaceFolder}/projects/01-url-shortener/.env",
 
   // ---- Noise reduction ----
   "files.watcherExclude": {
-    "**/target/**": true
+    "**/target/**": true,
+    "**/.git/objects/**": true
   },
   "search.exclude": {
-    "**/target": true,
-    "**/Cargo.lock": false
+    "**/target": true
   }
 }

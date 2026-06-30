@@ -1,0 +1,164 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}/projects/01-url-shortener",
+    "env": {
+      "DATABASE_URL": "postgres://shortener:shortener@localhost:5432/shortener"
+    }
+  },
+  "tasks": [
+    {
+      "label": "url-shortener: verify",
+      "type": "shell",
+      "command": "make verify",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: test",
+      "type": "shell",
+      "command": "make test",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: clippy",
+      "type": "shell",
+      "command": "make clippy",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: fmt",
+      "type": "shell",
+      "command": "make fmt",
+      "group": "none",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "url-shortener: run",
+      "type": "shell",
+      "command": "make run",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: dev",
+      "type": "shell",
+      "command": "make dev",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: docker up",
+      "type": "shell",
+      "command": "make deps",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "url-shortener: migrate",
+      "type": "shell",
+      "command": "make migrate",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: bench (criterion id_gen)",
+      "detail": "cargo bench --bench id_gen — in-process ID-generator micro-benchmark",
+      "type": "shell",
+      "command": "make bench",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "url-shortener: bench seed",
+      "detail": "node bench/seed.js — bulk-seed N links into Postgres (set N to override)",
+      "type": "shell",
+      "command": "make bench-seed",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "url-shortener: bench smoke",
+      "detail": "node bench/smoke.js — Node-only redirect sanity check (server must be running)",
+      "type": "shell",
+      "command": "make bench-smoke",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "url-shortener: bench load (k6)",
+      "detail": "node bench/run.js — seed + run all k6 redirect scenarios (needs k6 + running server)",
+      "type": "shell",
+      "command": "make bench-load",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "workspace: check all",
+      "type": "shell",
+      "command": "cargo check --workspace",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}
