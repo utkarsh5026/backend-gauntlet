@@ -160,7 +160,11 @@ mod tests {
         ingestor.flush(&mut buf).await;
 
         assert!(buf.is_empty(), "a flush drains the batch");
-        assert_eq!(count_clicks(&pool).await, 3, "all rows committed in one insert");
+        assert_eq!(
+            count_clicks(&pool).await,
+            3,
+            "all rows committed in one insert"
+        );
     }
 
     #[sqlx::test]
@@ -184,7 +188,11 @@ mod tests {
         ingestor.flush(&mut buf).await;
 
         assert!(buf.is_empty(), "a failing batch is dropped, not stuck");
-        assert_eq!(count_clicks(&pool).await, 0, "the atomic insert committed nothing");
+        assert_eq!(
+            count_clicks(&pool).await,
+            0,
+            "the atomic insert committed nothing"
+        );
     }
 
     #[sqlx::test]
@@ -202,6 +210,10 @@ mod tests {
         drop(sink);
         handle.await.expect("ingestor task joins cleanly");
 
-        assert_eq!(count_clicks(&pool).await, 2, "buffered clicks flushed on drain");
+        assert_eq!(
+            count_clicks(&pool).await,
+            2,
+            "buffered clicks flushed on drain"
+        );
     }
 }
