@@ -16,14 +16,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-
-# --------------------------------------------------------------------------- #
-# Paths & constants
-# --------------------------------------------------------------------------- #
 
 PROJECT_DIR = Path(__file__).resolve().parent
 WORKSPACE = PROJECT_DIR.parent.parent
@@ -31,11 +28,6 @@ CRATE = "url-shortener"
 COMPOSE = ["docker", "compose"]
 ENV_FILE = PROJECT_DIR / ".env"
 ENV_EXAMPLE = PROJECT_DIR / ".env.example"
-
-
-# --------------------------------------------------------------------------- #
-# Colors & pretty printing
-# --------------------------------------------------------------------------- #
 
 
 class C:
@@ -85,11 +77,16 @@ def banner_end(name: str, elapsed: float, code: int) -> None:
     """Report whether a task finished cleanly, with how long it took."""
     secs = f"{elapsed:.1f}s"
     if code == 0:
-        print(f"{C.GREEN}{C.BOLD}✅ {name} succeeded{C.RESET} "
-              f"{C.DIM}({secs}){C.RESET}")
+        print(
+            f"{C.GREEN}{C.BOLD}✅ {name} succeeded{C.RESET} "
+            f"{C.DIM}({secs}){C.RESET}"
+        )
     else:
-        print(f"{C.RED}{C.BOLD}❌ {name} failed{C.RESET} "
-              f"{C.DIM}(exit {code}, {secs}){C.RESET}", file=sys.stderr)
+        print(
+            f"{C.RED}{C.BOLD}❌ {name} failed{C.RESET} "
+            f"{C.DIM}(exit {code}, {secs}){C.RESET}",
+            file=sys.stderr,
+        )
 
 
 def run(
@@ -135,9 +132,26 @@ def require(tool: str, hint: str) -> None:
         sys.exit(1)
 
 
-# --------------------------------------------------------------------------- #
-# Task registry
-# --------------------------------------------------------------------------- #
+def port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    """True if a TCP connection to host:port succeeds — i.e. something is serving."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def redis_host_port(url: str) -> tuple[str, int]:
+    """Pull host/port out of a REDIS_URL like `redis://[:pass@]host:port/db`."""
+    rest = url.split("://", 1)[-1]
+    if "@" in rest:  # drop any `user:pass@` credentials
+        rest = rest.rsplit("@", 1)[-1]
+    hostport = rest.split("/", 1)[0]
+    if ":" in hostport:
+        host, _, port = hostport.rpartition(":")
+        return (host or "localhost"), int(port or 6379)
+    return (hostport or "localhost"), 6379
+
 
 # name -> (func, emoji, group, help). Order of registration drives `help`.
 TASKS: dict[str, tuple] = {}
@@ -168,8 +182,16 @@ def setup() -> None:
 @task("install-tools", "📦", "Setup", "Install sqlx-cli for migrations (Postgres)")
 def install_tools() -> None:
     step("📦", "installing sqlx-cli (rustls + postgres)…")
-    run(["cargo", "install", "sqlx-cli", "--no-default-features",
-         "--features", "rustls,postgres"])
+    run(
+        [
+            "cargo",
+            "install",
+            "sqlx-cli",
+            "--no-default-features",
+            "--features",
+            "rustls,postgres",
+        ]
+    )
     ok("sqlx-cli installed")
 
 
@@ -178,11 +200,36 @@ def install_tools() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@task("up", "🐳", "Services", "Start Postgres + Redis (docker compose up -d)")
+@task(
+    "up", "🐳", "Services", "Start Postgres (+ Redis only if none is already running)"
+)
 def up() -> None:
-    step("🐳", "starting Postgres + Redis…")
-    run([*COMPOSE, "up", "-d"], cwd=PROJECT_DIR)
+    step("🐳", "starting Postgres…")
+    run([*COMPOSE, "up", "-d", "postgres"], cwd=PROJECT_DIR)
     wait_db()
+    ensure_redis()
+
+
+def ensure_redis() -> None:
+    """Use whatever Redis is already serving REDIS_URL (host install or a
+    container started elsewhere); only spin up the Compose `redis` service when
+    nothing answers. Avoids the `bind 6379: address already in use` clash when a
+    host redis-server is running."""
+    host, port = redis_host_port(
+        load_dotenv().get("REDIS_URL", "redis://localhost:6379/0")
+    )
+    if port_open(host, port):
+        ok(f"Redis already reachable at {host}:{port} — using it")
+        return
+    step("🐳", "no Redis on that port — starting the Compose redis service…")
+    run([*COMPOSE, "up", "-d", "redis"], cwd=PROJECT_DIR)
+    for _ in range(30):
+        if port_open(host, port):
+            ok("Redis is ready")
+            return
+        time.sleep(1)
+    fail(f"Redis did not become reachable at {host}:{port} in time")
+    sys.exit(1)
 
 
 @task("deps", "🐳", "Services", "Alias for `up`")
@@ -309,6 +356,31 @@ def dev() -> None:
     run_server()
 
 
+@task(
+    "demo",
+    "🎬",
+    "Run",
+    "Demo: deps + migrate + serve the dashboard (open the URL yourself)",
+)
+def demo() -> None:
+    deps()
+    migrate()
+    port = load_dotenv().get("PORT", "8080")
+    url = f"http://localhost:{port}"
+    _rule(C.MAGENTA)
+    print(f"{C.BOLD}{C.MAGENTA}🎬  Serving the demo dashboard{C.RESET}")
+    print(
+        f"   Open {C.BOLD}{C.CYAN}{url}{C.RESET} once it has booted "
+        f"{C.DIM}(Ctrl-C to stop the server){C.RESET}"
+    )
+    print(
+        f"   {C.DIM}V1 Snowflake decode · V2 cache HIT/MISS · "
+        f"auth 401 · rate-limit 429{C.RESET}"
+    )
+    _rule(C.MAGENTA)
+    run_server()
+
+
 @task("smoke", "🔥", "Run", "Hit /healthz (server must be running)")
 def smoke() -> None:
     require("curl", "Install curl to use this target.")
@@ -321,11 +393,6 @@ def smoke() -> None:
     else:
         fail("healthz failed — is the server running?")
         sys.exit(1)
-
-
-# --------------------------------------------------------------------------- #
-# Benchmarks
-# --------------------------------------------------------------------------- #
 
 
 @task("bench", "📊", "Bench", "Criterion micro-bench: ID generator throughput")
@@ -354,12 +421,12 @@ def bench_load() -> None:
     run(["node", "bench/run.js"], cwd=PROJECT_DIR, env=load_dotenv())
 
 
-
-
 @task("help", "❓", "Meta", "Show this help")
 def help_() -> None:
     print()
-    print(f"{C.BOLD}{C.MAGENTA}🔗 url-shortener{C.RESET} {C.DIM}— common commands{C.RESET}\n")
+    print(
+        f"{C.BOLD}{C.MAGENTA}🔗 url-shortener{C.RESET} {C.DIM}— common commands{C.RESET}\n"
+    )
 
     groups: dict[str, list[str]] = {}
     for name, (_, _, group, _) in TASKS.items():
@@ -378,13 +445,9 @@ def help_() -> None:
     print(f"{C.BOLD}Run all checks:{C.RESET}    {C.DIM}make verify{C.RESET}\n")
 
 
-
-
-
 def run_task(name: str, entry: tuple) -> int:
     """Run one top-level task wrapped in start/finish banners + timing."""
     fn, _, _, help_text = entry
-    # `help` is informational, not a real job — skip the banners.
     if name == "help":
         fn()
         return 0
@@ -393,7 +456,7 @@ def run_task(name: str, entry: tuple) -> int:
     start = time.perf_counter()
     try:
         fn()
-    except SystemExit as exc:  # a child command failed and called sys.exit()
+    except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
         banner_end(name, time.perf_counter() - start, code)
         return code
@@ -420,12 +483,12 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    # Line-buffer stdout so banners interleave correctly with child-process and
-    # stderr output even when piped (e.g. `make smoke 2>&1 | tee`).
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except (AttributeError, ValueError):
-        pass
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(line_buffering=True)
+        except ValueError:
+            pass
     try:
         sys.exit(main(sys.argv[1:]))
     except KeyboardInterrupt:
