@@ -39,6 +39,29 @@
     "editor.wordWrap": "on",
     "files.trimTrailingWhitespace": false
   },
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4,
+    "editor.rulers": [100],
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  // ---- Python (stdlib scripts: status.py, projects/*/makefile.py) ----
+  "python.defaultInterpreterPath": "/usr/bin/python3",
+  "python.terminal.activateEnvironment": false,
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/projects/01-url-shortener",
+    "${workspaceFolder}/projects/02-rate-limiter"
+  ],
+  "ruff.configurationPreference": "filesystemFirst",
+  "ruff.lineLength": 100,
 
   // ---- Terminal (Makefile lives under projects/01-url-shortener) ----
   "terminal.integrated.cwd": "${workspaceFolder}/projects/01-url-shortener",
@@ -47,9 +70,18 @@
   // ---- Noise reduction ----
   "files.watcherExclude": {
     "**/target/**": true,
+    "**/__pycache__/**": true,
     "**/.git/objects/**": true
   },
   "search.exclude": {
-    "**/target": true
-  }
+    "**/target": true,
+    "**/__pycache__": true
+  },
+  "cursorpyright.analysis.diagnosticMode": "workspace",
+  "cursorpyright.analysis.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/projects/01-url-shortener",
+    "${workspaceFolder}/projects/02-rate-limiter"
+  ],
+  "cursorpyright.analysis.typeCheckingMode": "basic"
 }

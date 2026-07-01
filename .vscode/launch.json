@@ -12,6 +12,46 @@
       "args": [],
       "cwd": "${workspaceFolder}/projects/01-url-shortener",
       "envFile": "${workspaceFolder}/projects/01-url-shortener/.env"
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Debug status.py",
+      "program": "${workspaceFolder}/status.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Debug status.py (project 01)",
+      "program": "${workspaceFolder}/status.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": ["01"],
+      "justMyCode": true
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Debug url-shortener makefile.py",
+      "program": "${workspaceFolder}/projects/01-url-shortener/makefile.py",
+      "cwd": "${workspaceFolder}/projects/01-url-shortener",
+      "envFile": "${workspaceFolder}/projects/01-url-shortener/.env",
+      "console": "integratedTerminal",
+      "args": ["help"],
+      "justMyCode": true
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Debug rate-limiter makefile.py",
+      "program": "${workspaceFolder}/projects/02-rate-limiter/makefile.py",
+      "cwd": "${workspaceFolder}/projects/02-rate-limiter",
+      "console": "integratedTerminal",
+      "args": ["help"],
+      "justMyCode": true
     }
   ]
 }

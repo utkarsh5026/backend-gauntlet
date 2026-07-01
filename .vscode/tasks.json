@@ -159,6 +159,63 @@
         "panel": "shared"
       },
       "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "workspace: status",
+      "detail": "python3 status.py — cross-project progress dashboard",
+      "type": "shell",
+      "command": "python3 status.py",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "workspace: status (project 01)",
+      "detail": "python3 status.py 01 — drill into url-shortener",
+      "type": "shell",
+      "command": "python3 status.py 01",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "python: ruff check",
+      "detail": "Lint all *.py scripts (status.py, projects/*/makefile.py)",
+      "type": "shell",
+      "command": "ruff check .",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$ruff"]
+    },
+    {
+      "label": "python: ruff format",
+      "detail": "Format all *.py scripts",
+      "type": "shell",
+      "command": "ruff format .",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "problemMatcher": []
     }
   ]
 }
