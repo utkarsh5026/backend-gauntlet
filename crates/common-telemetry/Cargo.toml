@@ -8,3 +8,5 @@ authors.workspace = true
 [dependencies]
 tracing.workspace = true
 tracing-subscriber.workspace = true
+http.workspace = true
+uuid.workspace = true
