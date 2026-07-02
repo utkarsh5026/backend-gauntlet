@@ -19,8 +19,29 @@ type RedisResult<T> = Result<T, redis::RedisError>;
 /// us remember "this slug doesn't exist" so 404 floods don't hit the DB.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cached {
-    Found { link_id: i64, long_url: String },
+    /// A positive hit: the slug resolves to a live link.
+    Found {
+        /// Primary key of the link row in Postgres.
+        link_id: i64,
+        /// Destination the slug redirects to.
+        long_url: String,
+    },
+    /// The slug is known not to exist (negative cache entry).
     Missing,
+}
+
+#[cfg(test)]
+impl Cached {
+    fn found(link_id: i64, long_url: impl Into<String>) -> Self {
+        Self::Found {
+            link_id,
+            long_url: long_url.into(),
+        }
+    }
+
+    fn missing() -> Self {
+        Self::Missing
+    }
 }
 
 /// In-process single-flight slot: one task rebuilds, concurrent waiters block until
@@ -31,6 +52,13 @@ struct InflightRebuild {
     result: Mutex<Option<Result<Cached, String>>>,
 }
 
+/// Cache-aside wrapper over a Redis [`ConnectionManager`], plus in-process
+/// single-flight state for stampede protection.
+///
+/// Cheap to [`Clone`]: the connection manager is multiplexed and the in-flight
+/// map is shared behind an [`Arc`], so every clone coordinates through the same
+/// `InflightRebuild` slots. Positive and negative entries are stored under a
+/// prefixed `link:<slug>` key with the TTLs defined by the `*_TTL_SECS` constants.
 #[derive(Clone)]
 pub struct Cache {
     conn: ConnectionManager,
@@ -43,6 +71,9 @@ impl Cache {
     const MISSING_TTL_SECS: u64 = 60;
     const FOUND_TTL_JITTER_SECS: u64 = 300;
 
+    /// Build a cache over `conn` with no key prefix (production namespace).
+    ///
+    /// Use [`Self::with_key_prefix`] to isolate keys, e.g. per test.
     pub fn new(conn: ConnectionManager) -> Self {
         Self {
             conn,
@@ -92,6 +123,11 @@ impl Cache {
     /// Look up a slug in the cache.
     ///
     /// `Ok(None)` means the key is absent (real miss — caller should consult Postgres).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RedisError`] if the Redis command fails or the stored payload
+    /// cannot be decoded into a [`Cached`].
     pub async fn get(&self, slug: &str) -> RedisResult<Option<Cached>> {
         let mut conn = self.conn.clone();
         let value: Option<String> = conn.get(self.key(slug)).await?;
@@ -99,6 +135,13 @@ impl Cache {
     }
 
     /// Store a positive entry with a TTL (+ jitter).
+    ///
+    /// The jitter (see `found_ttl_secs`) spreads expiries so hot keys don't all
+    /// lapse on the same tick and cause a synchronized stampede.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RedisError`] if encoding fails or the `SETEX` command fails.
     pub async fn put_found(&self, slug: &str, link_id: i64, long_url: &str) -> RedisResult<()> {
         let mut conn = self.conn.clone();
         let payload = Cached::Found {
@@ -113,6 +156,13 @@ impl Cache {
     }
 
     /// Store a negative entry (slug known not to exist) with a short TTL.
+    ///
+    /// The TTL is deliberately short (`MISSING_TTL_SECS`) so a slug that is later
+    /// created becomes reachable soon after.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RedisError`] if encoding fails or the `SETEX` command fails.
     pub async fn put_missing(&self, slug: &str) -> RedisResult<()> {
         let mut conn = self.conn.clone();
         let payload = Self::encode(&Cached::Missing)?;
@@ -122,15 +172,26 @@ impl Cache {
         Ok(())
     }
 
-    /// THE HARD PART — stampede protection.
+    /// Read `slug`, rebuilding through `rebuild` on a miss — with stampede
+    /// protection (V2).
     ///
     /// When a hot slug expires, thousands of concurrent requests must not all
-    /// rebuild it from Postgres at once. TODO(V2): implement one of —
-    ///   - single-flight (only one rebuilds, others await the result),
-    ///   - a short distributed lock (SET NX PX) with a fallback,
-    ///   - probabilistic early recomputation.
+    /// rebuild it from Postgres at once. This uses **in-process single-flight**:
+    /// the first caller to miss becomes the leader and runs `rebuild`; every
+    /// other caller for the same slug parks on the leader's `InflightRebuild`
+    /// slot and receives the leader's result — so Postgres is consulted once per
+    /// herd, not once per request. A cache hit skips `rebuild` entirely.
     ///
-    /// Document your choice in docs/01-design.md.
+    /// On success the value is written through ([`Self::put_found`] /
+    /// [`Self::put_missing`]) before waiters are woken. A failed rebuild is
+    /// *not* cached and the slot is torn down, so the next request becomes a
+    /// fresh leader and retries. See `docs/01-design.md` for the design rationale.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RedisError`] if the initial lookup fails, if writing the
+    /// rebuilt value fails, or if `rebuild` itself errors (the error is
+    /// propagated to every parked waiter as a [`redis::ErrorKind::IoError`]).
     pub async fn get_or_rebuild<F, Fut>(&self, slug: &str, rebuild: F) -> RedisResult<Cached>
     where
         F: FnOnce() -> Fut,
@@ -140,29 +201,40 @@ impl Cache {
             return Ok(cached);
         }
 
-        let is_leader = {
+        // Elect a leader and grab the shared slot in one critical section. Cloning
+        // the `Arc` here — instead of re-locking the map to fetch it later — means
+        // the leader can't `remove` the slot in the gap, so a waiter always holds a
+        // live slot even after teardown. (Fetching it under a *second* lock is the
+        // race that panicked `get(slug).unwrap()` on an already-removed slot.)
+        let (entry, is_leader) = {
             let mut inflight = self.inflight.lock().await;
-            if inflight.contains_key(slug) {
-                false
-            } else {
-                inflight.insert(slug.to_owned(), Arc::new(InflightRebuild::default()));
-                true
+            match inflight.get(slug) {
+                Some(entry) => (entry.clone(), false),
+                None => {
+                    let entry = Arc::new(InflightRebuild::default());
+                    inflight.insert(slug.to_owned(), entry.clone());
+                    (entry, true)
+                }
             }
         };
 
         if !is_leader {
-            let inflight = self.inflight.lock().await;
-            let entry = inflight.get(slug).unwrap().clone();
+            // Register for the wakeup *before* reading the result: `notify_waiters`
+            // only wakes tasks already parked, so checking-then-parking could miss
+            // the leader's notify and hang forever. `enable()` queues us first.
             loop {
+                let notified = entry.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 if let Some(outcome) = entry.result.lock().await.clone() {
-                    return outcome.map_err(rebuild_error);
+                    return outcome.map_err(|e| {
+                        RedisError::from((redis::ErrorKind::IoError, "cache rebuild", e))
+                    });
                 }
-                entry.notify.notified().await;
+                notified.await;
             }
         }
 
-        let inflight = self.inflight.lock().await;
-        let entry = inflight.get(slug).unwrap().clone();
         let outcome = rebuild().await.map_err(|e| e.to_string());
         if let Ok(ref value) = outcome {
             match value {
@@ -183,10 +255,6 @@ impl Cache {
     }
 }
 
-fn rebuild_error(message: String) -> RedisError {
-    RedisError::from((redis::ErrorKind::IoError, "cache rebuild", message))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,17 +262,14 @@ mod tests {
 
     #[test]
     fn found_round_trips_through_json() {
-        let original = Cached::Found {
-            link_id: 42,
-            long_url: "https://example.com".into(),
-        };
+        let original = Cached::found(42, "https://example.com");
         let json = Cache::encode(&original).unwrap();
         assert_eq!(Cache::decode(&json).unwrap(), original);
     }
 
     #[test]
     fn missing_round_trips_through_json() {
-        let original = Cached::Missing;
+        let original = Cached::missing();
         let json = Cache::encode(&original).unwrap();
         assert_eq!(json, "\"Missing\"");
         assert_eq!(Cache::decode(&json).unwrap(), original);
@@ -243,10 +308,7 @@ mod tests {
         scope.track(&slug);
         assert_eq!(
             scope.cache.get(&slug).await.unwrap(),
-            Some(Cached::Found {
-                link_id: 99,
-                long_url: "https://example.com/page".into(),
-            })
+            Some(Cached::found(99, "https://example.com/page"))
         );
         scope.cleanup().await;
     }
@@ -257,7 +319,10 @@ mod tests {
         let slug = unique_slug("missing");
         scope.cache.put_missing(&slug).await.unwrap();
         scope.track(&slug);
-        assert_eq!(scope.cache.get(&slug).await.unwrap(), Some(Cached::Missing));
+        assert_eq!(
+            scope.cache.get(&slug).await.unwrap(),
+            Some(Cached::missing())
+        );
         scope.cleanup().await;
     }
 
@@ -267,7 +332,10 @@ mod tests {
         let slug = unique_slug("negative");
         scope.cache.put_missing(&slug).await.unwrap();
         scope.track(&slug);
-        assert_eq!(scope.cache.get(&slug).await.unwrap(), Some(Cached::Missing));
+        assert_eq!(
+            scope.cache.get(&slug).await.unwrap(),
+            Some(Cached::missing())
+        );
         assert_eq!(
             scope
                 .cache
@@ -284,7 +352,10 @@ mod tests {
         let mut scope = RedisTestScope::new().await;
         let slug = unique_slug("flip");
         scope.cache.put_missing(&slug).await.unwrap();
-        assert_eq!(scope.cache.get(&slug).await.unwrap(), Some(Cached::Missing));
+        assert_eq!(
+            scope.cache.get(&slug).await.unwrap(),
+            Some(Cached::missing())
+        );
         scope
             .cache
             .put_found(&slug, 7, "https://example.com/new")
@@ -293,10 +364,7 @@ mod tests {
         scope.track(&slug);
         assert_eq!(
             scope.cache.get(&slug).await.unwrap(),
-            Some(Cached::Found {
-                link_id: 7,
-                long_url: "https://example.com/new".into(),
-            })
+            Some(Cached::found(7, "https://example.com/new"))
         );
         scope.cleanup().await;
     }
@@ -365,11 +433,6 @@ mod tests {
     }
 }
 
-/// V2 stampede protection — `Cache::get_or_rebuild`.
-///
-/// The rebuild closure carries an `AtomicUsize` so each test asserts *how many
-/// times* Postgres would have been consulted — that count is the whole point of
-/// single-flight, so it's what we pin.
 #[cfg(test)]
 mod rebuild_tests {
     use super::*;
@@ -379,17 +442,36 @@ mod rebuild_tests {
     use tokio::sync::Barrier;
     use tokio::time::{sleep, Duration};
 
-    async fn setup() -> (RedisTestScope, String, Arc<AtomicUsize>) {
+    async fn setup(prefix: &'static str) -> (RedisTestScope, String, Arc<AtomicUsize>) {
         let scope = RedisTestScope::new().await;
-        let slug = unique_slug("warm");
+        let slug = unique_slug(prefix);
         let count = Arc::new(AtomicUsize::new(0));
         (scope, slug, count)
     }
 
+    async fn counted_get_or_rebuild<F, Fut>(
+        scope: &RedisTestScope,
+        slug: &str,
+        count: &Arc<AtomicUsize>,
+        rebuild: F,
+    ) -> RedisResult<Cached>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = RedisResult<Cached>>,
+    {
+        let count = Arc::clone(count);
+        scope
+            .cache
+            .get_or_rebuild(slug, move || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                rebuild().await
+            })
+            .await
+    }
+
     #[tokio::test]
     async fn get_or_rebuild_serves_cache_hit_without_rebuilding() {
-        let mut scope = RedisTestScope::new().await;
-        let slug = unique_slug("warm");
+        let (mut scope, slug, count) = setup("warm").await;
         scope
             .cache
             .put_found(&slug, 5, "https://example.com/cached")
@@ -397,26 +479,15 @@ mod rebuild_tests {
             .unwrap();
         scope.track(&slug);
 
-        let calls = Arc::new(AtomicUsize::new(0));
-        let c = calls.clone();
-        let cached = scope
-            .cache
-            .get_or_rebuild(&slug, || async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok(Cached::Missing)
-            })
-            .await
-            .unwrap();
+        let cached =
+            counted_get_or_rebuild(&scope, &slug, &count, || async { Ok(Cached::missing()) }).await;
 
         assert_eq!(
-            cached,
-            Cached::Found {
-                link_id: 5,
-                long_url: "https://example.com/cached".into(),
-            }
+            cached.unwrap(),
+            Cached::found(5, "https://example.com/cached")
         );
         assert_eq!(
-            calls.load(Ordering::SeqCst),
+            count.load(Ordering::SeqCst),
             0,
             "a cache hit must never invoke the rebuild fn"
         );
@@ -425,30 +496,16 @@ mod rebuild_tests {
 
     #[tokio::test]
     async fn get_or_rebuild_populates_cache_on_miss() {
-        let mut scope = RedisTestScope::new().await;
-        let slug = unique_slug("cold");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let c = calls.clone();
-
-        let built = scope
-            .cache
-            .get_or_rebuild(&slug, || async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok(Cached::Found {
-                    link_id: 9,
-                    long_url: "https://example.com/built".into(),
-                })
-            })
-            .await
-            .unwrap();
+        let (mut scope, slug, count) = setup("cold").await;
+        let built = counted_get_or_rebuild(&scope, &slug, &count, || async {
+            Ok(Cached::found(9, "https://example.com/built"))
+        })
+        .await;
         scope.track(&slug);
 
-        let expected = Cached::Found {
-            link_id: 9,
-            long_url: "https://example.com/built".into(),
-        };
-        assert_eq!(built, expected);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let expected = Cached::found(9, "https://example.com/built");
+        assert_eq!(built.unwrap(), expected);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
         // Proof it was written through: a plain read now hits Redis directly.
         assert_eq!(scope.cache.get(&slug).await.unwrap(), Some(expected));
         scope.cleanup().await;
@@ -456,24 +513,17 @@ mod rebuild_tests {
 
     #[tokio::test]
     async fn get_or_rebuild_caches_negative_result() {
-        let mut scope = RedisTestScope::new().await;
-        let slug = unique_slug("cold-missing");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let c = calls.clone();
-
-        let built = scope
-            .cache
-            .get_or_rebuild(&slug, || async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok(Cached::Missing)
-            })
-            .await
-            .unwrap();
+        let (mut scope, slug, count) = setup("cold-missing").await;
+        let built =
+            counted_get_or_rebuild(&scope, &slug, &count, || async { Ok(Cached::missing()) }).await;
         scope.track(&slug);
 
-        assert_eq!(built, Cached::Missing);
-        assert_eq!(scope.cache.get(&slug).await.unwrap(), Some(Cached::Missing));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(built.unwrap(), Cached::missing());
+        assert_eq!(
+            scope.cache.get(&slug).await.unwrap(),
+            Some(Cached::missing())
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
         scope.cleanup().await;
     }
 
@@ -481,9 +531,7 @@ mod rebuild_tests {
     /// one rebuild, and every caller gets that single result.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn get_or_rebuild_coalesces_concurrent_misses() {
-        let mut scope = RedisTestScope::new().await;
-        let slug = unique_slug("stampede");
-        let calls = Arc::new(AtomicUsize::new(0));
+        let (mut scope, slug, calls) = setup("stampede").await;
 
         const WAITERS: usize = 32;
         let barrier = Arc::new(Barrier::new(WAITERS));
@@ -503,19 +551,13 @@ mod rebuild_tests {
                         // Hold the in-flight slot open long enough that every waiter
                         // registers behind the leader instead of starting its own.
                         sleep(Duration::from_millis(150)).await;
-                        Ok(Cached::Found {
-                            link_id: 7,
-                            long_url: "https://example.com/hot".into(),
-                        })
+                        Ok(Cached::found(7, "https://example.com/hot"))
                     })
                     .await
             }));
         }
 
-        let expected = Cached::Found {
-            link_id: 7,
-            long_url: "https://example.com/hot".into(),
-        };
+        let expected = Cached::found(7, "https://example.com/hot");
         for handle in handles {
             assert_eq!(handle.await.unwrap().unwrap(), expected);
         }
@@ -533,14 +575,11 @@ mod rebuild_tests {
     /// and Postgres is hit once — not once per waiter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn get_or_rebuild_coalesces_failure_across_waiters() {
-        let mut scope = RedisTestScope::new().await;
-        let slug = unique_slug("stampede-fail");
-        let calls = Arc::new(AtomicUsize::new(0));
+        let (mut scope, slug, calls) = setup("stampede-fail").await;
 
         const WAITERS: usize = 16;
         let barrier = Arc::new(Barrier::new(WAITERS));
         let mut handles = Vec::with_capacity(WAITERS);
-
         for _ in 0..WAITERS {
             let cache = scope.cache.clone();
             let slug = slug.clone();
@@ -549,8 +588,11 @@ mod rebuild_tests {
             handles.push(tokio::spawn(async move {
                 barrier.wait().await;
                 cache
-                    .get_or_rebuild(&slug, || async move {
+                    .get_or_rebuild(&slug, move || async move {
                         calls.fetch_add(1, Ordering::SeqCst);
+                        // Hold the slot open so the herd forms behind this leader;
+                        // without it the failure returns before any waiter registers
+                        // and each caller rebuilds its own — nothing to coalesce.
                         sleep(Duration::from_millis(150)).await;
                         Err(RedisError::from((
                             redis::ErrorKind::IoError,
@@ -584,18 +626,11 @@ mod rebuild_tests {
     /// leader and succeeds (the in-process slot is torn down after the failure).
     #[tokio::test]
     async fn get_or_rebuild_retries_after_a_failed_rebuild() {
-        let mut scope = RedisTestScope::new().await;
-        let slug = unique_slug("self-heal");
-        let calls = Arc::new(AtomicUsize::new(0));
-
-        let c1 = calls.clone();
-        let first = scope
-            .cache
-            .get_or_rebuild(&slug, || async move {
-                c1.fetch_add(1, Ordering::SeqCst);
-                Err(RedisError::from((redis::ErrorKind::IoError, "boom")))
-            })
-            .await;
+        let (mut scope, slug, calls) = setup("self-heal").await;
+        let first = counted_get_or_rebuild(&scope, &slug, &calls, || async {
+            Err(RedisError::from((redis::ErrorKind::IoError, "boom")))
+        })
+        .await;
         assert!(first.is_err());
         assert_eq!(
             scope.cache.get(&slug).await.unwrap(),
@@ -603,25 +638,12 @@ mod rebuild_tests {
             "the failed attempt left nothing behind"
         );
 
-        let c2 = calls.clone();
-        let expected = Cached::Found {
-            link_id: 1,
-            long_url: "https://example.com".into(),
-        };
-        let second = scope
-            .cache
-            .get_or_rebuild(&slug, {
-                let expected = expected.clone();
-                || async move {
-                    c2.fetch_add(1, Ordering::SeqCst);
-                    Ok(expected)
-                }
-            })
-            .await
-            .unwrap();
+        let expected = Cached::found(1, "https://example.com");
+        let e = expected.clone();
+        let second = counted_get_or_rebuild(&scope, &slug, &calls, || async move { Ok(e) }).await;
         scope.track(&slug);
 
-        assert_eq!(second, expected);
+        assert_eq!(second.unwrap(), expected);
         assert_eq!(
             calls.load(Ordering::SeqCst),
             2,
