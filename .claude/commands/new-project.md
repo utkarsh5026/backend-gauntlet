@@ -11,12 +11,19 @@ structure and a SPEC, but leave the interesting logic as `todo!()`. Do not solve
 1. Identify the project from `README.md`'s roadmap. Confirm the number/name and its
    place in the tier if ambiguous.
 2. Create `projects/NN-name/` with:
-   - **`SPEC.md`** in the two-axis format: a short framing of why this primitive is
-     hard at scale; **Vertical challenges** (V1, V2, … — the internals to build from
-     scratch, each with a "concept to internalize", no spoilers); a **Horizontal
-     checklist** (protocols / caching / security / observability relevant to THIS
-     project); cross-cutting scale skills; a **Definition of done** requiring a
-     `bench/` with numbers and a design doc; and a "suggested order of attack".
+   - **`SPEC.md`** in the two-axis, **acceptance-criteria** format (see
+     `projects/01-url-shortener/SPEC.md` as the reference): a short framing of why
+     this primitive is hard at scale; a one-paragraph **"How to read this SPEC"**
+     note explaining the Done-when/Proof convention; **Vertical challenges** (V1,
+     V2, … — the internals to build from scratch). Each vertical keeps its prose +
+     a **"concept to internalize"** and adds a **"Done when ALL true"** block of
+     `- [ ]` criteria that are *observable outcomes, never solution steps* (no
+     spoilers), plus a **"Proof"** line naming the test/bench/doc that demonstrates
+     it. Then a **Horizontal checklist** (protocols / caching / security /
+     observability relevant to THIS project); cross-cutting scale skills; a
+     **Definition of done** framed as "done when ALL true" — every box checked with
+     its Proof, a `bench/` with numbers, a design doc, and a clippy+test green gate;
+     and a "suggested order of attack".
    - `Cargo.toml` — package name without the number; deps via `{ workspace = true }`.
      Add any *new* shared deps to the root `[workspace.dependencies]` first.
    - `docker-compose.yml` for its dependencies (with healthchecks), `.env.example`,

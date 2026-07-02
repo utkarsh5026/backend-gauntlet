@@ -7,7 +7,8 @@ The user is stuck on: **$ARGUMENTS**
 
 This is a LEARNING repo (see CLAUDE.md). Help them get unstuck WITHOUT solving it.
 
-1. Find the relevant project's `SPEC.md` and the `todo!()`/code in question; read
+1. Find the relevant project's `SPEC.md` — including the specific **"Done when ALL
+   true"** criterion they're stuck on — and the `todo!()`/code in question; read
    what the user has written so far.
 2. Give a **graduated hint**, smallest first. Offer ONE level at a time and ask if
    they want to go deeper:
