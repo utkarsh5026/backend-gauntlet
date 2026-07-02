@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use url::Url;
+use url::{Host, Url};
 
 use crate::error::AppError;
 
@@ -45,11 +45,21 @@ pub fn validate_long_url(input: &str) -> Result<String, AppError> {
         return Err(AppError::BadRequest("only https URLs are allowed".into()));
     }
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| AppError::BadRequest("invalid URL".into()))?;
-
-    if is_blocked_host(host) {
+    // Use the typed `Host` (not `host_str()`): an IPv6 literal stringifies with
+    // brackets (`[::1]`), which fails `IpAddr::parse` and would silently skip the
+    // IP checks — the exact SSRF bypass this guards against. `host()` hands back
+    // an `Ipv4Addr`/`Ipv6Addr` directly. Note: this inspects only the host as
+    // written; it does not resolve DNS, so a public name pointing at a private
+    // address (DNS rebinding) is not caught here.
+    let blocked = match url
+        .host()
+        .ok_or_else(|| AppError::BadRequest("invalid URL".into()))?
+    {
+        Host::Ipv4(ip) => is_blocked_ip(IpAddr::V4(ip)),
+        Host::Ipv6(ip) => is_blocked_ip(IpAddr::V6(ip)),
+        Host::Domain(name) => is_blocked_hostname(name),
+    };
+    if blocked {
         return Err(AppError::BadRequest("internal URLs are not allowed".into()));
     }
 
@@ -65,19 +75,6 @@ pub fn validate_long_url(input: &str) -> Result<String, AppError> {
     }
 
     Ok(normalized)
-}
-
-/// Report whether a URL host should be refused as an SSRF risk.
-///
-/// A host that parses as a literal IP is checked against [`is_blocked_ip`];
-/// otherwise it is matched by name via [`is_blocked_hostname`]. Note this only
-/// inspects the host as written — it does not resolve DNS, so a public name that
-/// resolves to a private address is not caught here.
-fn is_blocked_host(host: &str) -> bool {
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return is_blocked_ip(ip);
-    }
-    is_blocked_hostname(host)
 }
 
 /// Block hostnames that conventionally resolve to local/internal endpoints.
@@ -192,5 +189,32 @@ mod tests {
     fn allows_http_in_query_string() {
         let url = validate_long_url("https://example.com?next=http://other.example").unwrap();
         assert_eq!(url, "https://example.com/?next=http://other.example");
+    }
+
+    #[test]
+    fn rejects_over_length_url() {
+        // Otherwise valid (https, public host); only the length rule can reject it.
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
+        assert!(long.len() > MAX_URL_LEN);
+        assert!(validate_long_url(&long).is_err());
+    }
+
+    #[test]
+    fn accepts_url_at_the_length_limit() {
+        // Boundary: exactly MAX_URL_LEN bytes must still be accepted, proving the
+        // check rejects *over*-length, not at-length.
+        let path_len = MAX_URL_LEN - "https://example.com/".len();
+        let at_limit = format!("https://example.com/{}", "a".repeat(path_len));
+        assert_eq!(at_limit.len(), MAX_URL_LEN);
+        assert!(validate_long_url(&at_limit).is_ok());
+    }
+
+    #[test]
+    fn rejects_loopback_and_ula_ipv6() {
+        // IPv6 SSRF: loopback (::1) and unique-local (fc00::/7). Bracketed in the
+        // authority per RFC 3986.
+        assert!(validate_long_url("https://[::1]/").is_err());
+        assert!(validate_long_url("https://[fc00::1]/").is_err());
+        assert!(validate_long_url("https://[fe80::1]/").is_err());
     }
 }
