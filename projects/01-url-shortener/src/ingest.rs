@@ -44,8 +44,14 @@ pub struct ClickSink {
 impl ClickSink {
     /// Hand a click to the ingestor. Non-blocking and lossy by design: if the
     /// buffer is full we drop the event rather than stall the redirect.
+    ///
+    /// On a successful enqueue we bump the queue-depth gauge (the ingestor
+    /// decrements it on drain), so `INGEST_QUEUE_DEPTH` tracks live buffer
+    /// occupancy — a full buffer means we're shedding clicks.
     pub fn accept(&self, event: ClickEvent) {
-        let _ = self.tx.try_send(event);
+        if self.tx.try_send(event).is_ok() {
+            metrics::gauge!(crate::metrics::INGEST_QUEUE_DEPTH).increment(1.0);
+        }
     }
 }
 
@@ -75,6 +81,7 @@ impl ClickIngestor {
             tokio::select! {
                 maybe = self.rx.recv() => match maybe {
                     Some(e) => {
+                        metrics::gauge!(crate::metrics::INGEST_QUEUE_DEPTH).decrement(1.0);
                         buf.push(e);
                         if buf.len() >= MAX_BATCH {
                             self.flush(&mut buf).await;

@@ -10,6 +10,7 @@ mod cache;
 mod error;
 mod id_gen;
 mod ingest;
+mod metrics;
 mod ratelimit;
 mod routes;
 mod url_validate;
@@ -47,6 +48,7 @@ pub struct AppState {
 async fn main() -> anyhow::Result<()> {
     common_config::load_dotenv();
     common_telemetry::init("info,url_shortener=debug");
+    let metrics_handle = metrics::install();
 
     let port: u16 = common_config::parse_or("PORT", DEFAULT_PORT);
     let database_url = common_config::require("DATABASE_URL")?;
@@ -82,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         base_url: Arc::from(base_url),
     };
 
-    let app = routes::router(state);
+    let app = routes::router(state).merge(routes::metrics_router(metrics_handle));
 
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;

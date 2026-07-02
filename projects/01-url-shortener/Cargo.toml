@@ -13,6 +13,8 @@ tokio.workspace = true
 axum.workspace = true
 tower.workspace = true
 tower-http.workspace = true
+tower_governor.workspace = true
+rust-embed.workspace = true
 
 sqlx.workspace = true
 redis.workspace = true
@@ -24,6 +26,15 @@ anyhow.workspace = true
 chrono.workspace = true
 
 tracing.workspace = true
+url.workspace = true
+
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "id_gen"
+harness = false
