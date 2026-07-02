@@ -10,11 +10,11 @@ use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use tokio::sync::mpsc;
 
 use crate::cache::Cache;
 use crate::id_gen::IdGenerator;
-use crate::{AppState, ClickEvent};
+use crate::ingest::ClickIngestor;
+use crate::AppState;
 
 /// Redis URL for tests. Defaults to logical DB 1 (dev/app uses DB 0 via
 /// `REDIS_URL`) so `cargo test` never touches the cache a running dev server
@@ -148,12 +148,14 @@ pub async fn app_state(cache: Cache, api_keys: &[&str]) -> AppState {
 
 /// Like [`app_state`] but accepts an existing pool (e.g. lazy pool for auth-only tests).
 pub async fn app_state_with_db(cache: Cache, api_keys: &[&str], db: PgPool) -> AppState {
-    let (clicks_tx, _clicks_rx) = mpsc::channel::<ClickEvent>(100);
+    // Tests don't care about click delivery: keep the sink, drop the ingestor
+    // (a dropped receiver just makes `accept` a silent no-op).
+    let (_ingestor, clicks) = ClickIngestor::new(db.clone());
     AppState {
         db,
         cache,
         ids: Arc::new(IdGenerator::new(0)),
-        clicks: clicks_tx,
+        clicks,
         api_keys: Arc::new(
             api_keys
                 .iter()

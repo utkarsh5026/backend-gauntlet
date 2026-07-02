@@ -27,6 +27,15 @@ pub struct IdGenerator {
     state: AtomicU64,
 }
 
+/// The three Snowflake fields recovered from an id by [`IdGenerator::decode`].
+/// `timestamp_ms` is milliseconds since [`CUSTOM_EPOCH_MS`] (not Unix epoch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdParts {
+    pub timestamp_ms: u64,
+    pub node_id: u16,
+    pub sequence: u16,
+}
+
 /// A mask to extract the 12-bit sequence portion from the packed state.
 /// 0xfff equals 4095 (12 bits of 1s).
 const SEQUENCE_MASK: u64 = 0xfff;
@@ -117,11 +126,29 @@ impl IdGenerator {
             .saturating_sub(CUSTOM_EPOCH_MS)
     }
 
-    fn assemble_id(timestamp: u64, sequence: u64, node_id: u16) -> u64 {
+    // `#[doc(hidden)] pub` so `benches/id_gen.rs` can measure the raw compute
+    // cost of these in isolation (next_id itself is clock-gated, see the bench).
+    // Not part of the real API — hidden from rustdoc.
+    #[doc(hidden)]
+    pub fn assemble_id(timestamp: u64, sequence: u64, node_id: u16) -> u64 {
         (timestamp << 22) | ((node_id as u64) << 12) | sequence
     }
 
-    fn base62_encode(n: u64) -> String {
+    /// Inverse of [`assemble_id`](Self::assemble_id): split a generated id back
+    /// into its Snowflake fields. Pure observability — used by the demo dashboard
+    /// to visualize that a slug's id is time-ordered and carries the node id.
+    /// `timestamp_ms` is relative to [`CUSTOM_EPOCH_MS`]; add that for Unix ms.
+    pub fn decode(id: i64) -> IdParts {
+        let id = id as u64;
+        IdParts {
+            timestamp_ms: id >> 22,
+            node_id: ((id >> 12) & 0x3ff) as u16,
+            sequence: (id & SEQUENCE_MASK) as u16,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn base62_encode(n: u64) -> String {
         let mut result = String::new();
         let mut n = n;
         while n > 0 {
@@ -142,18 +169,26 @@ impl IdGenerator {
 /// Base62 alphabet: digits, then uppercase, then lowercase.
 const BASE62_CHARS: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+#[allow(unused_imports)]
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use proptest::prelude::*;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::thread;
 
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// Test-only inverse of [`IdGenerator::base62_encode`], used to check the
+    /// encode→decode roundtrip. Returns `None` on any non-base62 byte.
+    // Only referenced inside a `proptest!` block, which rust-analyzer doesn't
+    // expand — `allow` (not `expect`) since the real `cargo test` build uses it.
+    #[allow(dead_code)]
     fn base62_decode(s: &str) -> Option<u64> {
-        let mut n = 0u64;
+        let mut n: u64 = 0;
         for c in s.chars() {
-            let digit = BASE62_CHARS.iter().position(|&b| b as char == c)? as u64;
+            let digit = BASE62_CHARS.iter().position(|&b| b == c as u8)? as u64;
             n = n.checked_mul(62)?.checked_add(digit)?;
         }
         Some(n)
