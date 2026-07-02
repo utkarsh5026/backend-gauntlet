@@ -19,7 +19,13 @@
 // Pull the module source in directly — the crate has no lib target, and id_gen
 // only depends on std, so this compiles standalone. The `#[cfg(test)]` tests
 // inside (which need proptest) are excluded under the bench profile.
+//
+// `allow(dead_code)`: this bench exercises only part of the API (next_id +
+// assemble_id + base62_encode). Items the binary uses but the bench doesn't —
+// `decode`/`IdParts` — would otherwise warn here. True dead code is still
+// caught by the lib/bin build.
 #[path = "../src/id_gen.rs"]
+#[allow(dead_code)]
 mod id_gen;
 
 use std::hint::black_box;
