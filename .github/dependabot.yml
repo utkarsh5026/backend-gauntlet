@@ -65,3 +65,19 @@ updates:
       day: monday
     commit-message:
       prefix: "chore(deps)"
+
+  - package-ecosystem: docker
+    directory: "/projects/07-distributed-cache"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: docker
+    directory: "/projects/10-api-gateway"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
