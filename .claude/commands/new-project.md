@@ -22,8 +22,14 @@ structure and a SPEC, but leave the interesting logic as `todo!()`. Do not solve
      it. Then a **Horizontal checklist** (protocols / caching / security /
      observability relevant to THIS project); cross-cutting scale skills; a
      **Definition of done** framed as "done when ALL true" — every box checked with
-     its Proof, a `bench/` with numbers, a design doc, and a clippy+test green gate;
-     and a "suggested order of attack".
+     its Proof, the boss defeated, a design doc, and a clippy+test green gate; a
+     **🐉 Boss fight** right after it — the project's bench requirement staged as a
+     named, themed load/failure scenario (flavor paragraph, an **Arena** line, a
+     "The boss falls when ALL true" `- [ ]` block of explicit numeric targets like
+     RPS / p99 / hit ratio — observable outcomes, no solution steps — and a Proof
+     line pointing at `docs/NN-benchmarks.md`); and a "suggested order of attack".
+     Name the boss after the failure mode the primitive exists to defeat (e.g.
+     stampede → "The Thundering Herd", backpressure → "The Flood").
    - `Cargo.toml` — package name without the number; deps via `{ workspace = true }`.
      Add any *new* shared deps to the root `[workspace.dependencies]` first.
    - `docker-compose.yml` for its dependencies (with healthchecks), `.env.example`,
