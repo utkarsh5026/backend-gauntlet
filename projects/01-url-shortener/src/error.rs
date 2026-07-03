@@ -33,17 +33,15 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
-            AppError::NotFound => StatusCode::NOT_FOUND,
-            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            AppError::Database(_) | AppError::Cache(_) | AppError::Other(_) => {
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::Database(_) | Self::Cache(_) | Self::Other(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         };
 
-        // Log the full error server-side; only leak a generic message to clients
-        // for 5xx so we don't expose internals.
         if status.is_server_error() {
             tracing::error!(error = %self, "request failed");
         }

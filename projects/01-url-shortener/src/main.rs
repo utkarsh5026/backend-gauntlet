@@ -13,6 +13,7 @@ mod ingest;
 mod metrics;
 mod ratelimit;
 mod routes;
+mod shutdown;
 mod url_validate;
 
 #[cfg(test)]
@@ -28,12 +29,10 @@ use tracing::info;
 use cache::Cache;
 use id_gen::IdGenerator;
 use ingest::{ClickIngestor, ClickSink};
+use shutdown::{drain_ingestor, shutdown_signal, SHUTDOWN_FLUSH_BUDGET};
 
 const DEFAULT_PORT: u16 = 8080;
 
-/// Shared application state, cloned into every request handler.
-/// Everything in here is cheap to clone (pools/managers are `Arc` inside, the
-/// id generator and key set we wrap in `Arc` ourselves).
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -73,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     info!("connected to redis");
 
     let (ingestor, clicks) = ClickIngestor::new(db.clone());
-    tokio::spawn(ingestor.run());
+    let ingestor_handle = tokio::spawn(ingestor.run());
 
     let state = AppState {
         db,
@@ -94,12 +93,6 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
+    drain_ingestor(ingestor_handle, SHUTDOWN_FLUSH_BUDGET).await;
     Ok(())
-}
-
-/// Waits for Ctrl-C / SIGTERM so we can drain in-flight requests.
-/// TODO(SPEC): on shutdown, also flush the click buffer before exiting.
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    info!("shutdown signal received");
 }
