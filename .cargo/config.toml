@@ -1,0 +1,6 @@
+# sqlx `query!` / `#[sqlx::test]` compile-time checks use the committed `.sqlx/`
+# cache instead of a live Postgres connection. Regenerate after SQL changes:
+#   docker compose up -d postgres && sqlx migrate run
+#   cargo sqlx prepare --workspace -- --all-targets
+[env]
+SQLX_OFFLINE = "true"
