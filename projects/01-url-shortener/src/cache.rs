@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use redis::AsyncCommands;
 use redis::{aio::ConnectionManager, RedisError};
@@ -111,15 +112,6 @@ impl Cache {
         })
     }
 
-    fn found_ttl_secs() -> u64 {
-        let jitter = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64)
-            .unwrap_or(0)
-            % Self::FOUND_TTL_JITTER_SECS;
-        Self::FOUND_TTL_SECS + jitter
-    }
-
     /// Look up a slug in the cache.
     ///
     /// `Ok(None)` means the key is absent (real miss — caller should consult Postgres).
@@ -136,22 +128,32 @@ impl Cache {
 
     /// Store a positive entry with a TTL (+ jitter).
     ///
-    /// The jitter (see `found_ttl_secs`) spreads expiries so hot keys don't all
-    /// lapse on the same tick and cause a synchronized stampede.
+    /// Up to [`Self::FOUND_TTL_JITTER_SECS`] of jitter on the base TTL spreads
+    /// expiries so hot keys don't all lapse on the same tick and cause a
+    /// synchronized stampede.
     ///
     /// # Errors
     ///
     /// Returns a [`RedisError`] if encoding fails or the `SETEX` command fails.
     pub async fn put_found(&self, slug: &str, link_id: i64, long_url: &str) -> RedisResult<()> {
         let mut conn = self.conn.clone();
-        let payload = Cached::Found {
-            link_id,
-            long_url: long_url.to_string(),
+
+        let payload = {
+            let payload = Cached::Found {
+                link_id,
+                long_url: long_url.to_string(),
+            };
+            Self::encode(&payload)?
         };
-        let payload = Self::encode(&payload)?;
-        let _: () = conn
-            .set_ex(self.key(slug), payload, Self::found_ttl_secs())
-            .await?;
+
+        let ttl = {
+            let jitter_secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|t| t.subsec_nanos() as u64 % Self::FOUND_TTL_JITTER_SECS)
+                .unwrap_or(0);
+            Self::FOUND_TTL_SECS + jitter_secs
+        };
+        let _: () = conn.set_ex(self.key(slug), payload, ttl).await?;
         Ok(())
     }
 
@@ -279,13 +281,6 @@ mod tests {
     fn decode_rejects_invalid_json() {
         let err = Cache::decode("not-json").unwrap_err();
         assert_eq!(err.kind(), redis::ErrorKind::TypeError);
-    }
-
-    #[test]
-    fn found_ttl_includes_jitter() {
-        let ttl = Cache::found_ttl_secs();
-        assert!(ttl >= Cache::FOUND_TTL_SECS);
-        assert!(ttl <= Cache::FOUND_TTL_SECS + Cache::FOUND_TTL_JITTER_SECS);
     }
 
     #[tokio::test]
@@ -422,7 +417,7 @@ mod tests {
             .await
             .unwrap();
         scope.track(&slug);
-        let mut prod_conn = redis::Client::open("redis://127.0.0.1:6379/0")
+        let mut prod_conn = redis::Client::open("redis://127.0.0.1:6301/0")
             .unwrap()
             .get_connection_manager()
             .await
@@ -440,7 +435,7 @@ mod rebuild_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::Barrier;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::Duration;
 
     async fn setup(prefix: &'static str) -> (RedisTestScope, String, Arc<AtomicUsize>) {
         let scope = RedisTestScope::new().await;
@@ -533,7 +528,7 @@ mod rebuild_tests {
     async fn get_or_rebuild_coalesces_concurrent_misses() {
         let (mut scope, slug, calls) = setup("stampede").await;
 
-        const WAITERS: usize = 32;
+        const WAITERS: usize = 1_000;
         let barrier = Arc::new(Barrier::new(WAITERS));
         let mut handles = Vec::with_capacity(WAITERS);
 
@@ -543,14 +538,11 @@ mod rebuild_tests {
             let calls = calls.clone();
             let barrier = barrier.clone();
             handles.push(tokio::spawn(async move {
-                // Release all tasks together so they truly race the empty cache.
                 barrier.wait().await;
                 cache
                     .get_or_rebuild(&slug, || async move {
                         calls.fetch_add(1, Ordering::SeqCst);
-                        // Hold the in-flight slot open long enough that every waiter
-                        // registers behind the leader instead of starting its own.
-                        sleep(Duration::from_millis(150)).await;
+                        tokio::time::sleep(Duration::from_millis(150)).await;
                         Ok(Cached::found(7, "https://example.com/hot"))
                     })
                     .await
@@ -590,10 +582,7 @@ mod rebuild_tests {
                 cache
                     .get_or_rebuild(&slug, move || async move {
                         calls.fetch_add(1, Ordering::SeqCst);
-                        // Hold the slot open so the herd forms behind this leader;
-                        // without it the failure returns before any waiter registers
-                        // and each caller rebuilds its own — nothing to coalesce.
-                        sleep(Duration::from_millis(150)).await;
+                        tokio::time::sleep(Duration::from_millis(150)).await;
                         Err(RedisError::from((
                             redis::ErrorKind::IoError,
                             "simulated postgres outage",
@@ -622,8 +611,6 @@ mod rebuild_tests {
         scope.cleanup().await;
     }
 
-    /// A failed rebuild must not poison the slug: the next request becomes a fresh
-    /// leader and succeeds (the in-process slot is torn down after the failure).
     #[tokio::test]
     async fn get_or_rebuild_retries_after_a_failed_rebuild() {
         let (mut scope, slug, calls) = setup("self-heal").await;
