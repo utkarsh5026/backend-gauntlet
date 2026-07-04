@@ -18,11 +18,11 @@ use tower_governor::GovernorLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::auth::require_api_key;
-use crate::cache::Cached;
 use crate::error::AppError;
 use crate::id_gen::{IdGenerator, CUSTOM_EPOCH_MS};
 use crate::ingest::ClickEvent;
 use crate::ratelimit::{ApiKeyExtractor, RATE_LIMIT_BURST, RATE_LIMIT_PERIOD_MS};
+use crate::resolve::{resolve_slug, CacheOutcome};
 use crate::url_validate::validate_long_url;
 use crate::AppState;
 
@@ -208,8 +208,6 @@ pub struct CreatedLink {
     pub long_url: String,
 }
 
-/// TODO:
-/// - optionally warm the cache after insert.
 async fn create_link(
     State(state): State<AppState>,
     Json(body): Json<CreateLink>,
@@ -230,7 +228,6 @@ async fn create_link(
     .execute(&state.db)
     .await
     .map_err(|e| match e {
-        // 23505 = unique_violation: a custom slug that's already taken.
         sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
             AppError::BadRequest("slug already in use".to_string())
         }
@@ -244,83 +241,6 @@ async fn create_link(
         long_url,
     };
     Ok((StatusCode::CREATED, Json(link)))
-}
-
-/// Where a slug resolution was ultimately served from — the cache-aside outcome.
-/// Exposed to clients as the `X-Cache` header and in the demo's debug JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CacheOutcome {
-    /// Served straight from Redis (positive entry).
-    Hit,
-    /// Redis held a negative entry — short-circuited to 404 without touching Postgres.
-    Negative,
-    /// Redis missed; Postgres was consulted (and the result back-filled into Redis).
-    Miss,
-}
-
-impl CacheOutcome {
-    /// Lowercase label used for the tracing span field (`hit` / `negative` / `miss`).
-    fn label(self) -> &'static str {
-        match self {
-            CacheOutcome::Hit => "hit",
-            CacheOutcome::Negative => "negative",
-            CacheOutcome::Miss => "miss",
-        }
-    }
-
-    /// Uppercase form for the `X-Cache` response header.
-    fn header(self) -> &'static str {
-        match self {
-            CacheOutcome::Hit => "HIT",
-            CacheOutcome::Negative => "NEGATIVE",
-            CacheOutcome::Miss => "MISS",
-        }
-    }
-}
-
-/// Outcome of resolving a slug through the cache-aside path.
-struct Resolved {
-    outcome: CacheOutcome,
-    /// `Some` when the slug maps to a live link; `None` for a 404 (negative or absent).
-    link: Option<(i64, String)>,
-}
-
-/// Cache-aside resolution shared by the redirect and the debug endpoint: Redis
-/// first, Postgres on miss, populating positive/negative entries. This is the V2
-/// hot path — kept in one place so the demo's observability sees exactly what a
-/// real redirect sees.
-async fn resolve_slug(state: &AppState, slug: &str) -> Result<Resolved, AppError> {
-    Ok(match state.cache.get(slug).await? {
-        Some(Cached::Found { link_id, long_url }) => Resolved {
-            outcome: CacheOutcome::Hit,
-            link: Some((link_id, long_url)),
-        },
-        Some(Cached::Missing) => Resolved {
-            outcome: CacheOutcome::Negative,
-            link: None,
-        },
-        None => {
-            let row = sqlx::query!("SELECT id, long_url FROM links WHERE slug = $1", slug)
-                .fetch_optional(&state.db)
-                .await?;
-            match row {
-                Some(row) => {
-                    state.cache.put_found(slug, row.id, &row.long_url).await?;
-                    Resolved {
-                        outcome: CacheOutcome::Miss,
-                        link: Some((row.id, row.long_url)),
-                    }
-                }
-                None => {
-                    state.cache.put_missing(slug).await?;
-                    Resolved {
-                        outcome: CacheOutcome::Miss,
-                        link: None,
-                    }
-                }
-            }
-        }
-    })
 }
 
 /// Cache-aside redirect: Redis first, Postgres on miss, populate positive/negative entries.
@@ -394,7 +314,7 @@ struct ResolveDebug {
     /// `true` when the slug maps to a live link.
     found: bool,
     long_url: Option<String>,
-    /// Cache outcome: `hit` | `miss` | `negative`.
+    /// Cache outcome: `hit` | `miss` | `negative` | `degraded`.
     cache: &'static str,
     /// Human-friendly store the answer came from.
     served_from: &'static str,
@@ -420,6 +340,7 @@ async fn resolve_debug(
         CacheOutcome::Hit => "redis (cache hit)",
         CacheOutcome::Negative => "redis (negative cache)",
         CacheOutcome::Miss => "postgres (cache miss → back-filled)",
+        CacheOutcome::Degraded => "postgres (cache unavailable → no back-fill)",
     };
 
     let snowflake = resolved.link.as_ref().map(|(id, _)| {
@@ -673,6 +594,7 @@ mod metrics_tests {
 mod route_tests {
     use axum::body::{to_bytes, Body};
     use axum::http::{header, Request, StatusCode};
+    use redis::AsyncCommands;
     use serde_json::{json, Value};
     use sqlx::PgPool;
     use tower::ServiceExt;
@@ -729,8 +651,6 @@ mod route_tests {
             .map(|v| v.to_str().unwrap().to_owned());
         (status, location)
     }
-
-    // ---- POST /api/links ----
 
     #[sqlx::test]
     async fn auto_slug_persists_and_returns_created(pool: PgPool) {
@@ -856,6 +776,38 @@ mod route_tests {
                 long_url: "https://example.com/dest".into(),
             }),
         );
+
+        redis.cleanup().await;
+    }
+
+    #[sqlx::test]
+    async fn redirect_degrades_to_postgres_when_cache_read_errors(pool: PgPool) {
+        let (state, mut redis) = state_and_redis(pool.clone()).await;
+        let slug = unique_slug("degrade");
+        sqlx::query!(
+            "INSERT INTO links (id, slug, long_url) VALUES ($1, $2, $3)",
+            1_i64,
+            slug,
+            "https://example.com/survives",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut conn = redis.conn.clone();
+        let _: () = conn
+            .set_ex(redis.redis_key(&slug), "{ not-valid-Cached-json", 60)
+            .await
+            .unwrap();
+        redis.track(&slug);
+
+        let (status, location) = get_redirect(state, &slug).await;
+        assert_eq!(
+            status,
+            StatusCode::FOUND,
+            "a failed cache read must degrade to Postgres, not return an error"
+        );
+        assert_eq!(location.as_deref(), Some("https://example.com/survives"));
 
         redis.cleanup().await;
     }
