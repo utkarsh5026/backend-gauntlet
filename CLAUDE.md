@@ -68,6 +68,13 @@ Every project's `SPEC.md` grades on two axes — keep this when scaffolding new 
   `routes.rs`, plus one module per vertical challenge.
 - Telemetry: use `common-telemetry::init(...)` and `common-config` for env/secrets.
   OTel/Prometheus are added per-project, not in the base crate (keeps builds stable).
+- **Docker host ports are project-scoped:** host port = the service's conventional
+  port with the last two digits replaced by the project number `NN` (postgres →
+  `54NN`, redis → `63NN`, nats → `42NN`, clickhouse-http → `81NN`, …). Only the
+  *host* side of the mapping changes (`"5404:5432"`); container-internal ports stay
+  canonical, so healthchecks and service-to-service URLs are untouched. Apply this
+  when scaffolding any new project, and keep `.env.example` + code fallback URLs in
+  lockstep with the compose file.
 
 ## Commands
 
@@ -75,6 +82,7 @@ Every project's `SPEC.md` grades on two axes — keep this when scaffolding new 
 make status                        # progress dashboard across all projects
 make status NN=02                  # drill into one project (verticals + open items)
 make trophies                      # 🏆 achievements (auto-derived — never award by hand)
+make infra                         # web panel: per-project Docker deps, up/down, port conflicts
 
 cargo check --workspace            # fast type-check everything
 cargo clippy --workspace -- -D warnings
