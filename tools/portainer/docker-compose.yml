@@ -1,0 +1,31 @@
+# Portainer — a full web UI for every container on this machine.
+#
+#   make portainer            # start it   (or: docker compose -f this -p portainer up -d)
+#   → https://localhost:9443  # accept the self-signed cert; set an admin password
+#   make portainer-down       # stop + remove
+#
+# Portainer mounts the Docker socket, so it sees ALL gauntlet stacks at once —
+# it keys off the same `com.docker.compose.project` labels infra.py reads. You
+# get live status, health, CPU/mem graphs, streaming logs, and a shell into any
+# container. It's the "look inside a running container" view; infra.py stays the
+# cross-project orchestrator that knows about host-port contention.
+#
+# Only 9443 (HTTPS UI) is published. The 8000 edge-agent tunnel and the legacy
+# 9000 HTTP UI are intentionally left off — 9000 would collide with project 05.
+#
+# The socket is mounted read-write so Portainer can start/stop/exec containers.
+# For a view-only install, append `:ro` to the socket mount below.
+
+services:
+  portainer:
+    image: portainer/portainer-ce:lts
+    command: ["--http-disabled"]
+    ports:
+      - "9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: unless-stopped
+
+volumes:
+  portainer_data:
