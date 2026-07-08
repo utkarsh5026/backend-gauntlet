@@ -1,5 +1,5 @@
 <!-- status:
-state: not-started       # active | paused | blocked | done | not-started
+state: active            # active | paused | blocked | done | not-started
 blocked-on: ~            # free text, or ~ for none
 -->
 
