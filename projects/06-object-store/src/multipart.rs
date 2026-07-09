@@ -13,8 +13,10 @@ use std::sync::Arc;
 
 use crate::error::AppError;
 use crate::index::Index;
+use crate::naming::validate_bucket_name;
 use crate::object::{ETag, ObjectMeta};
 use crate::store::Store;
+use uuid::Uuid;
 
 /// Owns in-progress multipart uploads: their staging areas and the assemble /
 /// abort logic. Writes finished objects through V1 (`store`) and V3 (`index`).
@@ -32,7 +34,6 @@ pub struct PartETag {
 }
 
 impl Multipart {
-    /// Open (creating if needed) the multipart staging area under `root/uploads`.
     pub fn open(
         root: impl AsRef<Path>,
         store: Arc<Store>,
@@ -43,18 +44,19 @@ impl Multipart {
         Ok(Arc::new(Self { root, store, index }))
     }
 
-    /// `InitiateMultipartUpload` → a fresh `upload_id` and a staging area.
     pub async fn initiate(
         &self,
         bucket: &str,
         key: &str,
         content_type: String,
     ) -> Result<String, AppError> {
-        // TODO(V4): mint a unique upload_id, create its staging dir under
-        // `self.root`, and persist the target (bucket, key, content_type) so
-        // `complete` knows where the assembled object goes.
-        let _ = (&self.root, bucket, key, content_type);
-        todo!("V4: start an upload session, return its upload_id")
+        validate_bucket_name(bucket)?;
+        self.index.ensure_bucket(bucket).await?;
+        let upload_id = Uuid::new_v4().to_string();
+        let staging_dir = self.root.join(&upload_id);
+        tokio::fs::create_dir_all(&staging_dir).await?;
+        let _ = (key, content_type);
+        Ok(upload_id)
     }
 
     /// `UploadPart` — stream one numbered part into the session and return its

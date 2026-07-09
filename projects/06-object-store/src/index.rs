@@ -16,6 +16,7 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::AppError;
+use crate::naming::{encode_key, validate_bucket_name};
 use crate::object::{Digest, ObjectMeta};
 use crate::store::Store;
 
@@ -116,10 +117,10 @@ impl Index {
     /// # Errors
     ///
     /// [`AppError::InvalidRequest`] if `bucket` fails S3 naming rules (see
-    /// [`validate_bucket_name`](Self::validate_bucket_name)), or
+    /// [`validate_bucket_name`](crate::naming::validate_bucket_name)), or
     /// [`AppError::BucketAlreadyExists`] if the bucket is already present.
     pub async fn create_bucket(&self, bucket: &str) -> Result<(), AppError> {
-        Self::validate_bucket_name(bucket)?;
+        validate_bucket_name(bucket)?;
         let bucket_path = self.root.join(bucket);
         if tokio::fs::try_exists(&bucket_path).await? {
             return Err(AppError::BucketAlreadyExists);
@@ -128,37 +129,14 @@ impl Index {
         Ok(())
     }
 
-    /// Enforce S3-style bucket naming (3–63 chars, `[a-z0-9-]`, no leading or
-    /// trailing hyphen).
+    /// Error with [`AppError::NoSuchBucket`] when no bucket with that name exists.
     ///
-    /// Doubles as the path-traversal defense: because `/`, `.`, and `_` are
-    /// rejected, a validated bucket name can only ever be a single directory
-    /// segment under the index root.
-    ///
-    /// # Errors
-    ///
-    /// [`AppError::InvalidRequest`] describing the first rule the name breaks.
-    fn validate_bucket_name(bucket: &str) -> Result<(), AppError> {
-        if bucket.len() < 3 || bucket.len() > 63 {
-            return Err(AppError::InvalidRequest(
-                "bucket name must be 3–63 characters".into(),
-            ));
+    /// Validates the bucket name first (see [`validate_bucket_name`]).
+    pub async fn ensure_bucket(&self, bucket: &str) -> Result<(), AppError> {
+        validate_bucket_name(bucket)?;
+        if !tokio::fs::try_exists(self.root.join(bucket)).await? {
+            return Err(AppError::NoSuchBucket);
         }
-        if !bucket
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        {
-            return Err(AppError::InvalidRequest(
-                "bucket name may only contain lowercase letters, digits, and hyphens".into(),
-            ));
-        }
-
-        if bucket.starts_with('-') || bucket.ends_with('-') {
-            return Err(AppError::InvalidRequest(
-                "bucket name may not start or end with a hyphen".into(),
-            ));
-        }
-
         Ok(())
     }
 
@@ -239,7 +217,7 @@ impl Index {
         continuation: Option<&str>,
         max_keys: usize,
     ) -> Result<Listing, AppError> {
-        Self::validate_bucket_name(bucket)?;
+        validate_bucket_name(bucket)?;
 
         let mut paths = Vec::new();
         Self::push_index_files(&mut paths, &self.objects_dir(bucket)).await?;
@@ -431,7 +409,7 @@ impl Index {
 
     #[inline]
     fn index_path(&self, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
-        Self::validate_bucket_name(bucket)?;
+        validate_bucket_name(bucket)?;
         Ok(self
             .objects_dir(bucket)
             .join(format!("{}.json", encode_key(key))))
@@ -446,30 +424,6 @@ impl Index {
     fn tmp_dir(&self, bucket: &str) -> PathBuf {
         self.root.join(bucket).join(Self::TMP_DIR)
     }
-}
-
-/// Percent-encode a key into a single safe filename component.
-///
-/// The keyspace is flat, so `a/b/c.jpg` must become one file, not a nested
-/// directory. Unreserved characters (`[A-Za-z0-9-._~]`) pass through; every
-/// other byte becomes `%XX`, which flattens `/` and neutralizes any
-/// path-traversal attempt in the key.
-fn encode_key(key: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(key.len());
-    for byte in key.bytes() {
-        match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push('%');
-                encoded.push(HEX[(byte >> 4) as usize] as char);
-                encoded.push(HEX[(byte & 0xf) as usize] as char);
-            }
-        }
-    }
-    encoded
 }
 
 async fn read_json(path: &Path) -> Result<ObjectMeta, AppError> {

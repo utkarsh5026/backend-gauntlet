@@ -14,6 +14,7 @@
 mod error;
 mod index;
 mod multipart;
+mod naming;
 mod object;
 mod routes;
 mod store;
