@@ -44,6 +44,12 @@ pub enum AppError {
     Other(#[from] anyhow::Error),
 }
 
+impl From<serde_json::Error> for AppError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {

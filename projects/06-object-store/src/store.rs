@@ -58,6 +58,28 @@ impl Store {
             .join(digest.as_str())
     }
 
+    /// Inverse of [`Self::blob_path`]: recover the digest from a path under
+    /// `objects/` when it matches the sharded layout (`ab/cd/<64-hex>`).
+    /// Returns `None` for paths outside the blob tree or with the wrong shape.
+    pub fn digest_from_path(&self, path: &Path) -> Option<Digest> {
+        let rel = path.strip_prefix(&self.objects).ok()?;
+        let parts: Vec<&str> = rel
+            .components()
+            .map(|c| c.as_os_str().to_str())
+            .collect::<Option<_>>()?;
+
+        let [shard_a, shard_b, name] = parts.as_slice() else {
+            return None;
+        };
+        if shard_a.len() != 2 || shard_b.len() != 2 || name.len() != 64 {
+            return None;
+        }
+        if !name.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(Digest(name.to_string()))
+    }
+
     /// Does a blob with this digest already exist? This is the dedup check —
     /// if it does, identical bytes are already stored and we skip the write.
     pub async fn contains(&self, digest: &Digest) -> bool {
@@ -97,9 +119,11 @@ impl Store {
         Ok(tfs::File::open(path).await?)
     }
 
-    /// Delete the blob for `digest`. Called only by the V3 GC once **no** key
-    /// references it — deleting a *key* never deletes content directly, because
-    /// dedup means another key may share these exact bytes.
+    /// Root of the committed blob tree (`objects/`). Used by V3 GC sweep.
+    pub fn objects_root(&self) -> &Path {
+        &self.objects
+    }
+
     pub async fn remove(&self, digest: &Digest) -> Result<(), AppError> {
         use tokio::fs as tfs;
         let path = self.blob_path(digest);
@@ -163,6 +187,7 @@ mod tests {
         // Same digest → same path, every time; the filename round-trips the digest.
         assert_eq!(path, store.blob_path(&digest));
         assert_eq!(path.file_name().unwrap().to_str().unwrap(), hex);
+        assert_eq!(store.digest_from_path(&path), Some(digest));
     }
 
     #[tokio::test]
