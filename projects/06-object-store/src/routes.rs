@@ -13,8 +13,7 @@
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
@@ -139,7 +138,7 @@ async fn put_object(
                 state.max_object_size,
             )
             .await?;
-        return Ok((StatusCode::OK, [(ETAG, part.etag.0)]).into_response());
+        return Ok((StatusCode::OK, [(header::ETAG, part.etag.0)]).into_response());
     }
 
     // Plain single PUT: stream the body to the store (V2), then index it (V3).
@@ -156,7 +155,7 @@ async fn put_object(
         last_modified: Utc::now(),
     };
     state.index.put(meta).await?;
-    Ok((StatusCode::OK, [(ETAG, stored.etag.0)]).into_response())
+    Ok((StatusCode::OK, [(header::ETAG, stored.etag.0)]).into_response())
 }
 
 /// `GET /{bucket}/{key}` — stream an object back (V2). Fully wired: it looks up
@@ -171,7 +170,6 @@ async fn get_object(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let _guard = crate::metrics::InFlightGuard::new();
-    let _ = &headers; // TODO(V4): Range / If-None-Match live here.
 
     let meta = state
         .index
@@ -179,15 +177,68 @@ async fn get_object(
         .await?
         .ok_or(AppError::NoSuchKey)?;
 
-    let file = state.store.open_blob(&meta.digest).await?;
+    if let Some(etag) = headers.get(header::IF_NONE_MATCH) {
+        let etag = etag
+            .to_str()
+            .map_err(|_| AppError::InvalidRequest("invalid If-None-Match header".into()))?;
+        if meta.etag.as_str() == etag {
+            return Ok(StatusCode::NOT_MODIFIED.into_response());
+        }
+    }
+
+    let (start, end) = if let Some(range) = headers.get(header::RANGE) {
+        let range = range
+            .to_str()
+            .map_err(|_| invalid_err("Range header is not valid UTF-8"))?;
+
+        let Some((unit, bounds)) = range.split_once('=') else {
+            return Err(invalid_err(format!(
+                "Range header must be '<unit>=<start>-<end>', got {range:?}"
+            )));
+        };
+        if unit != "bytes" {
+            return Err(invalid_err(format!(
+                "Range unit must be 'bytes', got {unit:?}"
+            )));
+        }
+
+        let Some((start_str, end_str)) = bounds.split_once('-') else {
+            return Err(invalid_err(format!(
+                "Range bounds must be '<start>-<end>', got {bounds:?}"
+            )));
+        };
+
+        let start = start_str.parse::<u64>().map_err(|_| {
+            invalid_err(format!(
+                "Range start must be a non-negative integer, got {start_str:?}"
+            ))
+        })?;
+        let end = end_str.parse::<u64>().map_err(|_| {
+            invalid_err(format!(
+                "Range end must be a non-negative integer, got {end_str:?}"
+            ))
+        })?;
+        (start, end)
+    } else {
+        (0, meta.size.saturating_sub(1))
+    };
+
+    let file = state
+        .store
+        .open_blob_range(&meta.digest, start, end)
+        .await?;
     let stream = tokio_util::io::ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
     Ok((
         [
-            (CONTENT_TYPE, meta.content_type),
-            (ETAG, meta.etag.0),
-            (CONTENT_LENGTH, meta.size.to_string()),
+            (header::CONTENT_TYPE, meta.content_type),
+            (header::ETAG, meta.etag.0),
+            (header::CONTENT_LENGTH, meta.size.to_string()),
+            (
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{}", meta.size),
+            ),
         ],
         body,
     )
@@ -258,10 +309,14 @@ async fn post_object(
 /// Read the `Content-Type` header, defaulting to the S3 default for objects.
 fn content_type_of(headers: &HeaderMap) -> String {
     headers
-        .get(CONTENT_TYPE)
+        .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string()
+}
+
+fn invalid_err(msg: impl Into<String>) -> AppError {
+    AppError::InvalidRequest(msg.into())
 }
 
 #[derive(Debug, Deserialize)]

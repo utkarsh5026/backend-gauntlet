@@ -43,6 +43,7 @@ tracing.workspace = true
 # global recorder and renders `/metrics` for a scrape.
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
 
 [dev-dependencies]
 # Property-test the multipart ETag formula (V4) and prefix/delimiter listing (V3).

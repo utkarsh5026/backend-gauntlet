@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
 use crate::error::AppError;
 use crate::object::Digest;
 
@@ -169,17 +171,34 @@ impl Store {
     }
 
     pub async fn open_blob(&self, digest: &Digest) -> Result<tokio::fs::File, AppError> {
-        use tokio::fs as tfs;
-
         let path = self.blob_path(digest);
-        if !tfs::try_exists(&path).await? {
+        if !tokio::fs::try_exists(&path).await? {
             return Err(AppError::NoSuchKey);
         }
 
-        Ok(tfs::File::open(path).await?)
+        Ok(tokio::fs::File::open(path).await?)
     }
 
-    /// Root of the committed blob tree (`objects/`). Used by V3 GC sweep.
+    pub async fn open_blob_range(
+        &self,
+        digest: &Digest,
+        start: u64,
+        end: u64,
+    ) -> Result<tokio::io::Take<tokio::fs::File>, AppError> {
+        let mut file = self.open_blob(digest).await?;
+        let file_len = file.metadata().await?.len();
+
+        if start > end || end >= file_len {
+            return Err(AppError::InvalidRequest(format!(
+                "invalid range: start={start} end={end} file_len={file_len}"
+            )));
+        }
+
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+        let len = end - start + 1;
+        Ok(file.take(len))
+    }
+
     pub fn objects_root(&self) -> &Path {
         &self.objects
     }
@@ -190,7 +209,7 @@ impl Store {
         if !tfs::try_exists(&path).await? {
             return Ok(());
         }
-        tfs::remove_file(&path).await?;
+        tfs::remove_file(path).await?;
         Ok(())
     }
 }
@@ -219,6 +238,22 @@ mod tests {
         let path = store.tmp_dir().join(name);
         tokio::fs::write(&path, bytes).await.expect("write temp");
         path
+    }
+
+    /// Stage + commit `bytes` in one step and hand back their content address,
+    /// so range tests can start from a committed blob without the two-line dance.
+    async fn commit_bytes(store: &Store, bytes: &[u8]) -> Digest {
+        let digest = digest_of(bytes);
+        let temp = stage_temp(store, &format!("commit-{}", digest.as_str()), bytes).await;
+        store.commit_temp(&temp, &digest).await.expect("commit");
+        digest
+    }
+
+    /// Drain a `Take<File>` (what `open_blob_range` returns) into a `Vec`.
+    async fn read_all(mut reader: tokio::io::Take<tokio::fs::File>) -> Vec<u8> {
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).await.expect("read range");
+        out
     }
 
     #[test]
@@ -326,6 +361,94 @@ mod tests {
         let (_root, store) = fresh_store();
         assert!(matches!(
             store.open_blob(&digest_of(b"missing")).await,
+            Err(AppError::NoSuchKey)
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_reads_an_inclusive_middle_slice() {
+        let (_root, store) = fresh_store();
+        let digest = commit_bytes(&store, b"0123456789").await;
+
+        // [2, 5] inclusive → 4 bytes: "2345". The `end` byte is part of the range.
+        let slice = store.open_blob_range(&digest, 2, 5).await.expect("range");
+        assert_eq!(read_all(slice).await, b"2345");
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_covering_the_whole_file_equals_the_blob() {
+        let (_root, store) = fresh_store();
+        let bytes = b"read me back";
+        let digest = commit_bytes(&store, bytes).await;
+
+        // [0, len-1] is the entire object; must match a plain `open_blob` read.
+        let slice = store
+            .open_blob_range(&digest, 0, bytes.len() as u64 - 1)
+            .await
+            .expect("range");
+        assert_eq!(read_all(slice).await, bytes);
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_reads_a_single_byte_when_start_equals_end() {
+        let (_root, store) = fresh_store();
+        let digest = commit_bytes(&store, b"0123456789").await;
+
+        // start == end is a valid one-byte range, not an empty one.
+        let slice = store.open_blob_range(&digest, 4, 4).await.expect("range");
+        assert_eq!(read_all(slice).await, b"4");
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_reads_the_final_byte() {
+        let (_root, store) = fresh_store();
+        let bytes = b"0123456789";
+        let digest = commit_bytes(&store, bytes).await;
+        let last = bytes.len() as u64 - 1;
+
+        // The very last valid offset (len-1) is in range; len itself is not.
+        let slice = store
+            .open_blob_range(&digest, last, last)
+            .await
+            .expect("range");
+        assert_eq!(read_all(slice).await, b"9");
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_rejects_start_after_end() {
+        let (_root, store) = fresh_store();
+        let digest = commit_bytes(&store, b"0123456789").await;
+
+        assert!(matches!(
+            store.open_blob_range(&digest, 5, 2).await,
+            Err(AppError::InvalidRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_rejects_end_at_or_past_eof() {
+        let (_root, store) = fresh_store();
+        let bytes = b"0123456789";
+        let digest = commit_bytes(&store, bytes).await;
+        let len = bytes.len() as u64;
+
+        // end == len is one past the last valid byte (offsets are 0..len-1)…
+        assert!(matches!(
+            store.open_blob_range(&digest, 0, len).await,
+            Err(AppError::InvalidRequest(_))
+        ));
+        // …and anything beyond that is out of bounds too.
+        assert!(matches!(
+            store.open_blob_range(&digest, 0, len + 100).await,
+            Err(AppError::InvalidRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_blob_range_is_no_such_key_for_missing_digest() {
+        let (_root, store) = fresh_store();
+        assert!(matches!(
+            store.open_blob_range(&digest_of(b"missing"), 0, 3).await,
             Err(AppError::NoSuchKey)
         ));
     }
