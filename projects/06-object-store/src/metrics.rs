@@ -62,6 +62,9 @@ pub const MULTIPART_PART_BYTES: &str = "object_store_multipart_part_bytes";
 pub const MULTIPART_PART_THROUGHPUT: &str =
     "object_store_multipart_part_throughput_bytes_per_second";
 
+/// Active streaming request bodies (PUT / GET / UploadPart) in progress.
+pub const IN_FLIGHT_STREAMS: &str = "object_store_in_flight_streams";
+
 /// Install the process-global Prometheus recorder and return a handle used to
 /// render the registry for `/metrics`. Call once, from `main`, after telemetry
 /// init. Panics if a recorder is already installed (calling it twice is a bug).
@@ -99,4 +102,24 @@ fn register_descriptions() {
         MULTIPART_PART_THROUGHPUT,
         "Per-part upload throughput in bytes per second"
     );
+    metrics::describe_gauge!(
+        IN_FLIGHT_STREAMS,
+        "Active streaming request bodies (PUT / GET / UploadPart) in progress"
+    );
+}
+
+#[derive(Default)]
+pub struct InFlightGuard;
+
+impl InFlightGuard {
+    pub fn new() -> Self {
+        metrics::gauge!(IN_FLIGHT_STREAMS).increment(1.0);
+        Self
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        metrics::gauge!(IN_FLIGHT_STREAMS).decrement(1.0);
+    }
 }

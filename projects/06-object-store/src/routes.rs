@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use chrono::Utc;
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -49,11 +50,25 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// A standalone router exposing `GET /metrics` in Prometheus exposition format.
+///
+/// Kept separate from [`router`] (and merged in by `main`) so the integration
+/// tests can build the API surface without installing a process-global recorder
+/// — the metric call sites are no-ops until [`crate::metrics::install`] runs.
+pub fn metrics_router(handle: PrometheusHandle) -> Router {
+    Router::new().route(
+        "/metrics",
+        get(move || {
+            let handle = handle.clone();
+            async move { handle.render() }
+        }),
+    )
+}
+
 async fn healthz() -> &'static str {
     "ok"
 }
 
-/// `PUT /{bucket}` — create a bucket (V3).
 async fn create_bucket(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
@@ -110,6 +125,7 @@ async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, AppError> {
+    let _guard = crate::metrics::InFlightGuard::new();
     let content_type = content_type_of(&headers);
 
     // UploadPart: a PUT carrying ?uploadId & ?partNumber (V4).
@@ -154,6 +170,7 @@ async fn get_object(
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    let _guard = crate::metrics::InFlightGuard::new();
     let _ = &headers; // TODO(V4): Range / If-None-Match live here.
 
     let meta = state
@@ -163,7 +180,8 @@ async fn get_object(
         .ok_or(AppError::NoSuchKey)?;
 
     let file = state.store.open_blob(&meta.digest).await?;
-    let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = Body::from_stream(stream);
 
     Ok((
         [
@@ -176,8 +194,6 @@ async fn get_object(
         .into_response())
 }
 
-/// `DELETE /{bucket}/{key}` — delete a key (V3), OR abort a multipart upload
-/// when `?uploadId` is present (V4).
 async fn delete_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
