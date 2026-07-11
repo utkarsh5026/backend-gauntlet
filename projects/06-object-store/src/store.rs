@@ -20,7 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::error::AppError;
 use crate::object::Digest;
 
-/// RAII guard over a staged temp file: deletes it on drop unless [`disarm`]ed.
+/// Delete a staged temporary file on drop unless ownership is disarmed.
 ///
 /// The pattern is "stage → hash/write → atomically publish". A writer creates
 /// the guard, streams bytes into [`path`](Self::path), and leaves cleanup to
@@ -35,19 +35,25 @@ use crate::object::Digest;
 pub struct TempEntry(Option<PathBuf>);
 
 impl TempEntry {
-    /// Wrap `path` in a guard. The file it names is removed on drop until
+    /// Wrap a path in a cleanup guard.
+    ///
+    /// The file it names is removed on drop until
     /// [`disarm`](Self::disarm) is called — use this to guard temps outside the
     /// store's own `tmp/` (e.g. a multipart part file in its staging area).
     pub fn new(path: PathBuf) -> Self {
         Self(Some(path))
     }
 
-    /// The staged path — write your in-flight bytes here.
+    /// Return the path where in-flight bytes should be staged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::disarm`] was already called.
     pub fn path(&self) -> &Path {
         self.0.as_ref().expect("temp path is not None")
     }
 
-    /// Give up ownership of the temp path so [`Drop`] won't delete it.
+    /// Give up ownership of the temporary path so [`Drop`] will not delete it.
     ///
     /// Called once the file has been durably published (renamed into its
     /// committed location, or promoted into a staging area) — it is no longer
@@ -65,7 +71,9 @@ impl Drop for TempEntry {
     }
 }
 
-/// The on-disk blob store. Owns the `objects/` tree (committed, content-named
+/// Store committed blobs and in-flight writes in separate on-disk trees.
+///
+/// Owns the `objects/` tree (committed, content-named
 /// blobs) and the `tmp/` tree (in-flight writes, before they're atomically
 /// renamed into place).
 pub struct Store {
@@ -74,8 +82,15 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (creating if needed) the blob store under `root`. Plumbing — the
-    /// interesting methods below are yours to build.
+    /// Open the blob store under `root`, creating its directory trees if needed.
+    ///
+    /// Returns the store behind an [`Arc`] because request handlers and the
+    /// index share the same filesystem layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if either the `objects/` or `tmp/` directory cannot
+    /// be created.
     pub fn open(root: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
         let root = root.as_ref();
         let objects = {
@@ -88,19 +103,47 @@ impl Store {
             std::fs::create_dir_all(&tmp)?;
             tmp
         };
+        let (blob_count, total_bytes) = Self::scan_occupancy(&objects)?;
+        metrics::gauge!(crate::metrics::BLOB_COUNT).set(blob_count as f64);
+        metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).set(total_bytes as f64);
         Ok(Arc::new(Self { objects, tmp }))
     }
 
-    /// Where V2 stages an in-flight write before committing it. A temp file here
+    fn scan_occupancy(objects: &Path) -> std::io::Result<(u64, u64)> {
+        let mut blob_count = 0u64;
+        let mut total_bytes = 0u64;
+        let mut stack = vec![objects.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                if metadata.is_dir() {
+                    stack.push(entry.path());
+                } else if metadata.is_file() {
+                    blob_count += 1;
+                    total_bytes += metadata.len();
+                }
+            }
+        }
+        Ok((blob_count, total_bytes))
+    }
+
+    /// Return the directory where V2 stages in-flight writes.
+    ///
+    /// A temp file here
     /// is renamed onto its final `blob_path` only once fully written + fsync'd.
     pub fn tmp_dir(&self) -> &Path {
         &self.tmp
     }
 
-    /// A unique path under [`Self::tmp_dir`] for staging an in-flight blob write.
+    /// Create a guarded unique path for staging an in-flight blob write.
     ///
     /// `prefix` labels the caller (e.g. `"stream"`, `"multipart"`); uniqueness
     /// comes from the trailing epoch nanos hex.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the system clock is earlier than the Unix epoch.
     pub fn tmp_file(&self, prefix: &str) -> TempEntry {
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -111,8 +154,16 @@ impl Store {
         TempEntry::new(path)
     }
 
-    /// Map a digest to its on-disk path, fanned out by the leading hash bytes
+    /// Map a digest to its sharded on-disk blob path.
+    ///
+    /// Paths are fanned out by the leading hash bytes
     /// (`objects/ab/cd/abcd…`) so no single directory holds millions of entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the digest is shorter than four bytes or its first four byte
+    /// offsets are not UTF-8 character boundaries. Valid hex digests satisfy
+    /// both requirements.
     pub fn blob_path(&self, digest: &Digest) -> PathBuf {
         self.objects
             .join(&digest.as_str()[0..2])
@@ -120,7 +171,9 @@ impl Store {
             .join(digest.as_str())
     }
 
-    /// Inverse of [`Self::blob_path`]: recover the digest from a path under
+    /// Recover a digest from a path in the sharded blob layout.
+    ///
+    /// This is the inverse of [`Self::blob_path`] for a path under
     /// `objects/` when it matches the sharded layout (`ab/cd/<64-hex>`).
     /// Returns `None` for paths outside the blob tree or with the wrong shape.
     pub fn digest_from_path(&self, path: &Path) -> Option<Digest> {
@@ -142,22 +195,40 @@ impl Store {
         Some(Digest(name.to_string()))
     }
 
-    /// Does a blob with this digest already exist? This is the dedup check —
+    /// Report whether a committed blob exists for the digest.
+    ///
+    /// This is the dedup check —
     /// if it does, identical bytes are already stored and we skip the write.
+    /// Filesystem lookup errors are treated as “not found”.
     pub async fn contains(&self, digest: &Digest) -> bool {
         tokio::fs::try_exists(self.blob_path(digest))
             .await
             .unwrap_or(false)
     }
 
-    /// Commit a fully-written *temp* file as the blob for `digest`, durably and
-    /// atomically. This is the heart of V1.
+    /// Commit a fully written temporary file durably and atomically.
+    ///
+    /// This is the heart of V1: the file is synced, renamed to the
+    /// content-addressed path, and followed by a directory sync. If the digest
+    /// already exists, the duplicate temporary file is removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AppError`] if the temporary file cannot be removed or
+    /// synced, the destination tree cannot be created, the rename fails, or
+    /// the destination directory cannot be synced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the path produced by [`Self::blob_path`] has no parent.
     pub async fn commit_temp(&self, temp: &Path, digest: &Digest) -> Result<(), AppError> {
         use tokio::fs as tfs;
         if self.contains(digest).await {
             tfs::remove_file(temp).await?;
+            metrics::counter!(crate::metrics::DEDUP_HITS_TOTAL).increment(1);
             return Ok(());
         }
+        let size = tfs::metadata(temp).await?.len();
         tfs::File::open(temp).await?.sync_all().await?;
         let blob_path = self.blob_path(digest);
         let parent = blob_path
@@ -167,9 +238,17 @@ impl Store {
         tfs::create_dir_all(parent).await?;
         tfs::rename(temp, &blob_path).await?;
         tfs::File::open(parent).await?.sync_all().await?;
+        metrics::gauge!(crate::metrics::BLOB_COUNT).increment(1.0);
+        metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).increment(size as f64);
         Ok(())
     }
 
+    /// Open a committed blob for asynchronous reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::NoSuchKey`] when the digest is not committed, or an
+    /// I/O-backed [`AppError`] when checking or opening the file fails.
     pub async fn open_blob(&self, digest: &Digest) -> Result<tokio::fs::File, AppError> {
         let path = self.blob_path(digest);
         if !tokio::fs::try_exists(&path).await? {
@@ -179,6 +258,17 @@ impl Store {
         Ok(tokio::fs::File::open(path).await?)
     }
 
+    /// Open an inclusive byte range of a committed blob.
+    ///
+    /// The returned reader starts at `start` and yields at most
+    /// `end - start + 1` bytes, allowing [`tokio_util::io::ReaderStream`] to
+    /// serve an HTTP range without reading through the rest of the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::NoSuchKey`] if the blob is missing,
+    /// [`AppError::InvalidRequest`] if `start > end` or `end` is outside the
+    /// file, and an I/O-backed [`AppError`] if metadata lookup or seeking fails.
     pub async fn open_blob_range(
         &self,
         digest: &Digest,
@@ -199,17 +289,29 @@ impl Store {
         Ok(file.take(len))
     }
 
+    /// Return the root directory containing committed blobs.
     pub fn objects_root(&self) -> &Path {
         &self.objects
     }
 
+    /// Remove a committed blob if it exists.
+    ///
+    /// The operation is idempotent: removing a missing blob succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O-backed [`AppError`] if the existence check or removal
+    /// fails.
     pub async fn remove(&self, digest: &Digest) -> Result<(), AppError> {
         use tokio::fs as tfs;
         let path = self.blob_path(digest);
         if !tfs::try_exists(&path).await? {
             return Ok(());
         }
+        let size = tfs::metadata(&path).await?.len();
         tfs::remove_file(path).await?;
+        metrics::gauge!(crate::metrics::BLOB_COUNT).decrement(1.0);
+        metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).decrement(size as f64);
         Ok(())
     }
 }

@@ -29,11 +29,51 @@
 //! - [`MULTIPART_PART_BYTES`] / [`MULTIPART_PART_THROUGHPUT`] — per-part size and
 //!   streaming throughput (bytes/sec).
 //!
-//! The store/index PUT/GET/DELETE, dedup-hit, and GC counters the SPEC also
-//! grades are not wired yet — add their constants here and emit from the
-//! matching modules to finish closing the observability box.
+//! Store/index metrics cover successful object operations, physical blob
+//! occupancy, deduplication, garbage collection, ranges, and transfer rates.
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Instant;
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use tokio::io::{AsyncRead, ReadBuf};
+
+/// Successful object writes committed to the key index.
+pub const OBJECTS_PUT_TOTAL: &str = "object_store_objects_put_total";
+
+/// Successful object GET requests.
+pub const OBJECTS_GET_TOTAL: &str = "object_store_objects_get_total";
+
+/// Successful object DELETE requests.
+pub const OBJECTS_DELETED_TOTAL: &str = "object_store_objects_deleted_total";
+
+/// Commits skipped because the content-addressed blob already existed.
+pub const DEDUP_HITS_TOTAL: &str = "object_store_dedup_hits_total";
+
+/// Unreferenced blobs removed by garbage collection.
+pub const GC_BLOBS_RECLAIMED_TOTAL: &str = "object_store_gc_blobs_reclaimed_total";
+
+/// Successful HTTP byte-range responses.
+pub const RANGE_REQUESTS_SERVED_TOTAL: &str = "object_store_range_requests_served_total";
+
+/// Bytes occupied by distinct committed blobs.
+pub const TOTAL_BYTES_STORED: &str = "object_store_total_bytes_stored";
+
+/// Number of distinct committed blobs.
+pub const BLOB_COUNT: &str = "object_store_blob_count";
+
+/// Active PUT or UploadPart request bodies.
+pub const IN_FLIGHT_UPLOADS: &str = "object_store_in_flight_uploads";
+
+/// Distribution of successfully stored object sizes.
+pub const OBJECT_SIZE_BYTES: &str = "object_store_object_size_bytes";
+
+/// Successful single-PUT throughput in bytes per second.
+pub const UPLOAD_THROUGHPUT: &str = "object_store_upload_throughput_bytes_per_second";
+
+/// GET response-body throughput in bytes per second.
+pub const DOWNLOAD_THROUGHPUT: &str = "object_store_download_throughput_bytes_per_second";
 
 /// Multipart uploads initiated (`CreateMultipartUpload`).
 pub const MULTIPART_INITIATED_TOTAL: &str = "object_store_multipart_initiated_total";
@@ -62,23 +102,57 @@ pub const MULTIPART_PART_BYTES: &str = "object_store_multipart_part_bytes";
 pub const MULTIPART_PART_THROUGHPUT: &str =
     "object_store_multipart_part_throughput_bytes_per_second";
 
-/// Active streaming request bodies (PUT / GET / UploadPart) in progress.
-pub const IN_FLIGHT_STREAMS: &str = "object_store_in_flight_streams";
-
 /// Install the process-global Prometheus recorder and return a handle used to
 /// render the registry for `/metrics`. Call once, from `main`, after telemetry
 /// init. Panics if a recorder is already installed (calling it twice is a bug).
 pub fn install() -> PrometheusHandle {
-    register_descriptions();
-    PrometheusBuilder::new()
+    let handle = PrometheusBuilder::new()
         .install_recorder()
-        .expect("install prometheus recorder")
+        .expect("install prometheus recorder");
+    register_descriptions();
+    handle
 }
 
 /// Register HELP metadata so a `/metrics` scrape is self-describing. Naming the
 /// metric here (not only at the emit site) single-sources the string and gives
 /// the exporter the unit/description a dashboard reads.
 fn register_descriptions() {
+    metrics::describe_counter!(
+        OBJECTS_PUT_TOTAL,
+        "Successful object writes committed to the key index"
+    );
+    metrics::describe_counter!(OBJECTS_GET_TOTAL, "Successful object GET requests");
+    metrics::describe_counter!(OBJECTS_DELETED_TOTAL, "Successful object DELETE requests");
+    metrics::describe_counter!(
+        DEDUP_HITS_TOTAL,
+        "Blob commits skipped because content already existed"
+    );
+    metrics::describe_counter!(
+        GC_BLOBS_RECLAIMED_TOTAL,
+        "Unreferenced blobs removed by garbage collection"
+    );
+    metrics::describe_counter!(
+        RANGE_REQUESTS_SERVED_TOTAL,
+        "Successful HTTP byte-range responses"
+    );
+    metrics::describe_gauge!(
+        TOTAL_BYTES_STORED,
+        "Bytes occupied by distinct committed blobs"
+    );
+    metrics::describe_gauge!(BLOB_COUNT, "Distinct committed blobs");
+    metrics::describe_gauge!(IN_FLIGHT_UPLOADS, "Active PUT or UploadPart request bodies");
+    metrics::describe_histogram!(
+        OBJECT_SIZE_BYTES,
+        "Successfully stored object size in bytes"
+    );
+    metrics::describe_histogram!(
+        UPLOAD_THROUGHPUT,
+        "Successful single-PUT throughput in bytes per second"
+    );
+    metrics::describe_histogram!(
+        DOWNLOAD_THROUGHPUT,
+        "GET response-body throughput in bytes per second"
+    );
     metrics::describe_counter!(MULTIPART_INITIATED_TOTAL, "Multipart uploads initiated");
     metrics::describe_counter!(
         MULTIPART_COMPLETED_TOTAL,
@@ -102,10 +176,6 @@ fn register_descriptions() {
         MULTIPART_PART_THROUGHPUT,
         "Per-part upload throughput in bytes per second"
     );
-    metrics::describe_gauge!(
-        IN_FLIGHT_STREAMS,
-        "Active streaming request bodies (PUT / GET / UploadPart) in progress"
-    );
 }
 
 #[derive(Default)]
@@ -113,13 +183,69 @@ pub struct InFlightGuard;
 
 impl InFlightGuard {
     pub fn new() -> Self {
-        metrics::gauge!(IN_FLIGHT_STREAMS).increment(1.0);
+        metrics::gauge!(IN_FLIGHT_UPLOADS).increment(1.0);
         Self
     }
 }
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        metrics::gauge!(IN_FLIGHT_STREAMS).decrement(1.0);
+        metrics::gauge!(IN_FLIGHT_UPLOADS).decrement(1.0);
+    }
+}
+
+/// Measure bytes read over the complete lifetime of a streamed response body.
+pub struct ObservedDownload<R> {
+    inner: R,
+    started: Instant,
+    bytes: u64,
+    recorded: bool,
+}
+
+impl<R> ObservedDownload<R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            started: Instant::now(),
+            bytes: 0,
+            recorded: false,
+        }
+    }
+
+    fn record_once(&mut self) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        let elapsed = self.started.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            metrics::histogram!(DOWNLOAD_THROUGHPUT).record(self.bytes as f64 / elapsed);
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for ObservedDownload<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &result {
+            let read = buf.filled().len() - before;
+            this.bytes += read as u64;
+            if read == 0 {
+                this.record_once();
+            }
+        }
+        result
+    }
+}
+
+impl<R> Drop for ObservedDownload<R> {
+    fn drop(&mut self) {
+        self.record_once();
     }
 }

@@ -27,11 +27,13 @@ use crate::error::AppError;
 use crate::object::ObjectMeta;
 use crate::{streaming, AppState};
 
-/// Build the application router.
+const BUCKET_KEY: &str = "bucket";
+const KEY: &str = "key";
+const SIZE_KEY: &str = "size";
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        // Bucket-level: create + list.
         .route("/{bucket}", put(create_bucket).get(list_objects))
         // Object-level: put/get/delete + the multipart verbs (query-dispatched).
         .route(
@@ -117,6 +119,14 @@ async fn list_objects(
 ///
 /// TODO(security): authenticate this and guard against path traversal in `key`
 /// before doing anything — an open PUT is an open disk for the whole internet.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        bucket = tracing::field::Empty,
+        key = tracing::field::Empty,
+        size = tracing::field::Empty,
+    )
+)]
 async fn put_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
@@ -124,6 +134,10 @@ async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, AppError> {
+    let span = tracing::Span::current();
+    span.record(BUCKET_KEY, bucket.as_str());
+    span.record(KEY, key.as_str());
+
     let _guard = crate::metrics::InFlightGuard::new();
     let content_type = content_type_of(&headers);
 
@@ -155,6 +169,7 @@ async fn put_object(
         last_modified: Utc::now(),
     };
     state.index.put(meta).await?;
+    span.record(SIZE_KEY, stored.size);
     Ok((StatusCode::OK, [(header::ETAG, stored.etag.0)]).into_response())
 }
 
@@ -164,18 +179,29 @@ async fn put_object(
 ///
 /// TODO(V4 / protocol): honour a `Range:` header → `206 Partial Content` with a
 /// `Content-Range`, and `If-None-Match` on the ETag → `304 Not Modified`.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        bucket = tracing::field::Empty,
+        key = tracing::field::Empty,
+        size = tracing::field::Empty,
+    )
+)]
 async fn get_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let _guard = crate::metrics::InFlightGuard::new();
+    let span = tracing::Span::current();
+    span.record(BUCKET_KEY, bucket.as_str());
+    span.record(KEY, key.as_str());
 
     let meta = state
         .index
         .get(&bucket, &key)
         .await?
         .ok_or(AppError::NoSuchKey)?;
+    span.record(SIZE_KEY, meta.size);
 
     if let Some(etag) = headers.get(header::IF_NONE_MATCH) {
         let etag = etag
@@ -186,6 +212,7 @@ async fn get_object(
         }
     }
 
+    let is_range = headers.contains_key(header::RANGE);
     let (start, end) = if let Some(range) = headers.get(header::RANGE) {
         let range = range
             .to_str()
@@ -227,32 +254,61 @@ async fn get_object(
         .store
         .open_blob_range(&meta.digest, start, end)
         .await?;
-    let stream = tokio_util::io::ReaderStream::new(file);
+    let stream = tokio_util::io::ReaderStream::new(crate::metrics::ObservedDownload::new(file));
     let body = Body::from_stream(stream);
+    let response_size = end - start + 1;
 
-    Ok((
+    let status = if is_range {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+
+    let mut response = (
+        status,
         [
             (header::CONTENT_TYPE, meta.content_type),
             (header::ETAG, meta.etag.0),
-            (header::CONTENT_LENGTH, meta.size.to_string()),
-            (
-                header::CONTENT_RANGE,
-                format!("bytes {start}-{end}/{}", meta.size),
-            ),
+            (header::CONTENT_LENGTH, response_size.to_string()),
         ],
         body,
     )
-        .into_response())
+        .into_response();
+    if is_range {
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{}", meta.size)
+                .parse()
+                .expect("numeric Content-Range is a valid header value"),
+        );
+        metrics::counter!(crate::metrics::RANGE_REQUESTS_SERVED_TOTAL).increment(1);
+    }
+    metrics::counter!(crate::metrics::OBJECTS_GET_TOTAL).increment(1);
+    Ok(response)
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        bucket = tracing::field::Empty,
+        key = tracing::field::Empty,
+        size = tracing::field::Empty,
+    )
+)]
 async fn delete_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
     Query(q): Query<DeleteQuery>,
 ) -> Result<StatusCode, AppError> {
+    let span = tracing::Span::current();
+    span.record(BUCKET_KEY, bucket.as_str());
+    span.record(KEY, key.as_str());
     if let Some(upload_id) = q.upload_id.as_deref() {
         state.multipart.abort(upload_id).await?;
         return Ok(StatusCode::NO_CONTENT);
+    }
+    if let Some(meta) = state.index.get(&bucket, &key).await? {
+        span.record(SIZE_KEY, meta.size);
     }
     state.index.delete(&bucket, &key).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -270,7 +326,6 @@ async fn post_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, AppError> {
-    // InitiateMultipartUpload: POST .../{key}?uploads
     if q.uploads.is_some() {
         let content_type = content_type_of(&headers);
         let upload_id = state
@@ -278,8 +333,8 @@ async fn post_object(
             .initiate(&bucket, &key, content_type)
             .await?;
         return Ok(Json(json!({
-            "bucket": bucket,
-            "key": key,
+            BUCKET_KEY: bucket,
+            KEY: key,
             "uploadId": upload_id,
         }))
         .into_response());
@@ -294,8 +349,8 @@ async fn post_object(
         let parts = Vec::new();
         let meta = state.multipart.complete(upload_id, parts).await?;
         return Ok(Json(json!({
-            "bucket": meta.bucket,
-            "key": meta.key,
+            BUCKET_KEY: meta.bucket,
+            KEY: meta.key,
             "etag": meta.etag.0,
         }))
         .into_response());
