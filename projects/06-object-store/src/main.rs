@@ -5,17 +5,27 @@
 //! `TODO(Vx)` — see `lib.rs` and `SPEC.md`. This binary is a thin shell over the
 //! `object_store` library crate so the router is reachable from `tests/`.
 
-use tracing::info;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tracing::{info, warn};
 
 use object_store::{routes, AppState, DEFAULT_MAX_OBJECT_SIZE};
 
 const DEFAULT_PORT: u16 = 9000;
 const DEFAULT_DATA_DIR: &str = "./data";
 
+const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     common_config::load_dotenv();
     common_telemetry::init("info,object_store=debug");
+
+    let shutdown_grace = Duration::from_secs(common_config::parse_or(
+        "SHUTDOWN_GRACE_SECS",
+        DEFAULT_SHUTDOWN_GRACE_SECS,
+    ));
 
     // Install the process-global Prometheus recorder once, right after telemetry.
     // Until this runs the `metrics::*` call sites in the modules are no-ops.
@@ -34,19 +44,59 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!(%addr, "listening (S3 path-style; PUT /{{bucket}}/{{key}} to store an object)");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let signal_fired = Arc::new(tokio::sync::Notify::new());
+
+    let server =
+        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(signal_fired.clone()));
+
+    tokio::select! {
+        res = server => {
+            res?;
+            info!("all in-flight requests drained cleanly");
+        }
+
+        // The grace deadline expired first. The timer is armed *inside* this
+        // future, only after the beacon fires, so `shutdown_grace` counts from
+        // the signal — not from boot.
+        _ = async {
+            signal_fired.notified().await;
+            tokio::time::sleep(shutdown_grace).await;
+        } => {
+            warn!(grace = ?shutdown_grace, "grace expired — forcing shutdown");
+            // TODO(SPEC): read the in-flight gauge and log how many streams are
+            // being abandoned instead of a blind "forcing".
+            // TODO(SPEC): ensure temp-blob guards' Drop reclaims any partial
+            // staging file as their handler futures are cancelled here.
+        }
+    }
 
     Ok(())
 }
 
-/// Waits for Ctrl-C / SIGTERM so axum can drain in-flight streams.
-///
-/// TODO(SPEC): on shutdown, let in-flight uploads/downloads finish (or fail
-/// cleanly so their temp files are reclaimed) — never abort mid-stream and leave
-/// a partial temp blob behind.
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    info!("shutdown signal received");
+async fn shutdown_signal(signal_fired: Arc<tokio::sync::Notify>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate())
+            .expect("failed to install term signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("shutdown signal received; draining");
+    signal_fired.notify_one();
 }

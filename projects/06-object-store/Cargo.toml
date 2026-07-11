@@ -31,13 +31,29 @@ sha2.workspace = true
 md-5.workspace = true
 hex.workspace = true
 
+uuid.workspace = true
+
 thiserror.workspace = true
 anyhow.workspace = true
 
 tracing.workspace = true
+
+# Observability (SPEC): Prometheus counters/gauges/histograms via the `metrics`
+# facade (call sites just name a metric); the exporter installs the process-
+# global recorder and renders `/metrics` for a scrape.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 [dev-dependencies]
 # Property-test the multipart ETag formula (V4) and prefix/delimiter listing (V3).
 proptest.workspace = true
 # Store tests run against an isolated on-disk root, wiped when the test ends.
 tempfile.workspace = true
+# HTTP integration tests (tests/http_api.rs) drive the real router in-process:
+# `tower`'s `ServiceExt::oneshot` feeds one Request through, `http-body-util`'s
+# `BodyExt::collect` drains the streamed response body back into bytes.
+tower.workspace = true
+http-body-util.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+bytes.workspace = true
+futures-util.workspace = true
