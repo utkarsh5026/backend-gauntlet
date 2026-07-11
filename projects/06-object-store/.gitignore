@@ -1,0 +1,22 @@
+# projects/06-object-store — local experiment & runtime artifacts.
+#
+# Already ignored elsewhere, so not repeated here:
+#   .env, /target, *.log, __pycache__/   → repo-root .gitignore
+#   web/node_modules, web/dist, .vite    → web/.gitignore
+# This file covers what YOU generate while poking at this store.
+
+# On-disk store root(s) (DATA_DIR) — objects/, index/, tmp/, uploads/ written at
+# runtime by `make dev` / `make backend`. Never commit stored blobs. The glob
+# also catches alternate roots you might point DATA_DIR at (data-test/, data2/…).
+/data/
+/data-*/
+
+# Local env overrides (the base .env is already ignored repo-wide).
+.env.local
+.env.*.local
+
+# Throwaway experiment space: scratch scripts, sample files you upload/download,
+# quick notes. Make a `scratch/` (or a root `tmp/`) and it stays out of git.
+/scratch/
+/tmp/
+/playground/
