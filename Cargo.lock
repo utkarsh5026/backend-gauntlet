@@ -69,6 +69,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -269,6 +270,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -497,6 +499,7 @@ dependencies = [
  "dotenvy",
  "thiserror 2.0.18",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -507,6 +510,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -776,6 +780,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -943,6 +948,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1122,6 +1128,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1588,6 +1595,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1636,6 +1644,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1702,6 +1711,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1730,6 +1740,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1772,6 +1783,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1840,6 +1852,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1875,6 +1888,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1923,6 +1937,7 @@ dependencies = [
  "tokio-stream",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2111,6 +2126,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "proptest",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -2122,6 +2138,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2619,6 +2636,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2741,6 +2759,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2789,6 +2808,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2873,6 +2893,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -2892,12 +2913,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots 1.0.8",
 ]
@@ -4074,6 +4097,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4196,6 +4220,7 @@ dependencies = [
  "tower_governor",
  "tracing",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4250,6 +4275,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4357,6 +4383,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4416,6 +4455,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4696,6 +4736,76 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-core",
+ "base64",
+ "bitflags",
+ "bytes",
+ "chrono",
+ "crossbeam-utils",
+ "crypto-common",
+ "digest",
+ "either",
+ "fastrand",
+ "form_urlencoded",
+ "futures-channel",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "hashbrown 0.15.5",
+ "hmac",
+ "hyper",
+ "hyper-util",
+ "indexmap",
+ "libc",
+ "log",
+ "md-5",
+ "memchr",
+ "num-traits",
+ "once_cell",
+ "portable-atomic",
+ "ppv-lite86",
+ "prost",
+ "quanta",
+ "rand 0.8.6",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "sha2",
+ "slab",
+ "smallvec",
+ "sqlx-core",
+ "sqlx-postgres",
+ "syn",
+ "sync_wrapper",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-core",
+ "uuid",
+ "zerocopy",
 ]
 
 [[package]]

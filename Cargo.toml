@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/common-telemetry",
     "crates/common-config",
+    "crates/workspace-hack",
     "projects/01-url-shortener",
     "projects/02-rate-limiter",
     "projects/03-realtime-pubsub",

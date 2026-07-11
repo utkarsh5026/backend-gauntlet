@@ -4,3 +4,15 @@
 #   cargo sqlx prepare --workspace -- --all-targets
 [env]
 SQLX_OFFLINE = "true"
+
+# Link with mold (~/.local/opt/mold — prebuilt binary, no apt package on 22.04).
+# `linker-features=-lld` opts out of rustc's bundled rust-lld (the default since
+# 1.90) so the link goes to gcc; GCC 11 has no `-fuse-ld=mold`, so `-B` points it
+# at mold's bundled `ld` shim. If mold is missing on a fresh machine, delete this
+# section (falls back to rust-lld, also fast) or reinstall:
+#   https://github.com/rui314/mold/releases → extract to ~/.local/opt, symlink `mold`.
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "linker-features=-lld",
+    "-C", "link-arg=-B/home/utkarsh5026/.local/opt/mold/libexec/mold",
+]
