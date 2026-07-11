@@ -30,6 +30,16 @@ jobs:
         # dead-code warnings from unimplemented `todo!()`s. Flip this to
         # `-- -D warnings` once a project's SPEC is implemented.
         run: cargo clippy --workspace --all-targets
+      - name: install cargo-hakari
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hakari
+      - name: workspace-hack up to date
+        # Fails when a dependency change wasn't followed by `cargo hakari generate`,
+        # or a new crate is missing its workspace-hack dep (`cargo hakari manage-deps`).
+        run: |
+          cargo hakari generate --diff --quiet
+          cargo hakari manage-deps --dry-run --quiet
 
   test:
     name: check + test

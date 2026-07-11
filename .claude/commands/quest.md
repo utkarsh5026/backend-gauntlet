@@ -41,7 +41,7 @@ sketch, a Rust error in the build phase — teach it **from first principles**:
 ## Phase 0 — Target lock
 
 1. Resolve the project and vertical. If no vertical given, take the project's
-   current one (`python3 status.py NN`). Read the SPEC vertical's full section —
+   current one (`python3 tools/status.py NN`). Read the SPEC vertical's full section —
    prose, concept-to-internalize, and its **"Done when ALL true"** block — plus the
    module it names and whatever code already exists there.
 2. **Resume check:** if `tests/<module>_acceptance.rs` already exists, this quest is

@@ -19,19 +19,22 @@ is active/paused/blocked and why:
     -->
 
 Usage:
-    python3 status.py            # one-line-per-project dashboard
-    python3 status.py 02         # drill into one project (verticals + open items)
-    make status                  # via the root Makefile wrapper
+    python3 tools/status.py            # one-line-per-project dashboard
+    python3 tools/status.py 02         # drill into one project (verticals + open items)
+    python3 tools/status.py trophies   # 🏆 the trophy case (achievements, auto-derived)
+    make status                        # via the root Makefile wrapper
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = ROOT / "projects"
 
 # Order projects depend on each other in, so the dashboard can show the chain.
@@ -84,15 +87,36 @@ SRC_RE = re.compile(r"src/([\w/]+\.rs)")
 FRONTMATTER_RE = re.compile(r"<!--\s*status:(.*?)-->", re.DOTALL)
 EMPHASIS_RE = re.compile(r"[*_`]")
 TODO_RE = re.compile(r"\btodo!\s*\(")
+CHECK_DONE_RE = re.compile(r"-\s*\[x\]", re.IGNORECASE)
+CHECK_OPEN_RE = re.compile(r"-\s*\[ \]")
 
 
 class Vertical:
-    def __init__(self, vid: str, title: str, module: str | None, src_dir: Path):
+    def __init__(
+        self,
+        vid: str,
+        title: str,
+        module: str | None,
+        src_dir: Path,
+        body: str = "",
+        span: tuple[int, int] = (0, 0),
+    ):
         self.vid = vid
         # Keep only the part before the "— *concept*" dash for a tidy title.
         self.title = EMPHASIS_RE.sub("", title.split("—")[0]).strip()
         self.module = module
         self.path = (src_dir / module) if module else None
+        # The vertical's own "Done when ALL true" acceptance criteria. `span` is the
+        # vertical's [start, end) offset in SPEC.md, so the horizontal checklist can
+        # exclude these boxes and count them per-vertical instead.
+        self.body = body
+        self.span = span
+
+    @property
+    def checks(self) -> tuple[int, int]:
+        """(done, total) acceptance-criteria checkboxes in this vertical's section."""
+        done = len(CHECK_DONE_RE.findall(self.body))
+        return done, done + len(CHECK_OPEN_RE.findall(self.body))
 
     @property
     def todos(self) -> int | None:
@@ -147,20 +171,39 @@ class Project:
             body = self.text[start:end]
             src_m = SRC_RE.search(body)
             out.append(
-                Vertical(m.group(1), m.group(2), src_m.group(1) if src_m else None, src)
+                Vertical(
+                    m.group(1),
+                    m.group(2),
+                    src_m.group(1) if src_m else None,
+                    src,
+                    body=body,
+                    span=(start, end),
+                )
             )
         return out
 
     # -- horizontal checklist ------------------------------------------------
     @property
     def checks(self) -> tuple[int, int]:
-        done = len(re.findall(r"-\s*\[x\]", self.text, re.IGNORECASE))
-        todo = len(re.findall(r"-\s*\[ \]", self.text))
-        return done, done + todo
+        """Horizontal-checklist boxes only. Per-vertical 'Done when' criteria are
+        counted on their Vertical, so we subtract them from the file-wide total —
+        which is a no-op for old-style SPECs (no checkboxes inside verticals)."""
+        done = len(CHECK_DONE_RE.findall(self.text))
+        total = done + len(CHECK_OPEN_RE.findall(self.text))
+        for v in self.verticals:
+            vdone, vtot = v.checks
+            done -= vdone
+            total -= vtot
+        return done, total
 
     @property
     def open_items(self) -> list[str]:
-        return [m.strip() for m in re.findall(r"-\s*\[ \]\s*(.+)", self.text)]
+        spans = [v.span for v in self.verticals]
+        out = []
+        for m in re.finditer(r"-\s*\[ \]\s*(.+)", self.text):
+            if not any(s <= m.start() < e for s, e in spans):
+                out.append(m.group(1).strip())
+        return out
 
     # -- rollups -------------------------------------------------------------
     @property
@@ -194,6 +237,126 @@ class Project:
         vdone, vtot = self.v_done, len(self.verticals)
         num, den = vdone + cdone, vtot + ctot
         return round(100 * num / den) if den else 0
+
+
+# --------------------------------------------------------------------------- #
+# Trophies — achievements derived from the same sources of truth (code, SPECs,
+# git history). Nothing to hand-maintain: they unlock themselves.
+# --------------------------------------------------------------------------- #
+
+
+def _git_history() -> list[tuple[dt.date, list[str]]]:
+    """(author-date, touched paths) per commit, newest first. [] if git is absent."""
+    try:
+        out = subprocess.run(
+            ["git", "log", "--pretty=format:%x1e%as", "--name-only"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except Exception:
+        return []
+    commits: list[tuple[dt.date, list[str]]] = []
+    for chunk in out.split("\x1e"):
+        lines = [ln.strip() for ln in chunk.strip().splitlines() if ln.strip()]
+        if not lines:
+            continue
+        try:
+            day = dt.date.fromisoformat(lines[0])
+        except ValueError:
+            continue
+        commits.append((day, lines[1:]))
+    return commits
+
+
+def _streak(days: set[dt.date]) -> int:
+    """Consecutive commit days ending today (or yesterday, so a streak survives
+    checking the dashboard before today's first commit)."""
+    d = dt.date.today()
+    if d not in days:
+        d -= dt.timedelta(days=1)
+    n = 0
+    while d in days:
+        n += 1
+        d -= dt.timedelta(days=1)
+    return n
+
+
+def trophies(projects: list[Project]) -> list[tuple[str, str, str, bool]]:
+    """(icon, name, how-to-unlock, unlocked) — locked ones double as the quest log."""
+    vdone = sum(p.v_done for p in projects)
+    boxes = sum(p.checks[0] for p in projects) + sum(
+        v.checks[0] for p in projects for v in p.verticals
+    )
+    active = sum(1 for p in projects if p.state == "active")
+    slain = sum(1 for p in projects if p.state == "done")
+    bench = any(
+        (p.path / "bench").is_dir() and any((p.path / "bench").iterdir())
+        for p in projects
+    )
+    design = bool(list((ROOT / "docs").glob("*design*.md"))) or any(
+        list((p.path / "docs").glob("*design*.md"))
+        for p in projects
+        if (p.path / "docs").is_dir()
+    )
+
+    hist = _git_history()
+    streak = _streak({d for d, _ in hist})
+    per_project: dict[str, list[dt.date]] = {}
+    for day, paths in hist:
+        for path in paths:
+            if path.startswith("projects/") and path.count("/") >= 2:
+                per_project.setdefault(path.split("/")[1], []).append(day)
+    necro = False
+    for ds in per_project.values():
+        s = sorted(set(ds))
+        if any((b - a).days >= 30 for a, b in zip(s, s[1:])):
+            necro = True
+            break
+
+    return [
+        ("🩸", "First Blood", "complete your first vertical", vdone >= 1),
+        ("⚔️", "Slayer", "5 verticals down across the gauntlet", vdone >= 5),
+        ("🗡️", "Warlord", "15 verticals down", vdone >= 15),
+        ("☑️", "Box Ticker", "10 acceptance boxes checked (with Proof)", boxes >= 10),
+        ("🧾", "The Auditor", "50 acceptance boxes checked", boxes >= 50),
+        ("🏎️", "Speed Demon", "a bench/ with real numbers exists", bench),
+        ("📐", "The Architect", "a design doc written and committed", design),
+        ("🐉", "Boss Slayer", "a whole project done — its boss defeated", slain >= 1),
+        ("🐲", "Dragonrider", "three bosses down", slain >= 3),
+        ("🐙", "Plate Spinner", "3+ projects active at once", active >= 3),
+        ("🔥", "On Fire", "3-day commit streak", streak >= 3),
+        ("🌋", "Unstoppable", "7-day commit streak", streak >= 7),
+        ("🧟", "Necromancer", "revive a project untouched for 30+ days", necro),
+    ]
+
+
+def trophy_case(projects: list[Project]) -> None:
+    tr = trophies(projects)
+    won = sum(1 for t in tr if t[3])
+    print()
+    print(
+        f"  {C.BOLD}{C.MAGENTA}🏆 trophy case{C.RESET}"
+        f"  {C.DIM}·{C.RESET}  {C.BOLD}{won}/{len(tr)}{C.RESET} {C.DIM}unlocked"
+        f" · earned by the code, the SPECs, and the git log — not by asking{C.RESET}"
+    )
+    print(rule())
+    print()
+    for icon, name, desc, ok in tr:
+        if ok:
+            print(
+                f"    {icon}  {C.BOLD}{C.GREEN}{name:<14}{C.RESET} {desc}"
+                f"  {C.GREEN}✓{C.RESET}"
+            )
+        else:
+            print(f"    {C.DIM}🔒  {name:<14} {desc}{C.RESET}")
+    print()
+    nxt = next((t for t in tr if not t[3]), None)
+    if nxt:
+        print(f"  {C.YELLOW}→ nearest quest: {nxt[0]} {nxt[1]} — {nxt[2]}{C.RESET}\n")
+    else:
+        print(f"  {C.GREEN}the case is full. touch grass, champion. 🌱{C.RESET}\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -273,6 +436,13 @@ def dashboard(projects: list[Project]) -> None:
         f"    {C.DIM}verticals{C.RESET} {C.BOLD}{vdone}/{vtot}{C.RESET}"
         f"  {C.DIM}·  checklist{C.RESET} {C.BOLD}{cdone}/{ctot}{C.RESET}"
     )
+    tr = trophies(projects)
+    won = [t for t in tr if t[3]]
+    icons = " ".join(t[0] for t in won) if won else f"{C.DIM}(none yet){C.RESET}"
+    print(
+        f"  {C.BOLD}🏆 case{C.RESET}   {icons}"
+        f"  {C.DIM}{len(won)}/{len(tr)} · python3 tools/status.py trophies{C.RESET}"
+    )
     print(rule())
     print()
 
@@ -306,7 +476,7 @@ def dashboard(projects: list[Project]) -> None:
         f"{C.DIM}⬜ pending{C.RESET}   {C.DIM}❔ unknown{C.RESET}"
     )
     print(
-        f"  {C.DIM}drill in with{C.RESET} {C.CYAN}python3 status.py <NN>{C.RESET}"
+        f"  {C.DIM}drill in with{C.RESET} {C.CYAN}python3 tools/status.py <NN>{C.RESET}"
         f"  {C.DIM}· lives in code + SPEC.md, no manual upkeep{C.RESET}\n"
     )
 
@@ -335,7 +505,13 @@ def detail(p: Project) -> None:
             note = f"{C.GREEN}{v.module} — complete{C.RESET}"
         else:
             note = f"{C.DIM}{v.module} — {todos} todo!() left{C.RESET}"
-        print(f"    {glyph}  {v.title:<28} {note}")
+        cd, ct = v.checks
+        crit = (
+            f"  {C.DIM}[{cd}/{ct}]{C.RESET} {bar(round(100 * cd / ct) if ct else 0, 10)}"
+            if ct
+            else ""
+        )
+        print(f"    {glyph}  {v.title:<28} {note}{crit}")
     print()
     cdone, ctot = p.checks
     print(
@@ -354,6 +530,9 @@ def main(argv: list[str]) -> int:
     if not projects:
         print(f"{C.RED}no projects with a SPEC.md found under {PROJECTS}{C.RESET}")
         return 1
+    if argv and argv[0] in ("trophies", "trophy", "case", "🏆"):
+        trophy_case(projects)
+        return 0
     if argv:
         key = argv[0].lstrip("0") or "0"
         match = next(

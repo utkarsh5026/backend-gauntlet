@@ -1,6 +1,9 @@
 {
   // ---- Rust / rust-analyzer ----
   "rust-analyzer.check.command": "clippy",
+  // Only check the crate being edited, not all 24 workspace members on every save.
+  // `make check` / CI still cover the whole workspace.
+  "rust-analyzer.check.workspace": false,
   "rust-analyzer.check.allTargets": true,
   "rust-analyzer.check.extraArgs": ["--", "-D", "warnings"],
   "rust-analyzer.cargo.buildScripts.enable": true,
@@ -12,10 +15,11 @@
   "rust-analyzer.inlayHints.typeHints.enable": true,
   "rust-analyzer.inlayHints.chainingHints.enable": true,
   "rust-analyzer.completion.callable.snippets": "fill_arguments",
-  // Dev DB URL for sqlx compile-time query checking (matches .env.example).
-  // Toggle SQLX_OFFLINE=true + `cargo sqlx prepare` when working without Postgres.
+  // sqlx `query!` macros must use the committed `.sqlx/` cache — not a live DB.
+  // rust-analyzer does not reliably inherit `[env]` from `.cargo/config.toml`, so
+  // set SQLX_OFFLINE here explicitly. Do NOT set DATABASE_URL (stale socket → EOF).
   "rust-analyzer.cargo.extraEnv": {
-    "DATABASE_URL": "postgres://shortener:shortener@localhost:5432/shortener"
+    "SQLX_OFFLINE": "true"
   },
 
   // ---- Editor ----

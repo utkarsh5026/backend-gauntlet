@@ -162,9 +162,9 @@
     },
     {
       "label": "workspace: status",
-      "detail": "python3 status.py — cross-project progress dashboard",
+      "detail": "python3 tools/status.py — cross-project progress dashboard",
       "type": "shell",
-      "command": "python3 status.py",
+      "command": "python3 tools/status.py",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -176,9 +176,9 @@
     },
     {
       "label": "workspace: status (project 01)",
-      "detail": "python3 status.py 01 — drill into url-shortener",
+      "detail": "python3 tools/status.py 01 — drill into url-shortener",
       "type": "shell",
-      "command": "python3 status.py 01",
+      "command": "python3 tools/status.py 01",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -190,7 +190,7 @@
     },
     {
       "label": "python: ruff check",
-      "detail": "Lint all *.py scripts (status.py, projects/*/makefile.py)",
+      "detail": "Lint all *.py scripts (tools/status.py, projects/*/makefile.py)",
       "type": "shell",
       "command": "ruff check .",
       "options": {

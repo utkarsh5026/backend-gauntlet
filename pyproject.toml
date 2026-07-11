@@ -1,4 +1,4 @@
-# Tooling config for the repo's stdlib-only Python scripts (status.py,
+# Tooling config for the repo's stdlib-only Python scripts (tools/status.py,
 # projects/*/makefile.py). No pip dependencies — Ruff is editor/CI lint only.
 
 [tool.ruff]

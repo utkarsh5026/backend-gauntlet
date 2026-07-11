@@ -17,11 +17,11 @@ real job is showing who owns a port and refusing to start a project whose port
 is already held by someone else.
 
 Usage:
-    python3 infra.py                 # serve on http://127.0.0.1:7878
-    python3 infra.py --port 9999
-    python3 infra.py --no-open       # don't auto-open a browser
+    python3 tools/infra.py           # serve on http://127.0.0.1:7878
+    python3 tools/infra.py --port 9999   # pick a different port
     make infra                       # via the root Makefile wrapper
 
+Prints the URL on startup and never opens a browser — open the link yourself.
 Stdlib only. Shells out to `docker` / `docker compose`; never uses shell=True.
 Binds to loopback only — it can start and stop containers, so it is not for
 exposing on a network.
@@ -30,17 +30,22 @@ exposing on a network.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = ROOT / "projects"
+
+# Portainer — an optional repo-managed web UI for *inside* any container (status,
+# stats, logs, shell). Started via `make portainer`; the panel just links to it.
+PORTAINER_COMPOSE = ROOT / "tools" / "portainer" / "docker-compose.yml"
+PORTAINER_PORT = 9443
 
 # Per-project action lock — never run two `up`/`down` on the same stack at once.
 _LOCKS: dict[str, threading.Lock] = {}
@@ -153,7 +158,8 @@ def discover_projects() -> list[dict]:
 _FMT = (
     '{{.Label "com.docker.compose.project"}}\t'
     '{{.Label "com.docker.compose.service"}}\t'
-    "{{.State}}\t{{.Status}}\t{{.Ports}}\t{{.Names}}"
+    "{{.State}}\t{{.Status}}\t{{.Ports}}\t{{.Names}}\t"
+    "{{.Image}}\t{{.RunningFor}}"
 )
 
 
@@ -186,6 +192,23 @@ def _host_ports(ports: str) -> list[int]:
     return sorted(found)
 
 
+def _port_map(ports: str) -> list[str]:
+    """Readable host→container mappings from a docker `Ports` string.
+
+    Collapses the IPv4/IPv6 duplicate lines Compose prints into one entry each,
+    e.g. "0.0.0.0:5404->5432/tcp, [::]:5404->5432/tcp" → ["5404 → 5432/tcp"].
+    """
+    seen: dict[str, None] = {}  # ordered set of "host → container/proto"
+    for chunk in ports.split(","):
+        chunk = chunk.strip()
+        if "->" not in chunk:
+            continue
+        left, right = chunk.split("->", 1)  # 0.0.0.0:5404  ,  5432/tcp
+        host = left.rsplit(":", 1)[-1]
+        seen.setdefault(f"{host} → {right.strip()}", None)
+    return list(seen)
+
+
 def docker_ps() -> tuple[list[dict], bool]:
     """Live containers + whether the docker daemon answered."""
     try:
@@ -207,9 +230,9 @@ def docker_ps() -> tuple[list[dict], bool]:
         if not line.strip():
             continue
         parts = line.split("\t")
-        while len(parts) < 6:
+        while len(parts) < 8:
             parts.append("")
-        project, service, state, status, ports, names = parts[:6]
+        project, service, state, status, ports, names, image, since = parts[:8]
         rows.append(
             {
                 "project": project,
@@ -218,7 +241,10 @@ def docker_ps() -> tuple[list[dict], bool]:
                 "status": status,
                 "health": _health(status),
                 "host_ports": _host_ports(ports),
+                "port_map": _port_map(ports),
                 "names": names,
+                "image": image,
+                "since": since,
             }
         )
     return rows, True
@@ -269,6 +295,15 @@ def build_status() -> dict:
                     "state": state,
                     "status": live["status"] if live else "",
                     "health": live["health"] if live else None,
+                    # live docker-container detail (None until the container exists)
+                    "container": {
+                        "name": live["names"],
+                        "image": live["image"],
+                        "since": live["since"],
+                        "port_map": live["port_map"],
+                    }
+                    if live
+                    else None,
                 }
             )
 
@@ -308,7 +343,25 @@ def build_status() -> dict:
             }
         )
 
-    return {"docker_ok": docker_ok, "projects": result}
+    return {
+        "docker_ok": docker_ok,
+        "projects": result,
+        "portainer": _portainer_status(containers),
+    }
+
+
+def _portainer_status(containers: list[dict]) -> dict:
+    """Is the repo-managed Portainer up, and on what host port? (compose project
+    name is `portainer`; we also match any container named *portainer*)."""
+    info = {"present": PORTAINER_COMPOSE.exists(), "running": False, "port": PORTAINER_PORT}
+    for c in containers:
+        named = c["project"] == "portainer" or "portainer" in (c["names"] or "")
+        if c["state"] == "running" and named:
+            info["running"] = True
+            ports = c["host_ports"]
+            info["port"] = PORTAINER_PORT if PORTAINER_PORT in ports else (ports[0] if ports else PORTAINER_PORT)
+            break
+    return info
 
 
 def _dedup(items: list[dict]) -> list[dict]:
@@ -472,11 +525,6 @@ def _collision_guard(proj: dict) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# HTTP server.
-# --------------------------------------------------------------------------- #
-
-
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # quiet
         pass
@@ -527,24 +575,68 @@ class Handler(BaseHTTPRequestHandler):
             gen.close()
 
 
+# --------------------------------------------------------------------------- #
+# CLI presentation — a small truecolor banner on startup. Colors mirror the
+# web panel's Catppuccin-Mocha palette; suppressed when stdout isn't a TTY
+# (piped/redirected) or NO_COLOR is set, so logs stay clean.
+# --------------------------------------------------------------------------- #
+
+_USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+# (r, g, b) straight from the page's :root palette.
+_TEXT = (205, 214, 244)
+_SUB = (147, 153, 178)
+_DIM = (108, 112, 134)
+_GREEN = (166, 227, 161)
+_MAUVE = (203, 166, 247)
+
+
+def _c(s: str, rgb: tuple[int, int, int], *, bold: bool = False) -> str:
+    if not _USE_COLOR:
+        return s
+    r, g, b = rgb
+    return f"\033[{'1;' if bold else ''}38;2;{r};{g};{b}m{s}\033[0m"
+
+
+def _banner(url: str) -> str:
+    """A rounded, aligned box announcing the panel — colored but width-correct
+    (padding is computed from the *plain* text, not the ANSI-wrapped version)."""
+    rows: list[tuple[str, str]] = [
+        (
+            "◆  backend-gauntlet · infra",
+            _c("◆", _MAUVE, bold=True) + "  "
+            + _c("backend-gauntlet", _TEXT, bold=True) + _c(" · infra", _DIM),
+        ),
+        ("   docker control panel", _c("   docker control panel", _SUB)),
+        ("", ""),
+        ("→  " + url, _c("→", _GREEN, bold=True) + "  " + _c(url, _GREEN, bold=True)),
+        ("", ""),
+        ("   deps · port conflicts · up · down", _c("   deps · port conflicts · up · down", _SUB)),
+        ("   Ctrl-C to stop", _c("   Ctrl-C to stop", _DIM)),
+    ]
+    width = max(len(plain) for plain, _ in rows)
+    edge = lambda ch: _c(ch, _DIM)  # noqa: E731
+    bar = edge("│")
+    out = ["", edge("╭" + "─" * (width + 4) + "╮")]
+    for plain, colored in rows:
+        out.append(f"{bar}  {colored}{' ' * (width - len(plain))}  {bar}")
+    out.append(edge("╰" + "─" * (width + 4) + "╯"))
+    out.append("")
+    return "\n".join(out)
+
+
 def main():
     args = sys.argv[1:]
     port = 7878
-    auto_open = True
-    if "--no-open" in args:
-        auto_open = False
     if "--port" in args:
         port = int(args[args.index("--port") + 1])
 
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = f"http://127.0.0.1:{port}"
-    print(f"infra control panel → {url}  (Ctrl-C to stop)")
-    if auto_open:
-        threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
+    print(_banner(f"http://127.0.0.1:{port}"), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\nbye")
+        print(_c("\n  ✦ stopped — bye\n", _DIM))
         srv.shutdown()
 
 
@@ -582,6 +674,10 @@ PAGE = r"""<!doctype html>
   .summary .warnc{color:var(--peach)}
   .summary .off{color:var(--red)}
   #clock{color:var(--dim);font-size:12px;font-family:var(--mono)}
+  .pchip{font-size:12px;font-family:var(--mono);white-space:nowrap}
+  .pchip.on a{color:var(--sky);text-decoration:none}
+  .pchip.on a:hover{text-decoration:underline}
+  .pchip.off{color:var(--dim);cursor:help}
 
   .grid{display:grid;gap:16px;padding:26px;
     grid-template-columns:repeat(auto-fill,minmax(320px,1fr));max-width:1400px}
@@ -590,7 +686,9 @@ PAGE = r"""<!doctype html>
     transition:border-color .15s}
   .card:hover{border-color:var(--line2)}
 
-  .chead{display:flex;align-items:center;gap:10px}
+  .chead{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+  .chev{color:var(--dim);font-size:10px;width:10px;flex:none;transition:transform .15s}
+  .chev.open{transform:rotate(90deg)}
   .dot{width:9px;height:9px;border-radius:50%;flex:none}
   .dot.up{background:var(--green)} .dot.partial{background:var(--yellow)}
   .dot.down{background:var(--dim)}
@@ -614,6 +712,24 @@ PAGE = r"""<!doctype html>
 
   .note{font-size:12px;color:var(--dim);display:flex;align-items:center;gap:6px}
   .note.block{color:var(--red)}
+
+  /* expanded per-container docker detail */
+  .details{display:flex;flex-direction:column;gap:10px;background:var(--bg);
+    border:1px solid var(--line);border-radius:8px;padding:11px 13px}
+  .dsvc{display:flex;flex-direction:column;gap:5px;padding-bottom:10px;
+    border-bottom:1px solid var(--line)}
+  .dsvc:last-child{border-bottom:none;padding-bottom:0}
+  .dhead{display:flex;align-items:baseline;gap:8px;font-size:13px}
+  .dhead .dname{font-weight:600}
+  .dhead .dstate{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--sub)}
+  .dhead .dstate.running{color:var(--green)} .dhead .dstate.absent{color:var(--dim)}
+  .dhead .dstate.exited,.dhead .dstate.dead{color:var(--red)}
+  .drow{display:grid;grid-template-columns:64px 1fr;gap:8px;font-size:12px;
+    font-family:var(--mono)}
+  .drow .dk{color:var(--dim)}
+  .drow .dv{color:var(--text);word-break:break-all}
+  .drow .dv.ports{color:var(--sky)}
+  .drow .dv.dabsent{color:var(--dim);font-family:var(--sans);font-style:italic}
 
   .foot{display:flex;align-items:center;gap:8px;margin-top:2px}
   button{font:inherit;font-size:12.5px;cursor:pointer;border:1px solid var(--line2);
@@ -645,6 +761,7 @@ PAGE = r"""<!doctype html>
 <header>
   <h1>backend-gauntlet <span class="g">/ infra</span></h1>
   <div class="summary" id="summary"></div>
+  <span id="portainer" class="pchip"></span>
   <span id="clock"></span>
 </header>
 <div id="grid" class="grid"></div>
@@ -654,6 +771,8 @@ PAGE = r"""<!doctype html>
 const grid=document.getElementById('grid');
 const busy=new Set();     // slugs with an in-flight action
 const logs={};            // slug -> last action output
+const expanded=new Set(); // slugs whose docker-detail panel is open
+let lastData=null;        // most recent /api/status payload, for instant re-render
 
 function el(t,cls,txt){const e=document.createElement(t);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e;}
 
@@ -665,6 +784,7 @@ async function refresh(){
 }
 
 function render(data){
+  lastData=data;
   const withInfra=data.projects.filter(p=>p.total>0);
   const bare=data.projects.filter(p=>p.total===0);
 
@@ -677,6 +797,8 @@ function render(data){
     sum.append(html(`<span><b>${upStacks}</b>/${withInfra.length} stacks up</span>`));
     if(blocked) sum.append(html(`<span class="warnc">⚠ ${blocked} port conflict${blocked>1?'s':''}</span>`));
   }
+
+  renderPortainer(data.portainer||{});
 
   grid.innerHTML='';
   for(const p of withInfra) grid.append(cardFor(p));
@@ -691,15 +813,38 @@ function render(data){
 
 function html(s){const t=document.createElement('template');t.innerHTML=s.trim();return t.content.firstChild;}
 
+// Header chip linking to Portainer (the "look inside a container" web UI).
+function renderPortainer(pt){
+  const pc=document.getElementById('portainer');
+  pc.className='pchip'; pc.innerHTML=''; pc.title='';
+  if(pt.running){
+    pc.classList.add('on');
+    const a=el('a',null,'● Portainer ↗');
+    a.href='https://localhost:'+pt.port; a.target='_blank'; a.rel='noopener';
+    a.title='open Portainer — live status, stats, logs & shell for every container';
+    pc.append(a);
+  }else if(pt.present){
+    pc.classList.add('off');
+    pc.textContent='○ Portainer off';
+    pc.title='start it:  make portainer';
+  }  // not installed → chip stays empty
+}
+
 function cardFor(p){
   const card=el('div','card');
+  const open=expanded.has(p.slug);
 
   const head=el('div','chead');
+  head.append(el('span','chev'+(open?' open':''),'▶'));
   head.append(el('span','dot '+p.overall));
   head.append(el('span','ctitle',p.name));
   head.append(el('span','cnum',p.num));
   head.append(el('span','cstate',`${p.up}/${p.total}`));
+  head.title='show docker container details';
+  head.onclick=()=>toggleExpand(p.slug);
   card.append(head);
+
+  if(open) card.append(detailsFor(p));
 
   const svcs=el('div','svcs');
   for(const s of p.services){
@@ -750,6 +895,44 @@ function cardFor(p){
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
   }
   return card;
+}
+
+function toggleExpand(slug){
+  if(expanded.has(slug)) expanded.delete(slug); else expanded.add(slug);
+  if(lastData) render(lastData);   // instant, no round-trip
+}
+
+// The docker-container detail panel: one block per service, showing the live
+// container name / image / uptime / port mappings (or "not running").
+function detailsFor(p){
+  const box=el('div','details');
+  for(const s of p.services){
+    const blk=el('div','dsvc');
+    const dh=el('div','dhead');
+    dh.append(el('span','dname',s.name));
+    dh.append(el('span','dstate '+s.state, s.state));
+    blk.append(dh);
+
+    const c=s.container;
+    const row=(k,v,cls)=>{const r=el('div','drow');
+      r.append(el('span','dk',k)); r.append(el('span','dv'+(cls?' '+cls:''),v)); return r;};
+    if(c){
+      blk.append(row('name', c.name||'—'));
+      blk.append(row('image', c.image||s.image||'—'));
+      if(s.status) blk.append(row('status', s.status));
+      else if(c.since) blk.append(row('uptime', c.since));
+      const pm=(c.port_map&&c.port_map.length)?c.port_map.join('   ')
+        :(s.ports.length?s.ports.map(x=>x.host+' → '+x.container).join('   '):'—');
+      blk.append(row('ports', pm, 'ports'));
+    }else{
+      blk.append(row('image', s.image||'—'));
+      const declared=s.ports.length?s.ports.map(x=>x.host+' → '+x.container).join('   '):'—';
+      blk.append(row('ports', declared, 'ports'));
+      blk.append(row('status','container not running','dabsent'));
+    }
+    box.append(blk);
+  }
+  return box;
 }
 
 // Colorize one log line by what compose is telling us.

@@ -16,8 +16,8 @@
     {
       "type": "debugpy",
       "request": "launch",
-      "name": "Debug status.py",
-      "program": "${workspaceFolder}/status.py",
+      "name": "Debug tools/status.py",
+      "program": "${workspaceFolder}/tools/status.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -25,8 +25,8 @@
     {
       "type": "debugpy",
       "request": "launch",
-      "name": "Debug status.py (project 01)",
-      "program": "${workspaceFolder}/status.py",
+      "name": "Debug tools/status.py (project 01)",
+      "program": "${workspaceFolder}/tools/status.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "args": ["01"],
