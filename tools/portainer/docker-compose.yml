@@ -19,7 +19,13 @@
 services:
   portainer:
     image: portainer/portainer-ce:lts
-    command: ["--http-disabled"]
+    # --http-disabled:   HTTPS only, no plaintext UI.
+    # --no-setup-token:  skip the first-run "setup security token" gate. Newer
+    #   Portainer locks initial admin creation behind a token (or times it out
+    #   with "restart Portainer for security purposes") so a stranger can't
+    #   claim an unattended instance. We bind to loopback only, so that race
+    #   doesn't exist here — disabling it lets you set the password immediately.
+    command: ["--http-disabled", "--no-setup-token"]
     ports:
       - "9443:9443"
     volumes:
