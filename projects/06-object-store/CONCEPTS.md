@@ -1,0 +1,112 @@
+# Concept Bank — Project 06: S3-compatible Object Store
+
+> This is the map of what this project should leave in your head. Each card gives you the problem the concept solves, the core idea, where it runs in the real world, and the questions that prove you own it. Check a box only when you could teach that item at a whiteboard, unprompted.
+
+---
+
+## 🧠 Card 1 — Content addressing & the atomic durable commit *(V1 · `src/store.rs`)*
+
+**The problem.** Two problems live here. First: the same bytes get uploaded endlessly (the same Docker layer, the same avatar) — name blobs by where the user put them and you store each copy again. Second, and deadlier: a crash mid-write. Write straight to `objects/<hash>` and lose power halfway, and the file *exists with the right name but half the bytes* — every future reader trusts a truncated blob. Filesystems don't give you transactions; you have to construct atomicity by hand.
+
+**The idea.** Name each blob by the SHA-256 of its content — identical bytes collapse into one file (dedup is a *consequence*, not a feature you build). And commit through the only atomic primitive the filesystem gives you: write a temp file → `fsync` it (bytes on the platter) → `rename` onto the final path (atomic within a filesystem) → `fsync` the parent directory (the *rename itself* survives). After a crash the final name either fully exists or doesn't exist at all. Shard the directory by hash prefix (`objects/ab/cd/…`) because a flat directory with millions of entries makes lookup itself slow.
+
+**In the wild:** Git's object store is exactly this (`.git/objects/ab/cdef…`), Docker/OCI content-addressed layers, IPFS, Nix store; the temp→fsync→rename→fsync-dir dance is in SQLite's and Postgres's crash-safety code.
+
+**You own it when you can explain:**
+- [ ] Content addressing: what changes when the hash is the name (dedup, integrity-verifiable reads, immutability) and what gets harder (you need a separate name→hash index — that's V3).
+- [ ] Each step of the commit sequence and the *specific* crash it defends against — including why skipping the directory fsync can un-rename a "committed" file.
+- [ ] Why `rename` is atomic within one filesystem and what breaks across mount points.
+- [ ] Why "the digest already exists" means drop the temp and done — idempotent commits for free.
+- [ ] The directory fan-out math: why 2-level/2-byte sharding keeps directory entries sane at a billion objects.
+
+**Depth probes:**
+- What does `write()` returning success actually guarantee? (Almost nothing — page cache.) Where do the bytes live between `write` and `fsync`?
+- Content addressing means a blob can never be modified in place. Why is that a *feature* for caching and replication?
+
+**Trap:** testing crash-safety by killing your process. `kill -9` doesn't drop the OS page cache — the real test is power loss semantics, which is *why* the fsyncs are there even though every test passes without them.
+
+---
+
+## 🧠 Card 2 — Streaming I/O & free backpressure *(V2 · `src/streaming.rs`)*
+
+**The problem.** `let body = req.bytes().await` — one line, and your object store now buffers entire uploads in RAM. A 10 KB avatar is fine; one 5 GB video OOM-kills the box, and three concurrent 2 GB uploads do it faster. The line between a toy and a real store is exactly here: memory must be O(chunk), never O(object).
+
+**The idea.** Pull the body one chunk at a time: enforce the running size cap, write the chunk to the temp file, feed it to *two* hashers at once (SHA-256 → the content name; MD5 → the S3 ETag), then ask for the next chunk. Backpressure appears *for free*: because you only request chunk N+1 after chunk N hits disk, a slow disk propagates delay back through TCP flow control to the client — memory can't balloon *by construction*. The unhappy paths are the real work: a client that disconnects mid-PUT or trips the cap must leave no temp file behind.
+
+**In the wild:** every real proxy and store (nginx streaming, S3 itself, MinIO); the "two hashers in one pass" trick is standard in artifact registries.
+
+**You own it when you can explain:**
+- [ ] O(1) vs O(n) memory per request, and how concurrency multiplies the difference into an OOM.
+- [ ] Why backpressure here needs no explicit mechanism — trace the chain: full TCP window ← unread socket ← unpolled body ← disk-bound write loop.
+- [ ] Why buffering "just a bit more for speed" trades away exactly that property.
+- [ ] The cleanup contract on every early exit (error, disconnect, cap) — and what a temp-dir full of orphans tells you.
+- [ ] The download side: streaming a file out with bounded memory, and why the same logic serves `Range` requests.
+
+**Depth probes:**
+- Why must the size cap be enforced *inside* the stream loop rather than by trusting `Content-Length`? (Chunked encoding, lying clients.)
+- Where does the framework's default body limit interfere, and why is disabling it *plus* your own cap the right pair?
+
+**Trap:** believing the happy path is the feature. Streaming's value is decided entirely by its cancel/error paths — the happy path buffers fine too.
+
+---
+
+## 🧠 Card 3 — Flat namespace, faked folders & GC *(V3 · `src/index.rs`)*
+
+**The problem.** S3 has no directories — `a/b/c.jpg` is one opaque key — yet every client expects to "list a folder". And once dedup exists, delete gets dangerous: two keys can point at the same blob, so deleting a key must *not* delete bytes another key still needs. Finally, crashes can happen between "blob written" and "index updated" — which half-state is survivable?
+
+**The idea.** Listing fakes hierarchy at query time: `prefix` filters, `delimiter=/` rolls keys sharing the next path segment into "common prefixes" (the folders), plus sorted order and pagination. Writes follow one iron ordering — **blob durable first, then the index pointer** — so a crash strands an unreferenced blob (harmless garbage) but never a key pointing at nothing (a visible lie). Deletes drop only the pointer; a mark-and-sweep GC later reclaims blobs nothing references — carefully not reaping a blob whose PUT committed bytes but hasn't indexed *yet*.
+
+**In the wild:** S3's ListObjectsV2 semantics (this is why "folders" in the console are an illusion), Git's unreachable-object GC, every refcount-vs-GC storage debate.
+
+**You own it when you can explain:**
+- [ ] Why the keyspace is flat and what prefix+delimiter listing actually computes (the common-prefix rollup, with an example).
+- [ ] The blob-then-pointer invariant and *why the order is that way round* — compare the two crash outcomes.
+- [ ] Why delete-is-pointer-drop follows inevitably from dedup, and why reclamation must be a separate, lazy process.
+- [ ] The GC race with in-flight PUTs and at least one resolution (grace period by mtime, or a commit marker).
+- [ ] Why the index update itself must be atomic (temp+rename, or an append-fsync log) — the same crash discipline one level up.
+
+**Depth probes:**
+- Refcounts instead of GC: what do they buy (immediate reclaim) and what do they cost (a counter that must be transactionally correct under concurrency and crashes)?
+- How does pagination (`max-keys` + continuation token) stay correct while keys are being inserted concurrently?
+
+**Trap:** letting the index be the source of truth about *bytes*. The blob store owns "what exists"; the index owns "what it's called" — invert that and crashes create dangling keys.
+
+---
+
+## 🧠 Card 4 — Multipart upload & the cursed ETag *(V4 · `src/multipart.rs`)*
+
+**The problem.** A 5 GB upload over residential internet *will* be interrupted. Restarting from byte zero every time means it may never finish. And clients want to upload in parallel to use their bandwidth. Uploads therefore need to become resumable, parallel *sessions* — with all the state and edge cases sessions imply (retried parts, out-of-order arrival, abandoned sessions leaking disk).
+
+**The idea.** Initiate mints an `uploadId` + staging area; parts upload independently (any order, retry overwrites); complete validates each part's ETag against what was staged, concatenates in part-number order while hashing the whole into the final blob (committed via V1, indexed via V3); abort reclaims. Compatibility hinges on the ETag formula, which is deliberately weird: single PUT → `md5(bytes)`, but multipart → `md5(concat(part_md5s)) + "-N"`. The `-N` tells clients "this was multipart — don't try to verify by re-MD5ing the object."
+
+**In the wild:** S3 multipart (this exact protocol), which the AWS SDK/CLI auto-engages above ~8–100 MB; every S3-compatible store (MinIO, R2, GCS interop mode) must reproduce the ETag formula bit-for-bit — it's the de facto compliance test.
+
+**You own it when you can explain:**
+- [ ] Why resumability requires *server-side* session state, and what each verb (initiate/uploadPart/complete/abort) transitions.
+- [ ] Why parts can arrive out of order and retried parts overwrite — the idempotency that makes flaky networks survivable.
+- [ ] Both ETag formulas and why the multipart one is *not* the MD5 of the object — including what the `-N` suffix prevents clients from doing wrong.
+- [ ] What `complete` must validate before assembly (part list matches staged parts, ETags match) and why.
+- [ ] The leak vector of never-completed sessions and why an abort/expiry policy is a real operational need.
+
+**Depth probes:**
+- Why does the part-size minimum exist in real S3 (5 MB)? What would millions of tiny parts do to the completion step?
+- Could you assemble without copying (concatenate by reference)? What does your blob layout say about that?
+
+**Trap:** computing the multipart ETag from the assembled bytes. It *looks* more correct and breaks every S3 client — wire compatibility means matching the spec's weirdness, not improving on it.
+
+---
+
+## ⚡ Rapid-fire round
+
+- [ ] `Range` semantics: `206` + `Content-Range`, open-ended (`bytes=a-`) and suffix (`bytes=-n`) forms, `416` with `bytes */len` — and why video seeking depends on them.
+- [ ] Conditional GETs: `If-None-Match` + ETag → `304`, and what that saves (bandwidth, not disk reads).
+- [ ] Path traversal: why resolving through the content-addressed layout makes `../../etc/passwd` structurally impossible rather than filtered.
+- [ ] Why bucket-name rules (3–63 chars, lowercase) exist in S3 (DNS compatibility for virtual-host style).
+- [ ] Why you count streamed bytes yourself instead of trusting `Content-Length`.
+- [ ] Never log object bodies — a store that logs payloads is a data breach with extra steps.
+
+## 🔗 Connects to
+
+- The temp→fsync→rename discipline returns in project 08 (segment files), project 21 (durable state), and project 22 (SSTables/WAL) — this is where you first earn it.
+- `Range` serving is the delivery backbone of project 11 (VOD streaming).
+- Content-addressing logic (hash = identity) is project 19's infohash idea in filesystem form.
