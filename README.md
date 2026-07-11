@@ -6,7 +6,7 @@
 
 A hands-on gauntlet of **pure backend / systems projects**, going from *easy → hard*.
 No todo apps. The goal is to build the primitives the modern world actually runs on —
-**queues, caches, brokers, consensus, gateways** — and get a real grip on Rust, scale,
+**queues, caches, brokers, consensus, gateways, media pipelines** — and get a real grip on Rust, scale,
 and backend fundamentals along the way.
 
 <br>
@@ -51,6 +51,9 @@ crate, the SPEC tells you to **build that part yourself** so you learn how it wo
 - 🗂️ a hand-built LRU/LFU cache
 - 🪵 a segmented append-only log
 - 🗳️ a Raft replication log
+- 🎞️ an fMP4 / HLS media segmenter
+- 🌲 an LSM-tree storage engine
+- 🔎 a BM25 inverted index
 
 </td>
 <td width="50%" valign="top">
@@ -60,10 +63,11 @@ crate, the SPEC tells you to **build that part yourself** so you learn how it wo
 The backend skills that show up in **every** project, woven into each SPEC — never
 bolted on at the end:
 
-- 🌐 **Protocols** — HTTP/1.1 & 2, WebSockets, gRPC, SSE, raw TCP
+- 🌐 **Protocols** — HTTP/1.1 & 2, WebSockets, gRPC, SSE, raw TCP, RTMP, RTP/WebRTC
 - ⚡ **Caching** — cache-aside, write-through, stampede protection
 - 🔒 **Security** — auth, TLS/mTLS, input validation, abuse protection
 - 📊 **Observability** — `tracing`, structured logs, metrics
+- 🚢 **Ship it** — `Dockerfile` per project, health/readiness probes, graceful shutdown
 
 </td>
 </tr>
@@ -73,7 +77,7 @@ bolted on at the end:
 
 ## 🗺️ The roadmap
 
-> Difficulty: 🟢 foundational · 🟡 intermediate · 🟠 advanced · 🔴 hard
+> Difficulty: 🟢 foundational · 🟡 intermediate · 🟠 advanced · 🔴 hard · 🏆 capstone
 
 ### 🟢 Tier 1 — Foundations · *async, I/O, protocols*
 
@@ -104,6 +108,67 @@ bolted on at the end:
 | 08 | **Mini message broker** *(Kafka-lite)* | Segmented append-only log, partitions, consumer groups | `log-storage` `partitions` |
 | 09 | **Distributed KV store w/ Raft** | Leader election, log replication, snapshots | `openraft` `consensus` |
 | 10 | **API gateway / L7 reverse proxy** | Routing, load balancing, circuit breaking, mTLS | `tower` `hyper` `mTLS` |
+
+### 🎬 Tier 5 — Multimedia & streaming · *the bytes behind video & live*
+
+| # | Project | What you build | Key tech |
+|:-:|---------|----------------|----------|
+| 11 | **VOD streaming server** *(HLS/DASH)* | Hand-written fMP4 segmenter + m3u8/mpd manifest generator, adaptive bitrate, HTTP byte-range serving | `HLS/DASH` `ABR` `ISO-BMFF` |
+| 12 | **Distributed transcoding pipeline** | Keyframe-aligned chunking, parallel transcode workers, stitch + remux into a job DAG | `ffmpeg` `job-DAG` `codecs` |
+| 13 | **Live ingest server** *(RTMP → LL-HLS)* | RTMP handshake / AMF / chunk-stream parser, repackage to low-latency HLS | `RTMP` `live` `LL-HLS` |
+| 14 | **Real-time media transport** *(RTP/RTCP)* | RTP packetization, jitter buffer, NACK / retransmit, congestion control over UDP | `RTP/RTCP` `UDP` `jitter-buffer` |
+| 15 | **WebRTC SFU** | Selective RTP forwarding, ICE/STUN, simulcast layer selection, bandwidth estimation | `WebRTC` `SFU` `ICE` |
+
+> 🧵 **11 → 12 → 13** is the VOD-to-live spine; **14 → 15** are the hard real-time pair
+> (lossy UDP, no HTTP to hide behind). Each *vertical* is the part you'd normally reach
+> for `ffmpeg` / `GStreamer` / `webrtc-rs` to do — here you build the core yourself.
+
+### 🏆 Tier 6 — Capstone · *where it all pays off*
+
+| # | Project | What you build | Key tech |
+|:-:|---------|----------------|----------|
+| 16 | **Live streaming platform** *(Twitch-lite)* | End-to-end glass-to-glass: RTMP/WebRTC ingest → ABR transcode ladder → LL-HLS packaging → edge delivery → realtime chat & presence — **deployed to k8s** with autoscaling transcode workers | composes `03` `11` `12` `13` · `k8s/HPA` |
+| 17 | **Global WebRTC conferencing** *(cascaded SFU)* | Multi-region SFU federation, room placement, simulcast routing, server-side recording | composes `14` `15` + `consensus` |
+
+> 🏁 No new primitive here — the capstones are about **integration**: wiring the pieces
+> you built into one system that survives real traffic, with backpressure and failure
+> handling end to end. **#16** is the marquee (the full live pipeline at scale) and the
+> one place you do **real k8s ops** — autoscaling transcode workers is where HPA,
+> readiness probes, and pod disruption budgets actually earn their keep. **#17** is the
+> real-time stretch goal that also leans on your Raft work (#09) for placement.
+
+### 🌐 Tier 7 — Cross-cutting gauntlet · *networking + storage + caching + systems eng, all at once*
+
+> 🎛️ Every project here deliberately spans **all four pillars** — networking, database/storage
+> internals, caching, and systems engineering — instead of leaning on one. Difficulty 🟡 → 🔴.
+
+| # | Project | What you build | Key tech |
+|:-:|---------|----------------|----------|
+| 18 | **Ledger / payments core** *(Stripe-lite)* | Double-entry ledger, serializable transactions & balance invariants under concurrency, idempotency-key cache, signed webhooks w/ retries | `transactions` `idempotency` `webhooks` |
+| 19 | **BitTorrent client + seeder** | Peer wire protocol over raw TCP, UDP tracker + Kademlia DHT, piece verification, rarest-first scheduling, choke algorithm | `raw-TCP` `UDP` `DHT` `p2p` |
+| 20 | **Full-text search engine** *(Elasticsearch-lite)* | On-disk inverted index, tokenization, BM25 ranking, segment merging, query cache, scatter-gather shard fan-out | `inverted-index` `BM25` `mmap` |
+| 21 | **Workflow engine** *(Temporal-lite)* | Event-sourced history log, deterministic replay, durable timers, gRPC worker dispatch, sticky workflow-state caches | `event-sourcing` `replay` `gRPC` |
+| 22 | **LSM storage engine + Redis-compatible server** | WAL, memtables, SSTables, compaction, bloom filters, hand-built block cache — served over RESP so real `redis-cli` connects | `LSM` `RESP` `raw-TCP` `fsync` |
+
+> 🔩 **#22 is the keystone**: the engine you build here is exactly what the message broker
+> (**#08**) and Raft KV (**#09**) want underneath, and its RESP front-end makes your
+> distributed cache (**#07**) speak a protocol real clients already know. **#18** is where
+> isolation levels stop being trivia — bugs cost money. **#19** is the purest protocol
+> workout on the board.
+
+### 🧊 Tier 8 — Cloud-native internals · *optional · rebuild the tools themselves*
+
+> ⏸️ **Parked, not scheduled.** The streaming arm (Tiers 5–6) comes first. This tier is
+> here so the itch is captured — pick it up only if you want to rebuild the machinery
+> *under* Docker/k8s rather than just operate it.
+
+| # | Project | What you'd build | Key tech |
+|:-:|---------|------------------|----------|
+| — | **Container runtime** *(docker-lite)* | Linux namespaces + cgroups v2 + overlayfs + `pivot_root` — i.e. what `docker run` actually does | `namespaces` `cgroups` `OCI` |
+| — | **Mini orchestrator** *(k8s-lite)* | Reconciliation loop (desired vs. actual), bin-packing scheduler, health checks, rolling deploys — control-plane state on your **Raft KV (#09)** | `reconciliation` `scheduling` |
+
+> 🧩 A service-mesh sidecar would be the third, but it mostly overlaps the **API gateway
+> (#10)** — folded in there rather than duplicated.
 
 ---
 
@@ -181,6 +246,23 @@ Every project also carries cross-cutting **"scale skills"**:
 - 🏎️ A `bench/` with documented throughput numbers (before/after the scaling fix)
 - 🛑 Graceful shutdown, backpressure, connection pooling, timeouts/deadlines
 - 🐳 `docker-compose.yml` for dependencies
+
+### 🎮 …and it's a game
+
+- 🐉 **Boss fights** — every SPEC's benchmark is staged as a named boss with numeric
+  targets (*"The Thundering Herd: 1,000 concurrent requests for the same cold key
+  reach Postgres as ≤ 1 query"*). You don't finish a project — you **defeat** it.
+- 🏆 **Trophies** — `make trophies` shows the trophy case. Achievements unlock
+  themselves from the code, the SPECs, and the git log: first vertical (🩸 First
+  Blood), commit streaks (🔥), reviving a dormant project (🧟 Necromancer)…
+- ⚔️ **Quests** — `/quest 02 V1` (in Claude Code) runs one vertical as a guided
+  session: Socratic concept check → design sketch on a shared whiteboard → **failing
+  acceptance tests written up front** from the Done-when criteria (black-box, so
+  nothing is spoiled) → you implement while a health bar fills (`🟩🟩🟩⬜⬜ 3/5`) →
+  checkboxes flip with their Proofs when everything's green.
+- 🚨 **Incident drills** — `/incident 01` secretly breaks a running project and
+  pages you with *symptoms only*. Diagnose it with the tracing and metrics you
+  built, then write the blameless postmortem to `docs/incidents.md`.
 
 **→ Start here: [`projects/01-url-shortener/SPEC.md`](projects/01-url-shortener/SPEC.md)**
 

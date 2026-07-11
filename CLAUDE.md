@@ -75,6 +75,12 @@ Every project's `SPEC.md` grades on two axes — keep this when scaffolding new 
   canonical, so healthchecks and service-to-service URLs are untouched. Apply this
   when scaffolding any new project, and keep `.env.example` + code fallback URLs in
   lockstep with the compose file.
+- **Frontend / web projects** (a project's `web/` folder — dashboards, playgrounds,
+  admin UIs that front a Rust backend): use **Bun** (not npm/pnpm) for install, run,
+  and scripts. Stack is **React + TypeScript + Tailwind + shadcn/ui**. Default to a
+  **dark theme** and a clean, minimal, uncluttered UI — generous spacing, restrained
+  color, good typography; favor shadcn primitives over hand-rolled components. Apply
+  this whenever scaffolding or building any web frontend in this repo.
 
 ## Commands
 

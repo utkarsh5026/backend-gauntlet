@@ -4,6 +4,27 @@ members = [
     "crates/common-telemetry",
     "crates/common-config",
     "projects/01-url-shortener",
+    "projects/02-rate-limiter",
+    "projects/03-realtime-pubsub",
+    "projects/04-job-queue",
+    "projects/05-metrics-pipeline",
+    "projects/06-object-store",
+    "projects/07-distributed-cache",
+    "projects/08-message-broker",
+    "projects/09-raft-kv",
+    "projects/10-api-gateway",
+    "projects/11-vod-streaming",
+    "projects/12-transcode-pipeline",
+    "projects/13-live-ingest",
+    "projects/14-media-transport",
+    "projects/15-webrtc-sfu",
+    "projects/16-live-platform",
+    "projects/17-global-conferencing",
+    "projects/18-ledger-payments-core",
+    "projects/19-bittorrent",
+    "projects/20-full-text-search",
+    "projects/21-workflow-engine",
+    "projects/22-lsm-redis",
 ]
 
 # Shared dependency versions live here so every project pins the same line.
@@ -16,10 +37,54 @@ authors = ["Utkarsh Priyadarshi"]
 [workspace.dependencies]
 # --- async runtime + web ---
 tokio = { version = "1", features = ["full"] }
-axum = "0.7"
+axum = "0.8"
 tower = { version = "0.5", features = ["timeout", "limit"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
+# Project 01 embeds its built Vite/React dashboard (dashboard/dist) into the
+# binary so `cargo run` serves it at `/` with no external asset files — the
+# successor to the old single-file `include_str!` dashboard. The `mime-guess`
+# feature adds `metadata.mimetype()` so each asset gets the right Content-Type.
+rust-embed = { version = "8", features = ["mime-guess"] }
+# Project 01 uses this for a *taste* of rate limiting; project 02 builds the
+# limiter from scratch. 0.6+ tracks axum 0.8 (matches our axum pin).
+tower_governor = "0.6"
 hyper = "1"
+# Project 10 (API gateway) is a reverse proxy. `hyper-util`'s `legacy::Client` is the
+# pooled upstream client that reuses keep-alive connections (V1), plus the Tokio
+# executor/IO glue hyper 1.x factored out of core. `http-body-util` supplies the body
+# combinators used to relay a streamed request/response upstream without buffering.
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+http-body-util = "0.1"
+# Project 03 (pub/sub) needs Stream/Sink combinators to drive the split halves
+# of an axum WebSocket. `futures-util` is the lightweight half of `futures`.
+futures-util = "0.3"
+# Project 06 (object store) streams request/response bodies chunk by chunk.
+# `bytes` is the zero-copy chunk type; `tokio-util`'s `ReaderStream` turns a
+# blob file (AsyncRead) into a response Body without buffering it in RAM.
+bytes = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+# Project 05 (metrics pipeline) streams closed rollup windows to SSE clients.
+# `tokio-stream`'s `BroadcastStream` (the "sync" feature) bridges a broadcast
+# receiver into the `Stream` axum's SSE response wants.
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# --- broker + column store (project 05 — time-series metrics pipeline) ---
+# NATS JetStream as the durable log between ingest and the consumer. Pure Rust
+# (no C toolchain), so the workspace builds cleanly; the at-least-once semantics
+# map onto Kafka. See projects/05-metrics-pipeline/SPEC.md "Why NATS, not Kafka?".
+async-nats = "0.49"
+# Official ClickHouse client (HTTP interface) — where the rollups land + are read.
+clickhouse = "0.15"
+
+# --- gRPC (project 02 — rate limiter is served over gRPC/HTTP2) ---
+# tonic 0.13+ split the prost integration out: `tonic` is the runtime,
+# `tonic-prost` the codec, and `tonic-prost-build` the codegen (build-dep).
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-prost-build = "0.14"
+# Vendored `protoc` so the build needs no system protobuf compiler installed.
+protoc-bin-vendored = "3"
 
 # --- data ---
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
@@ -32,16 +97,84 @@ thiserror = "2"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+
+# --- hashing (project 06 — object store) ---
+# Content addressing names a blob by SHA-256 of its bytes (V1); the S3 ETag is
+# MD5 (single PUT) or md5-of-part-md5s (multipart, V4). `hex` encodes digests.
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+
+# --- randomness (project 07 — distributed cache · project 09 — Raft) ---
+# SWIM gossip probes a *random* peer each round; that randomness is what gives it
+# O(log n) dissemination and even failure-detection load across the cluster.
+# Raft (project 09) needs it too: the *randomized* election timeout is what breaks
+# split votes — every follower waits a different interval before standing.
+rand = "0.9"
+
+# --- HTTP client (project 09 — Raft KV: node-to-node RPC) ---
+# Each node POSTs RequestVote / AppendEntries / InstallSnapshot to its peers. The
+# consensus logic is the learning; the transport is plumbing, so it's fully wired
+# with reqwest. `rustls-tls` (not OpenSSL) keeps the workspace free of a system
+# TLS dependency — nodes speak plain HTTP here, but enabling TLS later needs no
+# dep change. `default-features = false` drops the unused blocking client + charset.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# --- TLS / mTLS (project 10 — API gateway, src/tls.rs) ---
+# The gateway terminates TLS from clients and can present a client cert to upstreams
+# (mutual TLS). `rustls` builds the Server/Client configs, `tokio-rustls` wraps a
+# TcpStream in a TLS session (the acceptor), and `rustls-pemfile` parses PEM cert/key
+# files. Pinned to the `ring` provider (not the default aws-lc-rs) so the workspace
+# builds with no C toolchain — matching reqwest's `rustls-tls` above.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+
+# --- memory-mapped I/O (project 20 — full-text search) ---
+# An on-disk inverted-index segment (V2) is read by `mmap`ing the file and letting
+# the OS page cache serve hot postings — no explicit read() syscalls, no buffering
+# the whole segment in the heap. `memmap2` is the maintained mmap wrapper; the
+# `Mmap` handle hands you a `&[u8]` view of the file that you parse in place.
+memmap2 = "0.9"
+
+# --- checksums (project 08 — message broker) ---
+# Every record framed in the on-disk log (V1) carries a CRC so a torn or
+# bit-rotted frame is *detected* on read, not silently returned. Kafka uses
+# CRC32C; `crc32fast` (plain CRC32, SIMD-accelerated) is the simple learning
+# stand-in — swap the algorithm if you want to match Kafka byte-for-byte.
+crc32fast = "1"
+
+# --- STUN / ICE integrity (project 15 — WebRTC SFU, src/ice.rs) ---
+# An ICE connectivity check is a STUN Binding request keyed to the peer with a
+# MESSAGE-INTEGRITY attribute = HMAC-SHA1 over the message using the ICE `pwd` as
+# the key (RFC 5389 §15.4), and a FINGERPRINT = CRC32(msg) ^ 0x5354554e (uses the
+# `crc32fast` above). `hmac`+`sha1` are the RustCrypto pair that computes that MAC —
+# same family/version line as the `sha2` above, so the lockfile stays coherent.
+hmac = "0.12"
+sha1 = "0.10"
 
 # --- observability ---
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+# `http` gives `common-telemetry` the `Request` type so it can mint one span
+# (with a request id) per HTTP request without depending on axum. Pinned to 1.x
+# to match axum 0.8's re-exported `http`.
+http = "1"
+# Prometheus counters/gauges. `metrics` is the facade (macros write to a global
+# recorder — no-op until one is installed, so tests need no setup); the exporter
+# renders the registry for a `/metrics` scrape. `default-features = false` drops
+# its bundled HTTP listener — we serve `/metrics` from our own axum router.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.17", default-features = false }
 
 # --- config ---
 dotenvy = "0.15"
 
 # --- testing ---
 proptest = "1"
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # --- internal shared crates ---
 common-telemetry = { path = "crates/common-telemetry" }

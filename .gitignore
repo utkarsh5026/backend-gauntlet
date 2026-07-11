@@ -3,3 +3,8 @@
 .env
 *.log
 .DS_Store
+
+# Python (task runners / bench harness)
+__pycache__/
+*.py[cod]
+.venv/
