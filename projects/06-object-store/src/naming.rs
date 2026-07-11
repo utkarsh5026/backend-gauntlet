@@ -81,17 +81,11 @@ mod tests {
     #[test]
     fn validate_bucket_name_rejects_length_outside_bounds() {
         assert!(
-            matches!(
-                validate_bucket_name(""),
-                Err(AppError::InvalidRequest(_))
-            ),
+            matches!(validate_bucket_name(""), Err(AppError::InvalidRequest(_))),
             "empty is below the 3-char minimum"
         );
         assert!(
-            matches!(
-                validate_bucket_name("ab"),
-                Err(AppError::InvalidRequest(_))
-            ),
+            matches!(validate_bucket_name("ab"), Err(AppError::InvalidRequest(_))),
             "2 chars is below the 3-char minimum"
         );
         assert!(
@@ -109,10 +103,7 @@ mod tests {
     fn validate_bucket_name_rejects_illegal_chars() {
         for bad in ["Photos", "my_bucket", "a/b", "../etc", "my.bucket", "café"] {
             assert!(
-                matches!(
-                    validate_bucket_name(bad),
-                    Err(AppError::InvalidRequest(_))
-                ),
+                matches!(validate_bucket_name(bad), Err(AppError::InvalidRequest(_))),
                 "{bad:?} must be rejected as an invalid bucket name"
             );
         }
@@ -135,10 +126,7 @@ mod tests {
             "a trailing hyphen is not a valid S3 bucket name"
         );
         assert!(
-            matches!(
-                validate_bucket_name("-"),
-                Err(AppError::InvalidRequest(_))
-            ),
+            matches!(validate_bucket_name("-"), Err(AppError::InvalidRequest(_))),
             "a lone hyphen fails both length and hyphen-edge rules"
         );
     }

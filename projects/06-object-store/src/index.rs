@@ -18,34 +18,7 @@ use tokio::io::AsyncWriteExt;
 use crate::error::AppError;
 use crate::naming::{encode_key, validate_bucket_name};
 use crate::object::{Digest, ObjectMeta};
-use crate::store::Store;
-
-/// RAII guard that deletes a half-written temp entry unless it's disarmed.
-///
-/// A [`put`](Index::put) writes the JSON pointer into `tmp/` and then renames
-/// it atomically into place. If anything between file creation and the rename
-/// fails (an error `?`-returns, or the future is dropped), this guard removes
-/// the stray temp file on the way out. Once the rename succeeds the caller
-/// [`disarm`](Self::disarm)s it so the now-committed file survives.
-struct TempEntry(Option<PathBuf>);
-
-impl TempEntry {
-    /// Give up ownership of the temp path so [`Drop`] won't delete it.
-    ///
-    /// Called after the temp file has been renamed into its committed location —
-    /// the file is no longer garbage, so the guard must not reap it.
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for TempEntry {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
+use crate::store::{Store, TempEntry};
 
 /// Maps `(bucket, key)` → the blob (and metadata) backing it, and owns the
 /// consistency + reclamation rules over the V1 store.
@@ -146,7 +119,7 @@ impl Index {
         let ObjectMeta { bucket, key, .. } = &meta;
         let path = self.index_path(bucket, key)?;
         let temp_path = self.temp_entry_path(bucket, key);
-        let mut temp_guard = TempEntry(Some(temp_path.clone()));
+        let mut temp_guard = TempEntry::new(temp_path.clone());
 
         tfs::create_dir_all(self.objects_dir(bucket)).await?;
         tfs::create_dir_all(self.tmp_dir(bucket)).await?;
@@ -439,6 +412,8 @@ mod tests {
     use crate::streaming::{stream_to_store, Stored};
     use bytes::Bytes;
     use futures_util::stream;
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
     use tempfile::TempDir;
 
     /// An Index rooted in a throwaway temp dir, over a real store.
@@ -944,5 +919,81 @@ mod tests {
             page.next_continuation_token.is_some(),
             "with 3 folders and max_keys=2 the listing is truncated"
         );
+    }
+
+    /// Turn any `Debug` error into a `proptest` failure (a shrunk counterexample
+    /// beats a bare `unwrap` panic).
+    fn fail<E: std::fmt::Debug>(e: E) -> TestCaseError {
+        TestCaseError::fail(format!("{e:?}"))
+    }
+
+    /// Four distinct contents keyed by a small group id → at most four distinct
+    /// blobs, so duplicate groups genuinely share one blob (exercising the
+    /// refcount-by-GC logic).
+    fn group_bytes(group: u8) -> Vec<u8> {
+        format!("content-for-group-{group}").into_bytes()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// The full mark-and-sweep refcount law, in BOTH directions: after
+        /// deleting an arbitrary subset of keys, a blob is present on disk after a
+        /// GC pass **iff** some still-live key references it. Deleting one of two
+        /// keys that share a blob keeps the bytes; deleting the last referencing
+        /// key lets GC reclaim them.
+        ///
+        /// This lives in-crate (not in `tests/`) on purpose: `Index::gc_grace()`
+        /// is `Duration::ZERO` only under `cfg!(test)`, which is active for the
+        /// library's own test build but not for an external integration crate. So
+        /// the *reclamation* direction — orphan removed immediately — is only
+        /// observable here. The integration test asserts the grace-independent
+        /// safety half (`gc_never_reaps_a_referenced_blob`).
+        #[test]
+        fn prop_gc_reclaims_exactly_unreferenced_blobs(
+            entries in prop::collection::hash_map("[a-z0-9/]{1,10}", (0u8..4, any::<bool>()), 0..12),
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build current-thread runtime");
+            rt.block_on(async {
+                let (_root, store, index) = fresh_full();
+                index.create_bucket("photos").await.map_err(fail)?;
+
+                let mut digest_of_group: std::collections::HashMap<u8, Digest> =
+                    std::collections::HashMap::new();
+                for (key, (group, _)) in &entries {
+                    let stored = store_bytes(&store, &group_bytes(*group)).await;
+                    digest_of_group.insert(*group, stored.digest.clone());
+                    index.put(meta_for("photos", key, &stored)).await.map_err(fail)?;
+                }
+                for (key, (_, delete)) in &entries {
+                    if *delete {
+                        index.delete("photos", key).await.map_err(fail)?;
+                    }
+                }
+
+                index.gc().await.map_err(fail)?;
+
+                // A group is still referenced iff some non-deleted key used it.
+                let referenced: std::collections::HashSet<u8> = entries
+                    .values()
+                    .filter(|(_, delete)| !*delete)
+                    .map(|(group, _)| *group)
+                    .collect();
+
+                for (group, digest) in &digest_of_group {
+                    let present = store.contains(digest).await;
+                    prop_assert_eq!(
+                        present,
+                        referenced.contains(group),
+                        "group {}: blob present must equal 'still referenced'",
+                        group
+                    );
+                }
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
     }
 }
