@@ -91,6 +91,7 @@ where
     let mut sha_hasher = Sha256::new();
     let mut md5_hasher = md5::Md5::new();
     let mut total_file_size = 0u64;
+    let started = tokio::time::Instant::now();
 
     loop {
         match body.next().await {
@@ -120,6 +121,10 @@ where
 
     store.commit_temp(temp.path(), &stored.digest).await?;
     temp.disarm();
+    let elapsed = started.elapsed().as_secs_f64();
+    if elapsed > 0.0 {
+        metrics::histogram!(crate::metrics::UPLOAD_THROUGHPUT).record(stored.size as f64 / elapsed);
+    }
     Ok(stored)
 }
 

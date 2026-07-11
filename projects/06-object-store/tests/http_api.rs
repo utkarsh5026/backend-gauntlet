@@ -13,7 +13,7 @@
 //! their handlers still `todo!()` and would panic. Those belong to a `/quest`.
 
 use axum::body::Body;
-use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG};
+use axum::http::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_NONE_MATCH, RANGE};
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
@@ -121,6 +121,28 @@ impl TestApp {
         self.send(req).await
     }
 
+    /// GET carrying a `Range:` header, e.g. `range = "bytes=2-5"`.
+    async fn get_object_range(&self, bucket: &str, key: &str, range: &str) -> Resp {
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/{bucket}/{key}"))
+            .header(RANGE, range)
+            .body(Body::empty())
+            .unwrap();
+        self.send(req).await
+    }
+
+    /// GET carrying an `If-None-Match:` header (conditional-request / ETag path).
+    async fn get_object_if_none_match(&self, bucket: &str, key: &str, etag: &str) -> Resp {
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/{bucket}/{key}"))
+            .header(IF_NONE_MATCH, etag)
+            .body(Body::empty())
+            .unwrap();
+        self.send(req).await
+    }
+
     async fn delete_object(&self, bucket: &str, key: &str) -> Resp {
         let req = Request::builder()
             .method("DELETE")
@@ -221,6 +243,166 @@ async fn put_then_get_round_trips_bytes_and_metadata() {
         Some(expected_single_put_etag(body).as_str()),
         "the GET ETag must match the PUT ETag"
     );
+}
+
+// ── Range GET (V2 byte ranges) ────────────────────────────────────────────────
+//
+// The handler parses `Range: bytes=<start>-<end>` (inclusive, both bounds
+// required), streams exactly that slice, and answers `206 Partial Content` with a
+// slice-sized `Content-Length` plus a `bytes <start>-<end>/<total>` Content-Range.
+// A malformed or out-of-bounds range is a 400, never a 500.
+
+#[tokio::test]
+async fn range_get_preserves_the_whole_object_etag() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "digits.txt";
+    app.create_bucket(bucket).await;
+
+    let body = b"0123456789";
+    app.put_object(bucket, key, "text/plain", body).await;
+
+    // A partial read is still a read of the *same object*: the ETag identifies the
+    // whole object (hex(md5(all bytes))), so ranging must not rewrite it to some
+    // per-slice digest — otherwise conditional caching across ranges breaks.
+    let get = app.get_object_range(bucket, key, "bytes=2-5").await;
+    assert_eq!(get.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(&get.body[..], b"2345");
+    assert_eq!(
+        get.header(ETAG).as_deref(),
+        Some(expected_single_put_etag(body).as_str()),
+        "the ETag must be the whole-object md5, unchanged by ranging"
+    );
+    assert_eq!(get.header(CONTENT_RANGE).as_deref(), Some("bytes 2-5/10"));
+}
+
+#[tokio::test]
+async fn range_get_can_read_the_final_byte() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "digits.txt";
+    app.create_bucket(bucket).await;
+
+    let body = b"0123456789";
+    app.put_object(bucket, key, "text/plain", body).await;
+
+    // The last valid offset is len-1 (=9); bytes=9-9 is a one-byte range, not an
+    // off-by-one out-of-bounds error.
+    let get = app.get_object_range(bucket, key, "bytes=9-9").await;
+    assert_eq!(get.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(&get.body[..], b"9");
+    assert_eq!(get.header(CONTENT_LENGTH).as_deref(), Some("1"));
+    assert_eq!(get.header(CONTENT_RANGE).as_deref(), Some("bytes 9-9/10"));
+}
+
+#[tokio::test]
+async fn range_get_past_end_of_object_is_400() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "digits.txt";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"0123456789")
+        .await;
+
+    // end=100 is well past the last byte (offset 9) → open_blob_range rejects it.
+    let get = app.get_object_range(bucket, key, "bytes=0-100").await;
+    assert_eq!(get.status, StatusCode::BAD_REQUEST);
+    assert!(get.json()["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid range"));
+}
+
+#[tokio::test]
+async fn range_get_with_start_after_end_is_400() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "digits.txt";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"0123456789")
+        .await;
+
+    let get = app.get_object_range(bucket, key, "bytes=5-2").await;
+    assert_eq!(get.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn malformed_range_header_is_400() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "digits.txt";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"0123456789")
+        .await;
+
+    // Wrong unit, missing '=', missing '-', and non-numeric bounds all fail the
+    // header parser before the store is ever touched → 400, not 500.
+    for bad in ["items=0-5", "bytes 0-5", "bytes=05", "bytes=a-b"] {
+        let get = app.get_object_range(bucket, key, bad).await;
+        assert_eq!(
+            get.status,
+            StatusCode::BAD_REQUEST,
+            "malformed Range {bad:?} must be a 400"
+        );
+    }
+}
+
+// ── Conditional GET on the ETag (If-None-Match) ───────────────────────────────
+//
+// The matching-ETag → 304 case lives in `matching_if_none_match_returns_304…`;
+// this covers the other branch — a stale ETag must fall through to a full 200.
+
+#[tokio::test]
+async fn if_none_match_with_stale_etag_returns_the_object() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "cached.txt";
+    app.create_bucket(bucket).await;
+
+    let body = b"cache me if you can";
+    app.put_object(bucket, key, "text/plain", body).await;
+
+    // The client's cached ETag no longer matches → full 200 with the new bytes.
+    let get = app
+        .get_object_if_none_match(bucket, key, "\"an-old-etag\"")
+        .await;
+    assert_eq!(get.status, StatusCode::OK);
+    assert_eq!(&get.body[..], body);
+    assert_eq!(
+        get.header(ETAG).as_deref(),
+        Some(expected_single_put_etag(body).as_str())
+    );
+}
+
+#[tokio::test]
+async fn range_get_returns_only_the_requested_inclusive_slice() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "sequence.txt";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"0123456789")
+        .await;
+
+    let get = app.get_object_range(bucket, key, "bytes=2-5").await;
+    assert_eq!(get.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(&get.body[..], b"2345");
+    assert_eq!(get.header(CONTENT_LENGTH).as_deref(), Some("4"));
+    assert_eq!(get.header(CONTENT_RANGE).as_deref(), Some("bytes 2-5/10"));
+}
+
+#[tokio::test]
+async fn matching_if_none_match_returns_304_without_a_body() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "cached.txt";
+    let body = b"cache me";
+    app.create_bucket(bucket).await;
+    let put = app.put_object(bucket, key, "text/plain", body).await;
+    let etag = put.header(ETAG).expect("PUT returns ETag");
+
+    let get = app.get_object_if_none_match(bucket, key, &etag).await;
+    assert_eq!(get.status, StatusCode::NOT_MODIFIED);
+    assert!(get.body.is_empty());
 }
 
 #[tokio::test]

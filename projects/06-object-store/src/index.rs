@@ -130,6 +130,8 @@ impl Index {
         file.sync_all().await?;
         tfs::rename(&temp_path, &path).await?;
         temp_guard.disarm();
+        metrics::counter!(crate::metrics::OBJECTS_PUT_TOTAL).increment(1);
+        metrics::histogram!(crate::metrics::OBJECT_SIZE_BYTES).record(meta.size as f64);
         Ok(())
     }
 
@@ -162,10 +164,10 @@ impl Index {
     /// removing the entry.
     pub async fn delete(&self, bucket: &str, key: &str) -> Result<(), AppError> {
         let path = self.index_path(bucket, key)?;
-        if !tokio::fs::try_exists(&path).await? {
-            return Ok(());
+        if tokio::fs::try_exists(&path).await? {
+            tokio::fs::remove_file(&path).await?;
         }
-        tokio::fs::remove_file(&path).await?;
+        metrics::counter!(crate::metrics::OBJECTS_DELETED_TOTAL).increment(1);
         Ok(())
     }
 
@@ -301,6 +303,7 @@ impl Index {
                 }
 
                 self.store.remove(&digest).await?;
+                metrics::counter!(crate::metrics::GC_BLOBS_RECLAIMED_TOTAL).increment(1);
                 reclaimed += 1;
             }
         }
