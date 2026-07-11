@@ -37,6 +37,12 @@ impl Digest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ETag(pub String);
 
+impl ETag {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What we persist about a stored object — the index row (V3) that points a
 /// `(bucket, key)` at the blob backing it, plus the metadata S3 returns on
 /// HEAD/GET.
