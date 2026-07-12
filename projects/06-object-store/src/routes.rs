@@ -17,20 +17,29 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
-use crate::object::ObjectMeta;
+use crate::index::Index;
+use crate::object::{ETag, ObjectMeta};
 use crate::{streaming, AppState};
 
 const BUCKET_KEY: &str = "bucket";
 const KEY: &str = "key";
 const SIZE_KEY: &str = "size";
 
+/// Build the path-style S3 API router over the given [`AppState`].
+///
+/// Wires bucket routes (`/{bucket}`) and object routes (`/{bucket}/{*key}`),
+/// with the object POST/PUT/DELETE verbs doubling as the query-dispatched
+/// multipart API (see the module docs). The body limit is disabled so large
+/// uploads stream through [`streaming::stream_to_store`] rather than being
+/// buffered, and every request is traced via [`TraceLayer`]. `GET /metrics`
+/// lives in the separate [`metrics_router`].
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -40,12 +49,10 @@ pub fn router(state: AppState) -> Router {
             "/{bucket}/{*key}",
             put(put_object)
                 .get(get_object)
+                .head(head_object)
                 .delete(delete_object)
                 .post(post_object),
         )
-        // Objects stream — disable axum's 2 MB default body limit, which would
-        // truncate every real upload. The real cap (MAX_OBJECT_SIZE) is enforced
-        // in the V2 stream loop instead.
         .layer(DefaultBodyLimit::disable())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -70,6 +77,12 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+/// `PUT /{bucket}` — create a bucket (V3 `CreateBucket`).
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if the index rejects the bucket (e.g. an invalid
+/// name, or a storage failure).
 async fn create_bucket(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
@@ -134,31 +147,21 @@ async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, AppError> {
-    let span = tracing::Span::current();
-    span.record(BUCKET_KEY, bucket.as_str());
-    span.record(KEY, key.as_str());
+    let span = make_span(&bucket, &key);
 
     let _guard = crate::metrics::InFlightGuard::new();
     let content_type = content_type_of(&headers);
+    let stream = body.into_data_stream();
 
-    // UploadPart: a PUT carrying ?uploadId & ?partNumber (V4).
     if let (Some(upload_id), Some(part_number)) = (q.upload_id.as_deref(), q.part_number) {
         let part = state
             .multipart
-            .upload_part(
-                upload_id,
-                part_number,
-                body.into_data_stream(),
-                state.max_object_size,
-            )
+            .upload_part(upload_id, part_number, stream, state.max_object_size)
             .await?;
         return Ok((StatusCode::OK, [(header::ETAG, part.etag.0)]).into_response());
     }
 
-    // Plain single PUT: stream the body to the store (V2), then index it (V3).
-    let stored =
-        streaming::stream_to_store(&state.store, body.into_data_stream(), state.max_object_size)
-            .await?;
+    let stored = streaming::stream_to_store(&state.store, stream, state.max_object_size).await?;
     let meta = ObjectMeta {
         bucket,
         key,
@@ -177,8 +180,11 @@ async fn put_object(
 /// the metadata (V3), opens the blob (V1), and streams the file as the body so
 /// the bytes never all sit in memory at once.
 ///
-/// TODO(V4 / protocol): honour a `Range:` header → `206 Partial Content` with a
-/// `Content-Range`, and `If-None-Match` on the ETag → `304 Not Modified`.
+/// Honours a `Range: bytes=a-b` header → `206 Partial Content` + `Content-Range`
+/// (serving just that slice), and `If-None-Match` on the ETag → `304 Not
+/// Modified`. Every full response carries `ETag`, `Content-Length`,
+/// `Content-Type`, and `Last-Modified`; [`head_object`] returns the same headers
+/// with no body.
 #[tracing::instrument(
     skip_all,
     fields(
@@ -192,24 +198,11 @@ async fn get_object(
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let span = tracing::Span::current();
-    span.record(BUCKET_KEY, bucket.as_str());
-    span.record(KEY, key.as_str());
+    let span = make_span(&bucket, &key);
 
-    let meta = state
-        .index
-        .get(&bucket, &key)
-        .await?
-        .ok_or(AppError::NoSuchKey)?;
-    span.record(SIZE_KEY, meta.size);
-
-    if let Some(etag) = headers.get(header::IF_NONE_MATCH) {
-        let etag = etag
-            .to_str()
-            .map_err(|_| AppError::InvalidRequest("invalid If-None-Match header".into()))?;
-        if meta.etag.as_str() == etag {
-            return Ok(StatusCode::NOT_MODIFIED.into_response());
-        }
+    let meta = require_object(&state.index, &bucket, &key, &span).await?;
+    if let Some(response) = check_etag_present(&headers, &meta.etag)? {
+        return Ok(response);
     }
 
     let is_range = headers.contains_key(header::RANGE);
@@ -264,12 +257,14 @@ async fn get_object(
         StatusCode::OK
     };
 
+    let last_modified = http_date(meta.last_modified);
     let mut response = (
         status,
         [
             (header::CONTENT_TYPE, meta.content_type),
             (header::ETAG, meta.etag.0),
             (header::CONTENT_LENGTH, response_size.to_string()),
+            (header::LAST_MODIFIED, last_modified),
         ],
         body,
     )
@@ -287,6 +282,62 @@ async fn get_object(
     Ok(response)
 }
 
+/// `HEAD /{bucket}/{key}` — the object's metadata headers with **no body**
+/// (S3 `HeadObject`). Same lookup and conditional-request handling as GET, but it
+/// deliberately never opens the blob: HEAD exists precisely so a client can read
+/// `Content-Length`, `ETag`, `Content-Type`, and `Last-Modified` without paying to
+/// transfer the bytes.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        bucket = tracing::field::Empty,
+        key = tracing::field::Empty,
+        size = tracing::field::Empty,
+    )
+)]
+async fn head_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let span = make_span(&bucket, &key);
+    let meta = require_object(&state.index, &bucket, &key, &span).await?;
+
+    if let Some(resp) = check_etag_present(&headers, &meta.etag)? {
+        return Ok(resp);
+    }
+
+    let last_modified = http_date(meta.last_modified);
+    Ok((
+        [
+            (header::CONTENT_TYPE, meta.content_type),
+            (header::ETAG, meta.etag.0),
+            (header::CONTENT_LENGTH, meta.size.to_string()),
+            (header::LAST_MODIFIED, last_modified),
+        ],
+        Body::empty(),
+    )
+        .into_response())
+}
+
+/// Query params on `DELETE /{bucket}/{key}`; `?uploadId` switches delete to
+/// AbortMultipartUpload.
+#[derive(Debug, Deserialize)]
+struct DeleteQuery {
+    #[serde(rename = "uploadId")]
+    upload_id: Option<String>,
+}
+
+/// `DELETE /{bucket}/{key}` — delete an object (V3), OR abort a multipart
+/// upload when `?uploadId` is present (V4 `AbortMultipartUpload`).
+///
+/// S3 delete is idempotent: removing an absent key still returns
+/// `204 No Content`. The pre-delete `get` is only to record the object's size
+/// on the span.
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if aborting the upload or the index delete fails.
 #[tracing::instrument(
     skip_all,
     fields(
@@ -300,9 +351,7 @@ async fn delete_object(
     Path((bucket, key)): Path<(String, String)>,
     Query(q): Query<DeleteQuery>,
 ) -> Result<StatusCode, AppError> {
-    let span = tracing::Span::current();
-    span.record(BUCKET_KEY, bucket.as_str());
-    span.record(KEY, key.as_str());
+    let span = make_span(&bucket, &key);
     if let Some(upload_id) = q.upload_id.as_deref() {
         state.multipart.abort(upload_id).await?;
         return Ok(StatusCode::NO_CONTENT);
@@ -314,11 +363,17 @@ async fn delete_object(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /{bucket}/{key}` — the multipart control verbs (V4), dispatched on the
-/// query: `?uploads` initiates, `?uploadId=…` completes.
+/// `POST /{bucket}/{key}` — the two body-less multipart verbs, dispatched on
+/// query params (V4):
+///   - `?uploads`     → InitiateMultipartUpload (returns a fresh `uploadId`).
+///   - `?uploadId=…`  → CompleteMultipartUpload (assembles the uploaded parts).
 ///
-/// TODO(protocol): both the request body (CompleteMultipartUpload part list) and
-/// the responses are XML in real S3; we accept/emit JSON placeholders for now.
+/// A POST with neither param is a client error.
+///
+/// # Errors
+///
+/// Returns [`AppError::InvalidRequest`] for an unrecognised POST, or any error
+/// bubbled up from `multipart.initiate` / `multipart.complete`.
 async fn post_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
@@ -332,12 +387,12 @@ async fn post_object(
             .multipart
             .initiate(&bucket, &key, content_type)
             .await?;
-        return Ok(Json(json!({
+        let response = json!({
             BUCKET_KEY: bucket,
             KEY: key,
             "uploadId": upload_id,
-        }))
-        .into_response());
+        });
+        return Ok(Json(response).into_response());
     }
 
     // CompleteMultipartUpload: POST .../{key}?uploadId=…  (body lists the parts)
@@ -361,6 +416,13 @@ async fn post_object(
     ))
 }
 
+/// Format a timestamp as an HTTP-date (RFC 7231 IMF-fixdate), e.g.
+/// `Tue, 15 Nov 1994 08:12:31 GMT` — the only format `Last-Modified` and
+/// `If-Modified-Since` accept. The value is UTC, so the literal `GMT` is correct.
+fn http_date(dt: DateTime<Utc>) -> String {
+    dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+}
+
 /// Read the `Content-Type` header, defaulting to the S3 default for objects.
 fn content_type_of(headers: &HeaderMap) -> String {
     headers
@@ -374,6 +436,40 @@ fn invalid_err(msg: impl Into<String>) -> AppError {
     AppError::InvalidRequest(msg.into())
 }
 
+fn make_span(bucket: &str, key: &str) -> tracing::Span {
+    let span = tracing::Span::current();
+    span.record(BUCKET_KEY, bucket);
+    span.record(KEY, key);
+    span
+}
+
+async fn require_object(
+    index: &Index,
+    bucket: &str,
+    key: &str,
+    span: &tracing::Span,
+) -> Result<ObjectMeta, AppError> {
+    let meta = index.get(bucket, key).await?.ok_or(AppError::NoSuchKey)?;
+    span.record(SIZE_KEY, meta.size);
+    Ok(meta)
+}
+
+/// Returns `304 Not Modified` when the request's `If-None-Match` matches `etag`.
+fn check_etag_present(headers: &HeaderMap, etag: &ETag) -> Result<Option<Response>, AppError> {
+    let Some(header_value) = headers.get(header::IF_NONE_MATCH) else {
+        return Ok(None);
+    };
+    let if_none_match = header_value
+        .to_str()
+        .map_err(|_| AppError::InvalidRequest("invalid If-None-Match header".into()))?;
+    if etag.as_str() == if_none_match {
+        return Ok(Some(StatusCode::NOT_MODIFIED.into_response()));
+    }
+    Ok(None)
+}
+
+/// Query params on `PUT /{bucket}/{key}`. Both present ⇒ UploadPart; both
+/// absent ⇒ a plain single-object PUT.
 #[derive(Debug, Deserialize)]
 struct PutQuery {
     #[serde(rename = "uploadId")]
@@ -382,20 +478,19 @@ struct PutQuery {
     part_number: Option<u32>,
 }
 
+/// Query params on `POST /{bucket}/{key}` that select the multipart verb.
 #[derive(Debug, Deserialize)]
 struct PostQuery {
     /// Present (valueless `?uploads`) for InitiateMultipartUpload.
     uploads: Option<String>,
+    /// Present for CompleteMultipartUpload.
     #[serde(rename = "uploadId")]
     upload_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct DeleteQuery {
-    #[serde(rename = "uploadId")]
-    upload_id: Option<String>,
-}
-
+/// Query params on `GET /{bucket}` (`ListObjectsV2`) — the standard S3 listing
+/// knobs: prefix filter, `delimiter` for pseudo-directories, `continuation-token`
+/// for paging, and `max-keys` to cap the page size.
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     prefix: Option<String>,

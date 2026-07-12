@@ -155,56 +155,58 @@ as a concrete, testable definition of protocol compatibility.
 ## Horizontal checklist (the backend fundamentals)
 
 ### Protocols / API
-- [ ] Path-style S3 routing: bucket + key (keys contain `/` → a wildcard route),
-      with the multipart verbs dispatched on query params (`?uploads`,
-      `?uploadId`, `?partNumber`). Sensible status codes via `AppError`:
-      `404 NoSuchKey` / `NoSuchBucket`, `400` for a malformed request,
-      `413` when an object/part exceeds the cap.
-- [ ] **HTTP `Range` requests** on GET: `Range: bytes=a-b` → `206 Partial
-      Content` with a `Content-Range` header, serving only that slice of the blob
-      (this is what makes the store usable for video seek / resumable download).
-- [ ] **Conditional requests:** `If-None-Match` on the ETag → `304 Not Modified`;
-      return `ETag`, `Content-Length`, `Content-Type`, `Last-Modified` on GET/HEAD.
+- [x] Path-style S3 routing: bucket + key (keys contain `/` → a wildcard route),
+  with the multipart verbs dispatched on query params (`?uploads`,
+  `?uploadId`, `?partNumber`). Sensible status codes via `AppError`:
+  `404 NoSuchKey` / `NoSuchBucket`, `400` for a malformed request,
+  `413` when an object/part exceeds the cap.
+- [x] **HTTP `Range` requests** on GET: `Range: bytes=a-b` → `206 Partial
+  Content` with a `Content-Range` header, serving only that slice of the blob
+  (this is what makes the store usable for video seek / resumable download).
+- [x] **Conditional requests:** `If-None-Match` on the ETag → `304 Not Modified`;
+  return `ETag`, `Content-Length`, `Content-Type`, `Last-Modified` on GET/HEAD.
 - [ ] **S3 XML wire format** for `ListBucketResult` and the multipart
-      init/complete bodies (the scaffold returns JSON as a placeholder — switch
-      to XML for real `aws s3` / SDK compatibility). Note where it's faked.
-- [ ] **Disable axum's default body limit** (objects stream; the 2 MB default
-      would truncate every real upload) and enforce your *own* `MAX_OBJECT_SIZE`
-      in the stream loop instead. Graceful shutdown that lets in-flight streams
-      finish.
+  init/complete bodies (the scaffold returns JSON as a placeholder — switch
+  to XML for real `aws s3` / SDK compatibility). Note where it's faked.
+- [x] **Disable axum's default body limit** (objects stream; the 2 MB default
+  would truncate every real upload) and enforce your *own* `MAX_OBJECT_SIZE`
+  in the stream loop instead. Graceful shutdown that lets in-flight streams
+  finish.
 
 ### State & durability
-- [ ] The atomic commit (V1) holds under a crash: a `kill -9` during a PUT leaves
-      **either** the whole object **or** nothing — never a truncated blob under
-      its final name. Demonstrate it (kill mid-write, then read back).
-- [ ] The blob-then-pointer order (V3) holds: a crash between commit and index
-      leaves an orphan blob (GC-able), never a dangling key.
-- [ ] Dedup is real: PUT the same bytes under two keys and assert one blob on
-      disk. Delete one key and the blob survives until the other key is gone too.
+- [x] The atomic commit (V1) holds under a crash: a `kill -9` during a PUT leaves
+  **either** the whole object **or** nothing — never a truncated blob under
+  its final name. Demonstrate it (kill mid-write, then read back).
+- [x] The blob-then-pointer order (V3) holds: a crash between commit and index
+  leaves an orphan blob (GC-able), never a dangling key.
+- [x] Dedup is real: PUT the same bytes under two keys and assert one blob on
+  disk. Delete one key and the blob survives until the other key is gone too.
 
 ### Security / abuse protection
 - [ ] Authenticate writes (and optionally reads). Real S3 uses **SigV4**
-      request signing; a simplified access-key/HMAC scheme is a fair learning
-      target — at minimum gate PUT/DELETE behind a credential. An open
-      `PUT /{bucket}/{key}` is an open disk for the whole internet.
+  request signing; a simplified access-key/HMAC scheme is a fair learning
+  target — at minimum gate PUT/DELETE behind a credential. An open
+  `PUT /{bucket}/{key}` is an open disk for the whole internet.
 - [ ] Validate and **cap** everything the caller controls: object & part size,
-      bucket names (S3 rules: 3–63 chars, lowercase, no leading `/`), key length,
-      part numbers. Reject path traversal — a key must never escape the data dir
-      (`../../etc/...`); resolve through the content-addressed layout, not raw
-      user paths.
-- [ ] Never trust the client-supplied `Content-Length` for accounting — count the
-      bytes you actually stream.
+  bucket names (S3 rules: 3–63 chars, lowercase, no leading `/`), key length,
+  part numbers. Reject path traversal — a key must never escape the data dir
+  (`../../etc/...`); resolve through the content-addressed layout, not raw
+  user paths.
+- [x] Never trust the client-supplied `Content-Length` for accounting — count the
+  bytes you actually stream.
 
 ### Observability
-- [ ] Counters: objects PUT / GET / DELETE, multipart initiated / completed /
-      aborted, **dedup hits** (a PUT whose content already existed), GC blobs
-      reclaimed, range requests served.
-- [ ] Gauges: total bytes stored, blob count, in-flight uploads, open multipart
-      sessions (a climbing count of never-completed sessions is a leak/abuse
-      signal).
-- [ ] Histograms: upload/download **throughput** (bytes/sec) and object-size
-      distribution; a `tracing` span per request carrying `bucket`, `key`, and
-      `size`. Never log object bodies.
+- [x] Counters: objects PUT / GET / DELETE, multipart initiated / completed /
+  aborted, **dedup hits** (a PUT whose content already existed), GC blobs
+  reclaimed, range requests served.
+- [x] Gauges: total bytes stored, blob count, in-flight uploads, open multipart
+  sessions (a climbing count of never-completed sessions is a leak/abuse
+  signal).
+- [x] Histograms: upload/download **throughput** (bytes/sec) and object-size
+  distribution; a `tracing` span per request carrying `bucket`, `key`, and
+  `size`. Never log object bodies.
+
+Proof: `tests/observability.rs`, `tests/http_api.rs`, and multipart module tests.
 
 ---
 

@@ -13,7 +13,9 @@
 //! their handlers still `todo!()` and would panic. Those belong to a `/quest`.
 
 use axum::body::Body;
-use axum::http::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_NONE_MATCH, RANGE};
+use axum::http::header::{
+    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_NONE_MATCH, LAST_MODIFIED, RANGE,
+};
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
@@ -143,6 +145,18 @@ impl TestApp {
         self.send(req).await
     }
 
+    /// HEAD — metadata only, no body (S3 `HeadObject`). `if_none_match` sets the
+    /// conditional header when `Some`.
+    async fn head_object(&self, bucket: &str, key: &str, if_none_match: Option<&str>) -> Resp {
+        let mut req = Request::builder()
+            .method("HEAD")
+            .uri(format!("/{bucket}/{key}"));
+        if let Some(etag) = if_none_match {
+            req = req.header(IF_NONE_MATCH, etag);
+        }
+        self.send(req.body(Body::empty()).unwrap()).await
+    }
+
     async fn delete_object(&self, bucket: &str, key: &str) -> Resp {
         let req = Request::builder()
             .method("DELETE")
@@ -191,6 +205,18 @@ impl TestApp {
 /// The S3 single-PUT ETag: `hex(md5(bytes))`, no quotes, no `-N` suffix.
 fn expected_single_put_etag(bytes: &[u8]) -> String {
     hex::encode(Md5::digest(bytes))
+}
+
+/// Assert a header value is a real RFC 7231 IMF-fixdate — the only date shape
+/// `Last-Modified` may use, e.g. `Tue, 15 Nov 1994 08:12:31 GMT`. Re-parsing it
+/// proves the server emitted a valid HTTP-date, not just some timestamp string.
+fn assert_valid_http_date(value: &str) {
+    assert!(
+        value.ends_with(" GMT"),
+        "HTTP-date must end in GMT: {value:?}"
+    );
+    chrono::NaiveDateTime::parse_from_str(value, "%a, %d %b %Y %H:%M:%S GMT")
+        .unwrap_or_else(|e| panic!("{value:?} is not a valid HTTP-date: {e}"));
 }
 
 #[tokio::test]
@@ -403,6 +429,85 @@ async fn matching_if_none_match_returns_304_without_a_body() {
     let get = app.get_object_if_none_match(bucket, key, &etag).await;
     assert_eq!(get.status, StatusCode::NOT_MODIFIED);
     assert!(get.body.is_empty());
+}
+
+// ── HEAD + Last-Modified (metadata without the bytes) ─────────────────────────
+//
+// `HEAD` (S3 HeadObject) answers with the same metadata headers a GET would, but
+// no body — so a client can read size / type / ETag / Last-Modified without
+// paying to transfer the object. `Last-Modified` also rides every GET.
+
+#[tokio::test]
+async fn head_returns_metadata_headers_and_no_body() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "cat.jpg";
+    app.create_bucket(bucket).await;
+
+    let body = b"a small cat picture";
+    app.put_object(bucket, key, "image/jpeg", body).await;
+
+    let head = app.head_object(bucket, key, None).await;
+    assert_eq!(head.status, StatusCode::OK);
+    assert!(
+        head.body.is_empty(),
+        "HEAD must return headers only — never the object bytes"
+    );
+    assert_eq!(
+        head.header(CONTENT_LENGTH).as_deref(),
+        Some(body.len().to_string().as_str()),
+        "Content-Length must still be the full object size on a bodiless HEAD"
+    );
+    assert_eq!(head.header(CONTENT_TYPE).as_deref(), Some("image/jpeg"));
+    assert_eq!(
+        head.header(ETAG).as_deref(),
+        Some(expected_single_put_etag(body).as_str())
+    );
+    assert_valid_http_date(
+        &head
+            .header(LAST_MODIFIED)
+            .expect("HEAD sends Last-Modified"),
+    );
+}
+
+#[tokio::test]
+async fn head_missing_key_is_404() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    app.create_bucket(bucket).await;
+
+    assert_eq!(
+        app.head_object(bucket, "ghost.jpg", None).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn head_with_matching_if_none_match_returns_304() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "cat.jpg";
+    app.create_bucket(bucket).await;
+
+    let body = b"a small cat picture";
+    let put = app.put_object(bucket, key, "image/jpeg", body).await;
+    let etag = put.header(ETAG).expect("PUT returns ETag");
+
+    let head = app.head_object(bucket, key, Some(&etag)).await;
+    assert_eq!(head.status, StatusCode::NOT_MODIFIED);
+    assert!(head.body.is_empty());
+}
+
+#[tokio::test]
+async fn get_returns_a_last_modified_header() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    let key = "cat.jpg";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "image/jpeg", b"bytes").await;
+
+    let get = app.get_object(bucket, key).await;
+    assert_valid_http_date(&get.header(LAST_MODIFIED).expect("GET sends Last-Modified"));
 }
 
 #[tokio::test]
