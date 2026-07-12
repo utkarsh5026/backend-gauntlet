@@ -39,6 +39,34 @@ pub fn validate_bucket_name(bucket: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Cap an object key's length: S3 allows keys up to **1024 bytes** (UTF-8) and
+/// disallows the empty key.
+///
+/// Unlike a bucket name, a key's *charset* is unrestricted — any byte is legal,
+/// and [`encode_key`] makes it path-safe. So this guards only *length*: an
+/// unbounded key would otherwise become an oversized filename (`ENAMETOOLONG`, a
+/// `500`) or an accounting hole. Rejecting it here makes an over-long key a clean
+/// `400`.
+///
+/// # Errors
+///
+/// [`AppError::InvalidRequest`] if the key is empty or exceeds 1024 bytes.
+pub fn validate_key(key: &str) -> Result<(), AppError> {
+    const MAX_KEY_LEN: usize = 1024;
+    if key.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "object key must not be empty".into(),
+        ));
+    }
+    if key.len() > MAX_KEY_LEN {
+        return Err(AppError::InvalidRequest(format!(
+            "object key must be at most {MAX_KEY_LEN} bytes, got {}",
+            key.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Percent-encode a key into a single safe filename component.
 ///
 /// The keyspace is flat, so `a/b/c.jpg` must become one file, not a nested
@@ -65,7 +93,7 @@ pub fn encode_key(key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_key, validate_bucket_name};
+    use super::{encode_key, validate_bucket_name, validate_key};
     use crate::error::AppError;
 
     #[test]
@@ -157,5 +185,46 @@ mod tests {
     fn encode_key_encodes_non_ascii_bytes() {
         // "café" in UTF-8 is c a f c3 a9 — the non-ASCII bytes become %XX.
         assert_eq!(encode_key("café"), "caf%c3%a9");
+    }
+
+    #[test]
+    fn validate_key_accepts_normal_and_max_length_keys() {
+        for key in ["a", "a/b/c.jpg", "with spaces & symbols!", "../../etc/passwd"] {
+            validate_key(key)
+                .unwrap_or_else(|e| panic!("{key:?} should be a valid key, got {e}"));
+        }
+        // The 1024-byte boundary (S3's max) is allowed.
+        validate_key(&"k".repeat(1024)).expect("a 1024-byte key is exactly at the cap");
+    }
+
+    #[test]
+    fn validate_key_rejects_empty_key() {
+        assert!(
+            matches!(validate_key(""), Err(AppError::InvalidRequest(_))),
+            "the empty key is not a valid S3 key"
+        );
+    }
+
+    #[test]
+    fn validate_key_rejects_over_length_keys() {
+        assert!(
+            matches!(
+                validate_key(&"k".repeat(1025)),
+                Err(AppError::InvalidRequest(_))
+            ),
+            "1025 bytes is one over S3's 1024-byte cap"
+        );
+    }
+
+    /// Byte length, not char count: a multi-byte key at the char limit but over
+    /// the *byte* cap must still be rejected (S3 counts UTF-8 bytes).
+    #[test]
+    fn validate_key_counts_bytes_not_chars() {
+        let key = "é".repeat(513); // 513 chars × 2 bytes = 1026 bytes > 1024
+        assert_eq!(key.chars().count(), 513);
+        assert!(
+            matches!(validate_key(&key), Err(AppError::InvalidRequest(_))),
+            "1026 bytes exceeds the cap even though it's only 513 chars"
+        );
     }
 }

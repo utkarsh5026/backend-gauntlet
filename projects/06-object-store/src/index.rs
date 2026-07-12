@@ -16,7 +16,7 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::AppError;
-use crate::naming::{encode_key, validate_bucket_name};
+use crate::naming::{encode_key, validate_bucket_name, validate_key};
 use crate::object::{Digest, ObjectMeta};
 use crate::store::{Store, TempEntry};
 
@@ -386,6 +386,7 @@ impl Index {
     #[inline]
     fn index_path(&self, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
         validate_bucket_name(bucket)?;
+        validate_key(key)?;
         Ok(self
             .objects_dir(bucket)
             .join(format!("{}.json", encode_key(key))))

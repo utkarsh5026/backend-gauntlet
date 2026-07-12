@@ -25,6 +25,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
 use crate::index::Index;
+use crate::naming::validate_key;
 use crate::object::{ETag, ObjectMeta};
 use crate::{streaming, AppState};
 
@@ -130,8 +131,12 @@ async fn list_objects(
 /// `PUT /{bucket}/{key}` — store an object, OR upload a multipart part when
 /// `?uploadId&partNumber` are present (V2 / V4). The body is streamed either way.
 ///
-/// TODO(security): authenticate this and guard against path traversal in `key`
-/// before doing anything — an open PUT is an open disk for the whole internet.
+/// Validates the key (length cap) before streaming, and stores the body through
+/// the content-addressed layout — never a raw user path — so a traversal-shaped
+/// key can't escape the data dir.
+///
+/// TODO(security): still unauthenticated — an open PUT is an open disk for the
+/// whole internet. Gate writes behind a credential (SigV4, or a simpler HMAC).
 #[tracing::instrument(
     skip_all,
     fields(
@@ -160,6 +165,8 @@ async fn put_object(
             .await?;
         return Ok((StatusCode::OK, [(header::ETAG, part.etag.0)]).into_response());
     }
+
+    validate_key(&key)?;
 
     let stored = streaming::stream_to_store(&state.store, stream, state.max_object_size).await?;
     let meta = ObjectMeta {

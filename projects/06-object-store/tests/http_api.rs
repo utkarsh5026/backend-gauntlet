@@ -596,6 +596,43 @@ async fn put_into_illegally_named_bucket_is_400() {
     assert_eq!(resp.status, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn put_with_an_over_long_key_is_400_and_writes_no_blob() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    app.create_bucket(bucket).await;
+
+    // 2000 bytes — well over S3's 1024-byte key cap.
+    let long_key = "k".repeat(2000);
+    let resp = app
+        .put_object(bucket, &long_key, "text/plain", b"payload")
+        .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    assert!(
+        resp.json()["error"].as_str().unwrap().contains("object key"),
+        "the 400 body should explain the key-length rule it broke"
+    );
+
+    // The key is rejected before the body streams, so no orphan blob is written.
+    assert_eq!(
+        app.committed_blob_count(),
+        0,
+        "an over-long-key PUT must not commit a blob"
+    );
+}
+
+#[tokio::test]
+async fn get_with_an_over_long_key_is_400_not_500() {
+    let app = TestApp::new();
+    let bucket = "photos";
+    app.create_bucket(bucket).await;
+
+    // Without the length guard this key would build a filename past the
+    // filesystem's NAME_MAX → `ENAMETOOLONG` → 500. The guard makes it a 400.
+    let resp = app.get_object(bucket, &"k".repeat(2000)).await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+}
+
 // ── DELETE (V3 pointer drop, idempotent) ──────────────────────────────────────
 
 #[tokio::test]

@@ -187,7 +187,7 @@ as a concrete, testable definition of protocol compatibility.
   request signing; a simplified access-key/HMAC scheme is a fair learning
   target — at minimum gate PUT/DELETE behind a credential. An open
   `PUT /{bucket}/{key}` is an open disk for the whole internet.
-- [ ] Validate and **cap** everything the caller controls: object & part size,
+- [x] Validate and **cap** everything the caller controls: object & part size,
   bucket names (S3 rules: 3–63 chars, lowercase, no leading `/`), key length,
   part numbers. Reject path traversal — a key must never escape the data dir
   (`../../etc/...`); resolve through the content-addressed layout, not raw
