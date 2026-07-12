@@ -61,8 +61,11 @@
   "python.analysis.diagnosticMode": "workspace",
   "python.analysis.extraPaths": [
     "${workspaceFolder}",
+    "${workspaceFolder}/tools",
     "${workspaceFolder}/projects/01-url-shortener",
-    "${workspaceFolder}/projects/02-rate-limiter"
+    "${workspaceFolder}/projects/02-rate-limiter",
+    "${workspaceFolder}/projects/04-job-queue",
+    "${workspaceFolder}/projects/06-object-store"
   ],
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
@@ -84,8 +87,11 @@
   "cursorpyright.analysis.diagnosticMode": "workspace",
   "cursorpyright.analysis.extraPaths": [
     "${workspaceFolder}",
+    "${workspaceFolder}/tools",
     "${workspaceFolder}/projects/01-url-shortener",
-    "${workspaceFolder}/projects/02-rate-limiter"
+    "${workspaceFolder}/projects/02-rate-limiter",
+    "${workspaceFolder}/projects/04-job-queue",
+    "${workspaceFolder}/projects/06-object-store"
   ],
   "cursorpyright.analysis.typeCheckingMode": "basic"
 }

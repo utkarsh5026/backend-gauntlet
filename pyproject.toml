@@ -10,3 +10,6 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pyright]
+extraPaths = ["tools"]
