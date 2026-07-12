@@ -1,7 +1,11 @@
-# sqlx `query!` / `#[sqlx::test]` compile-time checks use the committed `.sqlx/`
-# cache instead of a live Postgres connection. Regenerate after SQL changes:
+# sqlx `query!` / `#[sqlx::test]` compile-time checks use each project's committed
+# `.sqlx/` cache (per-project, e.g. `projects/04-job-queue/.sqlx/`) instead of a
+# live Postgres connection — there is NO workspace-wide cache. The macro resolves
+# the crate-local `.sqlx/` first. Regenerate after SQL changes, from the project
+# dir (or `make prepare`):
 #   docker compose up -d postgres && sqlx migrate run
-#   cargo sqlx prepare --workspace -- --all-targets
+#   cargo sqlx prepare -- --all-targets      # writes ./.sqlx in that project
+# `--all-targets` so test-only queries (e.g. under `#[sqlx::test]`) are cached too.
 [env]
 SQLX_OFFLINE = "true"
 

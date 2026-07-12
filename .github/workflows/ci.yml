@@ -70,11 +70,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # When projects start using sqlx `query!` macros, either commit an offline
-      # cache (`cargo sqlx prepare` → .sqlx/) and set SQLX_OFFLINE=true, or run
-      # migrations here against the postgres service:
-      #   - run: cargo install sqlx-cli --no-default-features --features postgres
-      #   - run: cargo sqlx migrate run --source projects/01-url-shortener/migrations
+      # sqlx `query!` macros compile from each project's committed per-project
+      # cache (`projects/NN-*/.sqlx/`) with SQLX_OFFLINE=true (set in
+      # .cargo/config.toml) — no DB needed to *build*. Regenerate a project's cache
+      # with `make prepare` (cargo sqlx prepare -- --all-targets) and commit it; the
+      # lint job has no database, so a missing/stale cache fails there.
       - name: check
         run: cargo check --workspace --all-targets
       - name: test
