@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE jobs\n            SET\n                state = 'running',\n                locked_by = $1,\n                locked_at = now(),\n                locked_until = now() + make_interval(secs => $2)\n            WHERE id IN (\n                SELECT id\n                FROM jobs\n                WHERE queue = $3 AND state = 'ready' AND run_at <= now()\n                ORDER BY run_at\n                FOR UPDATE SKIP LOCKED\n                LIMIT $4\n            )\n            RETURNING\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "queue",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "state: JobState",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "max_attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "run_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "locked_until",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "last_error",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Float8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f70a0557db80506d47156227a9d441c40f06000521eac549ae58e9b7b1fe8523"
+}
