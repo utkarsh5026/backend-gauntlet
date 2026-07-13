@@ -32,7 +32,11 @@ pub async fn reap_expired(pool: &PgPool) -> Result<u64, AppError> {
     )
     .execute(pool)
     .await?;
-    Ok(rows.rows_affected())
+    let requeued = rows.rows_affected();
+    if requeued > 0 {
+        metrics::counter!(crate::metrics::LEASES_REAPED_TOTAL).increment(requeued);
+    }
+    Ok(requeued)
 }
 
 /// Stretch: extend a running job's lease (a heartbeat for long-running jobs so a
