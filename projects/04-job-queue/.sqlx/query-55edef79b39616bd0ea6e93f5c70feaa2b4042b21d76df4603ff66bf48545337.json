@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT run_at\n        FROM jobs\n        WHERE queue = $1 AND state = 'ready'\n        ORDER BY run_at\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "run_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "55edef79b39616bd0ea6e93f5c70feaa2b4042b21d76df4603ff66bf48545337"
+}
