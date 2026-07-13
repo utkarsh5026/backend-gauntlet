@@ -18,6 +18,7 @@ use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::job::{Job, JobId, JobState, NewJob};
+use crate::scheduler;
 
 /// Handle to the `jobs` table — the public surface of the V1 claim engine.
 ///
@@ -83,6 +84,10 @@ impl Queue {
         )
         .fetch_one(&self.pool)
         .await?;
+
+        if let Err(e) = scheduler::notify_ready(&self.pool, &new.queue).await {
+            tracing::warn!(error = %e, queue = %new.queue, "NOTIFY failed; poll will catch up");
+        }
 
         Ok(id)
     }

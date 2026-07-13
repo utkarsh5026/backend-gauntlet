@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 use crate::job::Job;
 use crate::queue::Queue;
 use crate::retry::{self, Disposition, RetryPolicy};
+use crate::scheduler;
 
 /// Per-worker tuning, cloned into each spawned worker.
 #[derive(Debug, Clone)]
@@ -55,12 +56,12 @@ pub async fn run(
         };
 
         if claimed.is_empty() {
-            // Nothing to do — wait, but stay responsive to shutdown.
-            // TODO(V4): replace this fixed sleep with `scheduler::wait_for_work`
-            // so an enqueue NOTIFY wakes an idle worker immediately instead of
-            // adding up to `poll_interval` of latency to every job.
             tokio::select! {
-                _ = tokio::time::sleep(cfg.poll_interval) => {}
+                result = scheduler::wait_for_work(queue.pool(), queue_name, cfg.poll_interval) => {
+                    if let Err(e) = result {
+                        error!(worker = %id, error = %e, "wait_for_work failed");
+                    }
+                }
                 _ = shutdown.changed() => break,
             }
             continue;
