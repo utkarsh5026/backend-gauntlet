@@ -13,7 +13,7 @@ PY := python3
 RUNNER := $(PY) $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/makefile.py)
 
 # Every known task. Keep in sync with the @task registry in makefile.py.
-TASKS := help setup install-tools deps up down ps logs wait-db migrate reset-db \
+TASKS := help setup install-tools deps up down ps logs wait-db migrate prepare reset-db \
          check clippy fmt fmt-check test verify clean run dev smoke
 
 .DEFAULT_GOAL := help

@@ -15,5 +15,15 @@ services:
       timeout: 3s
       retries: 5
 
+  pgweb:
+    image: sosedoff/pgweb:latest
+    environment:
+      PGWEB_DATABASE_URL: postgres://jobs:jobs@postgres:5432/jobs?sslmode=disable
+    ports:
+      - "8004:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:

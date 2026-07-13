@@ -23,6 +23,8 @@ chrono.workspace = true
 
 thiserror.workspace = true
 anyhow.workspace = true
+rand.workspace = true
+reqwest.workspace = true
 
 tracing.workspace = true
 workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """job-queue — local dev task runner.
 
-A small, dependency-free wrapper around the day-to-day commands for this crate
+A small wrapper around the day-to-day commands for this crate
 (docker, cargo, sqlx). The `Makefile` shells out to this file so you get one
-source of truth with colors, emojis and readable output.
+source of truth with colors, emojis and readable output. Help tables use
+`tools/makefile_help.py` (Rich — auto-installed from `tools/requirements.txt`).
 
 Usage:
     python3 makefile.py <task> [task ...]
@@ -23,6 +24,10 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 WORKSPACE = PROJECT_DIR.parent.parent
+if str(WORKSPACE / "tools") not in sys.path:
+    sys.path.insert(0, str(WORKSPACE / "tools"))
+from makefile_help import print_project_help  # noqa: E402
+
 CRATE = "job-queue"
 COMPOSE = ["docker", "compose"]
 ENV_FILE = PROJECT_DIR / ".env"
@@ -173,11 +178,6 @@ def install_tools() -> None:
     ok("sqlx-cli installed")
 
 
-# --------------------------------------------------------------------------- #
-# Docker / services
-# --------------------------------------------------------------------------- #
-
-
 @task("up", "🐳", "Services", "Start Postgres (store + queue broker)")
 def up() -> None:
     step("🐳", "starting Postgres…")
@@ -195,6 +195,18 @@ def down() -> None:
     step("🛑", "stopping services…")
     run([*COMPOSE, "down"], cwd=PROJECT_DIR)
     ok("services stopped")
+
+
+@task(
+    "db-ui",
+    "🔭",
+    "Services",
+    "Open pgweb — browse tables/rows at http://localhost:8004",
+)
+def db_ui() -> None:
+    step("🔭", "starting pgweb (Postgres browser UI)…")
+    run([*COMPOSE, "up", "-d", "pgweb"], cwd=PROJECT_DIR)
+    ok("pgweb is up → http://localhost:8004")
 
 
 @task("ps", "📋", "Services", "Show docker service status")
@@ -243,9 +255,22 @@ def migrate() -> None:
     ok("migrations applied")
 
 
-# --------------------------------------------------------------------------- #
-# Build / checks
-# --------------------------------------------------------------------------- #
+@task(
+    "prepare",
+    "🧬",
+    "Services",
+    "Regenerate sqlx offline query cache (needs Postgres + migrations)",
+)
+def prepare() -> None:
+    require("sqlx", "Run: make install-tools")
+    migrate()
+    step("🧬", "preparing sqlx query cache…")
+    run(
+        ["cargo", "sqlx", "prepare", "--", "--all-targets"],
+        cwd=PROJECT_DIR,
+        env=load_dotenv(),
+    )
+    ok("sqlx cache updated — commit .sqlx/")
 
 
 @task("check", "🔎", "Checks", "cargo check this crate")
@@ -325,26 +350,17 @@ def smoke() -> None:
 
 @task("help", "❓", "Meta", "Show this help")
 def help_() -> None:
-    print()
-    print(
-        f"{C.BOLD}{C.MAGENTA}📬 job-queue{C.RESET} {C.DIM}— common commands{C.RESET}\n"
+    print_project_help(
+        title="📬 job-queue",
+        tasks=TASKS,
+        footers=[
+            (
+                "Typical first run",
+                "make setup && make deps && make migrate && make prepare && make run",
+            ),
+            ("Run all checks", "make verify"),
+        ],
     )
-
-    groups: dict[str, list[str]] = {}
-    for name, (_, _, group, _) in TASKS.items():
-        groups.setdefault(group, []).append(name)
-
-    width = max(len(n) for n in TASKS) + 2
-    for group, names in groups.items():
-        print(f"{C.BOLD}{C.YELLOW}{group}{C.RESET}")
-        for name in names:
-            _, emoji, _, help_text = TASKS[name]
-            print(f"  {emoji}  {C.CYAN}{name:<{width}}{C.RESET}{help_text}")
-        print()
-
-    print(f"{C.BOLD}Typical first run:{C.RESET}")
-    print(f"  {C.DIM}make setup && make deps && make migrate && make run{C.RESET}")
-    print(f"{C.BOLD}Run all checks:{C.RESET}    {C.DIM}make verify{C.RESET}\n")
 
 
 def run_task(name: str, entry: tuple) -> int:
