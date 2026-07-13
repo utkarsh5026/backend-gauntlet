@@ -1,0 +1,34 @@
+-- V1 — the claim index. A PARTIAL, COMPOSITE index that makes the hot dequeue
+-- (queue.rs::claim) cheap as the table grows to millions of terminal rows.
+--
+-- The claim's inner select is:
+--     WHERE queue = $1 AND state = 'ready' AND run_at <= now()
+--     ORDER BY run_at
+--     FOR UPDATE SKIP LOCKED
+--     LIMIT $n
+--
+-- Every part of this index is dictated by that query:
+--
+--   WHERE state = 'ready'   -- PARTIAL: only claimable rows are indexed. done/dead
+--                              rows are the ones that grow without bound; excluding
+--                              them keeps the index proportional to the *backlog*,
+--                              not the *history*, so it stays small and cached.
+--
+--   (queue, run_at)         -- COMPOSITE, in this order:
+--     • queue  → the equality predicate, so it leads (seek straight to one queue).
+--     • run_at → the range (`<= now()`) AND the ORDER BY. Sorted second, the index
+--                returns rows oldest-first already, so LIMIT n stops after n rows
+--                with no separate sort node.
+--
+-- Net effect: the planner does an index range-scan over just the ready rows of one
+-- queue, in run_at order, and stops at LIMIT — instead of a seq scan + sort over the
+-- whole table. Prove the payoff with `EXPLAIN (ANALYZE, BUFFERS)` with vs. without
+-- this index in docs/04-benchmarks.md (V1.4).
+--
+-- NOTE (production): on a live table you'd use CREATE INDEX CONCURRENTLY to avoid
+-- locking writes — but that can't run inside a transaction, and sqlx wraps each
+-- migration in one. Plain CREATE INDEX is correct here (fresh table, transactional
+-- migration); reach for CONCURRENTLY only when back-filling an index on a hot table.
+CREATE INDEX IF NOT EXISTS jobs_claim_idx
+    ON jobs (queue, run_at)
+    WHERE state = 'ready';
