@@ -27,6 +27,11 @@ rand.workspace = true
 reqwest.workspace = true
 
 tracing.workspace = true
+
+# Prometheus counters/gauges/histograms for the observability checklist — same
+# facade + exporter pattern as `01-url-shortener/src/metrics.rs`.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
 
 [dev-dependencies]

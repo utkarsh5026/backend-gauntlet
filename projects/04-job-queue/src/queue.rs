@@ -89,6 +89,7 @@ impl Queue {
             tracing::warn!(error = %e, queue = %new.queue, "NOTIFY failed; poll will catch up");
         }
 
+        metrics::counter!(crate::metrics::ENQUEUED_TOTAL, "queue" => new.queue).increment(1);
         Ok(id)
     }
 
@@ -155,6 +156,11 @@ impl Queue {
         )
         .fetch_all(&self.pool)
         .await?;
+
+        if jobs.is_empty() {
+            metrics::counter!(crate::metrics::CLAIMS_EMPTY_TOTAL, "queue" => queue.to_string())
+                .increment(1);
+        }
 
         Ok(jobs)
     }
