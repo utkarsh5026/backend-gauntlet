@@ -214,25 +214,20 @@ mod tests {
         assert!(took.is_some(), "a ready noop job should drain within 3s");
     }
 
-    /// The worker-loop lost-wakeup, in its deterministic, committable form.
+    /// Regression: an idle worker wakes when a delayed job *comes due*, instead of
+    /// stranding behind the poll fallback until its next tick.
     ///
-    /// A worker parked in `wait_for_work` behind a long poll only ever gets a
-    /// `NOTIFY` at **enqueue** time — nothing signals the queue when a *future*
-    /// `run_at` finally arrives. So a job delayed by 1s behind a 10s poll strands
-    /// for ~10s instead of running ~when it comes due. The SPEC's V4 requires
-    /// "`enqueue` (and a delay/retry coming due) issues a NOTIFY" — this pins the
-    /// **"coming due"** half that is currently missing.
+    /// A job delayed 1s behind a 10s poll: `enqueue` NOTIFYs at insert time (too
+    /// early — not yet claimable), and nothing NOTIFYs at t+1s when its `run_at`
+    /// arrives. Before `wait_for_work` became due-aware this stranded the job for
+    /// ~10s; now the idle sleep is bounded by the earliest `ready` job's `run_at`,
+    /// so it runs ~1s in. (This started life as a deliberately-`#[ignore]`d RED
+    /// driver for that fix — see git history.)
     ///
-    /// (The sibling claim-vs-`LISTEN` micro-race — a `NOTIFY` lost in the ~1–10ms
-    /// window between an empty `claim` and `LISTEN` taking effect — is the same bug
-    /// class but is inherently timing-flaky to reproduce at the loop level; hoisting
-    /// a persistent listener so `LISTEN` precedes the claim fixes both.)
-    ///
-    /// `#[ignore]`d so the suite stays green (CLAUDE.md's DoD). Run it to drive the
-    /// fix: `cargo test -p job-queue --  --ignored coming_due`. It flips to passing
-    /// once the scheduler wakes idle workers when the earliest future job is due.
+    /// The sibling claim-vs-`LISTEN` micro-race (a `NOTIFY` lost in the ~1–10ms
+    /// window between an empty `claim` and `LISTEN`) is the same bug class; the
+    /// due-aware re-query after `LISTEN` also covers it for already-ready jobs.
     #[sqlx::test]
-    #[ignore = "RED until V4 wakes idle workers when a delayed/retried job comes due (notify-on-due or due-aware poll); see docs/04-design.md"]
     async fn delayed_job_coming_due_is_not_stranded_by_a_long_poll(pool: PgPool) {
         let queue = Queue::new(pool.clone(), 5);
         // Long poll: NOTIFY is the *only* fast path, so a missing coming-due NOTIFY

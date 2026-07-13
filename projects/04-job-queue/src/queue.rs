@@ -221,24 +221,75 @@ impl Queue {
 
         Ok(job)
     }
+
+    /// List dead-lettered jobs, newest-first, one page at a time.
+    ///
+    /// Ordered by `id DESC` — a monotonic, stable key, so `OFFSET` pages don't
+    /// overlap or skip. (`updated_at` is *not* maintained past insert, so it can't
+    /// serve as a "died at" sort; `id DESC` is the honest newest-first proxy.)
+    /// The caller's `limit`/`offset` are expected to arrive already clamped at the
+    /// HTTP boundary (see `routes::get_dlq`) — this method trusts them.
+    ///
+    /// `LIMIT`/`OFFSET` is fine for an admin-facing DLQ that's rarely huge; note the
+    /// tradeoff that a deep `OFFSET` re-scans all skipped rows (O(offset)), where a
+    /// keyset (`WHERE id < $last_seen`) would not. Not worth the complexity here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] if the `SELECT` fails.
+    pub async fn get_dlq(&self, limit: i64, offset: i64) -> Result<Vec<Job>, AppError> {
+        let jobs = sqlx::query_as!(
+            Job,
+            r#"
+            SELECT
+                id,
+                queue,
+                kind,
+                payload,
+                state as "state: JobState",
+                attempts,
+                max_attempts,
+                run_at,
+                locked_until,
+                last_error
+            FROM jobs
+            WHERE state = 'dead'
+            ORDER BY id DESC
+            LIMIT $1 OFFSET $2
+            "#,
+            limit,
+            offset,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(jobs)
+    }
+
+    pub async fn requeue(&self, id: JobId) -> Result<Option<Job>, AppError> {
+        let job = sqlx::query_as!(
+            Job,
+            r#"
+            UPDATE jobs SET state = 'ready', attempts = 0, run_at = now() WHERE id = $1 AND state = 'dead'
+            RETURNING
+                id,
+                queue,
+                kind,
+                payload,
+                state as "state: JobState",
+                attempts,
+                max_attempts,
+                run_at,
+                locked_until,
+                last_error
+            "#,
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(job)
+    }
 }
 
-/// Tests for the V1 claim engine — `enqueue`, `claim`, `ack`, `get`.
-///
-/// These use `#[sqlx::test]`, which hands each test its **own fresh, migrated
-/// database** (created from `migrations/`, dropped afterward) via the injected
-/// `pool` argument. That per-test isolation is why there are no unique-name or
-/// cleanup helpers here — nothing is shared between tests, and the DB starts
-/// empty. `cargo test` needs a reachable Postgres with `CREATE DATABASE` rights
-/// (the compose `jobs` superuser) and reads `DATABASE_URL` from the environment.
-///
-/// The `claim` tests pin down the SKIP LOCKED contract that is the whole point of
-/// this vertical:
-///   - enqueue then claim returns that job exactly once; a second claim is empty;
-///   - N concurrent claimers over a backlog of M jobs claim M distinct jobs
-///     total, never the same one twice (the SKIP LOCKED guarantee);
-///   - a job with `run_at` in the future is NOT claimed until it's due;
-///   - `ack` moves a job to done so it's never claimed again.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +298,8 @@ mod tests {
 
     use serde_json::json;
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use crate::retry::{self, Disposition, RetryPolicy};
 
     const VIS: Duration = Duration::from_secs(30);
 
@@ -557,5 +610,165 @@ mod tests {
             unique.len(),
         );
         assert_eq!(unique.len(), JOBS, "every job is claimed exactly once");
+    }
+
+    // ---- DLQ: inspect + requeue (V3.4 / horizontal API) -----------------------
+
+    /// Drive one job all the way to `dead`: enqueue it one-shot (`max_attempts = 1`),
+    /// claim it, then `nack` it once — which dead-letters it (attempts exhausted).
+    /// Returns its id, the DLQ fixture the requeue tests act on.
+    async fn dead_letter_one(q: &Queue, pool: &PgPool, queue_name: &str) -> JobId {
+        let mut job = new_job(queue_name);
+        job.max_attempts = Some(1);
+        let id = q.enqueue(job).await.expect("enqueue");
+
+        let claimed = q.claim(queue_name, "w1", 10, VIS).await.expect("claim");
+        let running = claimed
+            .into_iter()
+            .find(|j| j.id == id)
+            .expect("the one-shot job was claimed");
+
+        let disp = retry::nack(pool, &RetryPolicy::default(), &running, "boom")
+            .await
+            .expect("nack");
+        assert_eq!(
+            disp,
+            Disposition::DeadLettered,
+            "a one-shot job dead-letters on its first failure",
+        );
+        id
+    }
+
+    /// The V3.4 headline: a dead job is **inspectable** in the DLQ and **requeueable**
+    /// back to a fresh, claimable life. Drive a job to `dead`, confirm the DLQ lists
+    /// it, requeue it, and assert it returns to `ready` with a reset attempt budget,
+    /// leaves the DLQ, and is claimed again.
+    #[sqlx::test]
+    async fn requeue_revives_a_dead_job_with_a_fresh_budget(pool: PgPool) {
+        let q = Queue::new(pool.clone(), 5);
+        let id = dead_letter_one(&q, &pool, "emails").await;
+
+        // Inspectable: it shows up in the DLQ listing, and `get` confirms the state.
+        let dlq = q.get_dlq(50, 0).await.expect("get_dlq");
+        assert!(
+            dlq.iter().any(|j| j.id == id),
+            "the dead job appears in the DLQ"
+        );
+        let dead = q.get(id).await.expect("get").expect("job exists");
+        assert_eq!(dead.state, JobState::Dead);
+        assert_eq!(dead.attempts, 1, "the exhausted attempt is recorded");
+
+        // Requeueable: dead -> ready with the attempt budget reset to 0.
+        let revived = q
+            .requeue(id)
+            .await
+            .expect("requeue")
+            .expect("a dead job is requeued");
+        assert_eq!(
+            revived.state,
+            JobState::Ready,
+            "requeue returns it to ready"
+        );
+        assert_eq!(revived.attempts, 0, "requeue resets the attempt budget");
+
+        // ...gone from the DLQ, and claimable again for a fresh run.
+        let dlq_after = q.get_dlq(50, 0).await.expect("get_dlq");
+        assert!(
+            !dlq_after.iter().any(|j| j.id == id),
+            "a requeued job leaves the DLQ"
+        );
+        let claimed = q.claim("emails", "w2", 10, VIS).await.expect("claim");
+        assert!(
+            claimed.iter().any(|j| j.id == id),
+            "the requeued job is claimable again"
+        );
+    }
+
+    /// The `state = 'dead'` guard: `requeue` acts only on dead jobs. A `ready` job, a
+    /// `running` (leased) job, and an unknown id all return `None` (the route maps
+    /// that to 404) — so the admin door can never resurrect a live or completed job
+    /// into a double-run.
+    #[sqlx::test]
+    async fn requeue_ignores_non_dead_and_unknown_jobs(pool: PgPool) {
+        let q = Queue::new(pool, 5);
+        let id = q.enqueue(new_job("emails")).await.expect("enqueue");
+
+        // ready: not requeueable, and left untouched.
+        assert!(
+            q.requeue(id).await.expect("requeue").is_none(),
+            "a ready job is not requeued"
+        );
+        assert_eq!(
+            q.get(id).await.expect("get").expect("exists").state,
+            JobState::Ready,
+        );
+
+        // running (leased): still not requeueable — this is the double-run guard.
+        let claimed = q.claim("emails", "w1", 10, VIS).await.expect("claim");
+        assert_eq!(claimed[0].id, id, "claimed the same job");
+        assert!(
+            q.requeue(id).await.expect("requeue").is_none(),
+            "a running job is not stolen back to ready"
+        );
+        assert_eq!(
+            q.get(id).await.expect("get").expect("exists").state,
+            JobState::Running,
+            "the in-flight job stays running",
+        );
+
+        // an id that never existed is None (-> 404), not an error.
+        assert!(
+            q.requeue(-1).await.expect("requeue").is_none(),
+            "an unknown id yields None, not an error"
+        );
+    }
+
+    /// `get_dlq` pages **newest-first** (`id DESC`) and honours `limit`/`offset`: with
+    /// five dead jobs, `limit = 2` returns the two highest ids and `offset` walks down
+    /// the id-desc order without overlap. (The route layer additionally *clamps* the
+    /// caller's limit into `[1, MAX]` — that boundary cap is enforced in
+    /// `routes::get_dlq`, not this data method, which trusts its args.)
+    #[sqlx::test]
+    async fn get_dlq_paginates_newest_first(pool: PgPool) {
+        let q = Queue::new(pool.clone(), 5);
+
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            ids.push(dead_letter_one(&q, &pool, "emails").await);
+        }
+        let mut newest_first = ids.clone();
+        newest_first.sort_unstable_by(|a, b| b.cmp(a)); // id DESC
+
+        let page1: Vec<JobId> = q
+            .get_dlq(2, 0)
+            .await
+            .expect("dlq")
+            .iter()
+            .map(|j| j.id)
+            .collect();
+        assert_eq!(
+            page1,
+            newest_first[0..2],
+            "first page is the two newest dead jobs, id desc",
+        );
+
+        let page2: Vec<JobId> = q
+            .get_dlq(2, 2)
+            .await
+            .expect("dlq")
+            .iter()
+            .map(|j| j.id)
+            .collect();
+        assert_eq!(
+            page2,
+            newest_first[2..4],
+            "offset walks down the id-desc order, no overlap",
+        );
+
+        assert_eq!(
+            q.get_dlq(50, 0).await.expect("dlq").len(),
+            5,
+            "all five dead jobs are listed within the page limit",
+        );
     }
 }
