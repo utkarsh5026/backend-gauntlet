@@ -1,3 +1,10 @@
+# `docker compose up` brings up Postgres, pgweb, AND the app itself (built
+# from ./Dockerfile) — a container-parity stack. Migrations are still a
+# separate, explicit step (see `make migrate`): a fresh Postgres volume has
+# no tables yet, so the app will fail its healthcheck and restart-loop until
+# `sqlx migrate run` has been applied once. For the fast edit/compile loop
+# while implementing the `todo!()`s, prefer `make dev` (host `cargo run`) —
+# `docker compose up job-queue --build` is for checking the real deploy shape.
 services:
   postgres:
     image: postgres:16-alpine
@@ -14,6 +21,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  job-queue:
+    build:
+      context: ../..
+      dockerfile: projects/04-job-queue/Dockerfile
+    env_file: ./.env
+    environment:
+      DATABASE_URL: postgres://jobs:jobs@postgres:5432/jobs
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   pgweb:
     image: sosedoff/pgweb:latest

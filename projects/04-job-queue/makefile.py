@@ -334,6 +334,20 @@ def dev() -> None:
     run_server()
 
 
+@task(
+    "dev-container",
+    "🐋",
+    "Run",
+    "Prod-parity loop: deps, migrate, then run the app itself in Docker",
+)
+def dev_container() -> None:
+    deps()
+    migrate()
+    step("🐋", "building + starting job-queue in Docker…")
+    run([*COMPOSE, "up", "-d", "--build", "job-queue"], cwd=PROJECT_DIR)
+    ok("job-queue is up → http://localhost:8080 (make logs to follow it)")
+
+
 @task("smoke", "🔥", "Run", "Hit /healthz (server must be running)")
 def smoke() -> None:
     require("curl", "Install curl to use this target.")
@@ -359,6 +373,7 @@ def help_() -> None:
                 "make setup && make deps && make migrate && make prepare && make run",
             ),
             ("Run all checks", "make verify"),
+            ("Prod-parity: run the app in Docker too", "make dev-container"),
         ],
     )
 

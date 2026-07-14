@@ -138,7 +138,9 @@ impl NewJob {
 
         if let Some(delay) = self.delay_secs {
             if delay > MAX_DELAY_SECS {
-                return Err(format!("delay_secs too large: {delay} (max {MAX_DELAY_SECS})"));
+                return Err(format!(
+                    "delay_secs too large: {delay} (max {MAX_DELAY_SECS})"
+                ));
             }
         }
 
@@ -235,7 +237,10 @@ mod tests {
         for bad in [0, -1, MAX_ATTEMPTS_CEILING + 1] {
             let mut j = valid();
             j.max_attempts = Some(bad);
-            assert!(j.validate().is_err(), "max_attempts {bad} should be rejected");
+            assert!(
+                j.validate().is_err(),
+                "max_attempts {bad} should be rejected"
+            );
         }
     }
 
