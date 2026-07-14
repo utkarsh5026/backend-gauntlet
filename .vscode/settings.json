@@ -44,7 +44,7 @@
     "files.trimTrailingWhitespace": false
   },
   "[python]": {
-    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.defaultFormatter": "ms-python.black-formatter",
     "editor.formatOnSave": true,
     "editor.tabSize": 4,
     "editor.rulers": [100],
@@ -70,9 +70,9 @@
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
 
-  // ---- Terminal (Makefile lives under projects/01-url-shortener) ----
-  "terminal.integrated.cwd": "${workspaceFolder}/projects/01-url-shortener",
-  "terminal.integrated.envFile": "${workspaceFolder}/projects/01-url-shortener/.env",
+  // ---- Terminal (open new terminals in the project we're actively building) ----
+  "terminal.integrated.cwd": "${workspaceFolder}/projects/03-realtime-pubsub",
+  "terminal.integrated.envFile": "${workspaceFolder}/projects/03-realtime-pubsub/.env",
 
   // ---- Noise reduction ----
   "files.watcherExclude": {
