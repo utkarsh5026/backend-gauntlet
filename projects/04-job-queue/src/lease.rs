@@ -19,7 +19,6 @@ use tokio::sync::watch;
 use tracing::{debug, error, info};
 
 use crate::error::AppError;
-use crate::job::JobId;
 
 /// Find `running` jobs whose lease (`locked_until`) has passed and make them
 /// claimable again. Returns how many were requeued.
@@ -37,29 +36,6 @@ pub async fn reap_expired(pool: &PgPool) -> Result<u64, AppError> {
         metrics::counter!(crate::metrics::LEASES_REAPED_TOTAL).increment(requeued);
     }
     Ok(requeued)
-}
-
-/// Stretch: extend a running job's lease (a heartbeat for long-running jobs so a
-/// slow-but-alive worker isn't reaped out from under itself).
-pub async fn extend_lease(
-    pool: &PgPool,
-    job_id: JobId,
-    worker_id: &str,
-    by: Duration,
-) -> Result<(), AppError> {
-    let extension = by.as_secs_f64();
-    sqlx::query!(
-        r#"
-        UPDATE jobs SET locked_until = now() + make_interval(secs => $2)
-        WHERE id = $1 AND state = 'running' AND locked_by = $3
-        "#,
-        job_id,
-        extension,
-        worker_id,
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 pub async fn reap_loop(pool: PgPool, interval: Duration, mut shutdown: watch::Receiver<bool>) {
@@ -88,7 +64,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::job::{Job, JobState, NewJob};
+    use crate::job::{Job, JobId, JobState, NewJob};
     use crate::queue::Queue;
 
     /// A comfortable lease: long enough that a job stays exclusively its holder's
@@ -230,49 +206,6 @@ mod tests {
         assert_eq!(
             requeued, 3,
             "all three expired leases are reaped in one sweep"
-        );
-    }
-
-    /// The heartbeat: the lease holder can push its own `locked_until` further out
-    /// so a slow-but-alive worker isn't reaped out from under itself.
-    #[sqlx::test]
-    async fn extend_lease_pushes_owner_lease_further_out(pool: PgPool) {
-        let q = queue(&pool);
-        let id = enqueue_job(&q).await;
-        let claimed = claim_job(&q, "w1", 10).await;
-        let original = claimed[0].locked_until.expect("claim stamps a lease");
-
-        extend_lease(&pool, id, "w1", Duration::from_secs(300))
-            .await
-            .expect("extend");
-
-        let job = get_job(&q, id).await;
-        let extended = job.locked_until.expect("still leased");
-        assert!(
-            extended > original,
-            "heartbeat pushes the lease out: {extended} > {original}",
-        );
-        assert_eq!(job.state, JobState::Running, "still running for w1");
-    }
-
-    /// The ownership guard: a worker that doesn't hold the lease cannot extend it —
-    /// `extend_lease` for a non-owner is a silent no-op, so the lease is unchanged.
-    #[sqlx::test]
-    async fn extend_lease_ignores_non_owner(pool: PgPool) {
-        let q = queue(&pool);
-        let id = enqueue_job(&q).await;
-        let claimed = claim_job(&q, "w1", 10).await;
-        let original = claimed[0].locked_until.expect("claim stamps a lease");
-
-        extend_lease(&pool, id, "someone-else", Duration::from_secs(300))
-            .await
-            .expect("extend");
-
-        let job = get_job(&q, id).await;
-        assert_eq!(
-            job.locked_until,
-            Some(original),
-            "a non-owner extend must not move the lease",
         );
     }
 }
