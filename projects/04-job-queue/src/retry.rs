@@ -117,15 +117,13 @@ pub async fn nack(
     .await?;
 
     let disposition = if job_state == JobState::Ready {
+        metrics::counter!(crate::metrics::RETRIED_TOTAL, "kind" => job.kind.clone()).increment(1);
         Disposition::Retried
     } else {
+        metrics::counter!(crate::metrics::DEAD_LETTERED_TOTAL, "kind" => job.kind.clone())
+            .increment(1);
         Disposition::DeadLettered
     };
-
-    // TODO(observability): metrics::counter!(match disposition {
-    //     Disposition::Retried => crate::metrics::RETRIED_TOTAL,
-    //     Disposition::DeadLettered => crate::metrics::DEAD_LETTERED_TOTAL,
-    // }, "kind" => job.kind.clone()).increment(1);
     Ok(disposition)
 }
 

@@ -135,36 +135,46 @@ fn register_descriptions() {
     );
 }
 
-/// Read the current state of the `jobs` table for `queue` and publish the four
-/// gauges above.
-///
-/// **Design question to answer before implementing this:** gauges reflect
-/// *current* state, not events, so nothing in `queue.rs`/`worker.rs` naturally
-/// triggers them. Two honest options:
-/// 1. Poll `jobs` periodically from a background task (see [`gauge_loop`]) —
-///    simple, but the numbers are stale between ticks.
-/// 2. Compute them lazily inside the `/metrics` handler itself, on every
-///    scrape — always fresh, but a slow scraper now runs a query against your
-///    primary table.
-///
-/// Either is defensible; the SPEC doesn't grade which, only that the numbers
-/// exist and are honest. Whichever you pick, one query per gauge (or one query
-/// with `GROUP BY state` for the three depth gauges, plus a second for the
-/// lag) beats four separate round-trips.
-///
-/// # Errors
-/// Returns [`AppError::Db`] if the underlying query fails.
 pub async fn sample_gauges(pool: &PgPool, queue: &str) -> Result<(), AppError> {
-    let row = sqlx::query!(
+    let depths = sqlx::query!(
         r#"
-        SELECT COUNT(*) FROM jobs WHERE state = 'ready'
+        SELECT state, COUNT(*) AS "count!"
+        FROM jobs
+        WHERE queue = $1
+        GROUP BY state
         "#,
+        queue,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut ready_depth = 0i64;
+    let mut running_depth = 0i64;
+    let mut dlq_depth = 0i64;
+    for row in depths {
+        match row.state.as_str() {
+            "ready" => ready_depth = row.count,
+            "running" => running_depth = row.count,
+            "dead" => dlq_depth = row.count,
+            _ => {}
+        }
+    }
+
+    let lag = sqlx::query!(
+        r#"
+        SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(run_at))), 0)::double precision AS "lag_seconds!"
+        FROM jobs
+        WHERE queue = $1 AND state = 'ready' AND run_at <= now()
+        "#,
+        queue,
     )
     .fetch_one(pool)
     .await?;
-    let ready_depth = row.count.unwrap_or(0);
-    metrics::gauge!(crate::metrics::READY_DEPTH, "queue" => queue.to_string())
-        .set(ready_depth as f64);
+
+    metrics::gauge!(READY_DEPTH, "queue" => queue.to_string()).set(ready_depth as f64);
+    metrics::gauge!(RUNNING_DEPTH, "queue" => queue.to_string()).set(running_depth as f64);
+    metrics::gauge!(DLQ_DEPTH, "queue" => queue.to_string()).set(dlq_depth as f64);
+    metrics::gauge!(OLDEST_READY_AGE_SECONDS, "queue" => queue.to_string()).set(lag.lag_seconds);
     Ok(())
 }
 
