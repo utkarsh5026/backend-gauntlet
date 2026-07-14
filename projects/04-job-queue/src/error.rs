@@ -15,6 +15,10 @@ pub enum AppError {
     #[error("not found")]
     NotFound,
 
+    /// Missing or invalid enqueue credential (no/ wrong `Authorization: Bearer` token).
+    #[error("unauthorized")]
+    Unauthorized,
+
     /// The request body failed validation (bad/oversized payload, etc.).
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -31,6 +35,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Db(_) | Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

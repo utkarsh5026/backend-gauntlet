@@ -27,7 +27,7 @@ use std::time::Duration;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{info, warn};
 
 use queue::Queue;
 use retry::RetryPolicy;
@@ -40,6 +40,7 @@ const DEFAULT_GAUGE_INTERVAL: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 pub struct AppState {
     pub queue: Arc<Queue>,
+    pub enqueue_token: Option<Arc<str>>,
 }
 
 #[tokio::main]
@@ -96,7 +97,18 @@ async fn main() -> anyhow::Result<()> {
         info!("workers disabled (RUN_WORKERS=false): enqueue API only");
     }
 
-    let state = AppState { queue };
+    let enqueue_token: Option<Arc<str>> = std::env::var("ENQUEUE_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+        .map(Arc::from);
+    if enqueue_token.is_none() {
+        warn!("ENQUEUE_TOKEN unset — POST /jobs and requeue are UNAUTHENTICATED (dev only)");
+    }
+
+    let state = AppState {
+        queue,
+        enqueue_token,
+    };
     serve(state, port, metrics_handle).await?;
 
     let _ = shutdown_tx.send(true);
