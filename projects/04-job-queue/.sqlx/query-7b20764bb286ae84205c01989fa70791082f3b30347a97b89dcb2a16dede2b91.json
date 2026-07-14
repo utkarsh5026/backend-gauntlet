@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error\n            FROM jobs\n            WHERE state = 'dead'\n            ORDER BY id DESC\n            LIMIT $1 OFFSET $2\n            ",
+  "query": "\n            UPDATE jobs\n            SET\n                state = 'running',\n                locked_by = $1,\n                locked_at = now(),\n                locked_until = now() + make_interval(secs => $2)\n            WHERE id IN (\n                SELECT id\n                FROM jobs\n                WHERE queue = $3 AND state = 'ready' AND run_at <= now()\n                ORDER BY run_at\n                FOR UPDATE SKIP LOCKED\n                LIMIT $4\n            )\n            RETURNING\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error,\n                created_at\n            ",
   "describe": {
     "columns": [
       {
@@ -52,11 +52,18 @@
         "ordinal": 9,
         "name": "last_error",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Int8",
+        "Text",
+        "Float8",
+        "Text",
         "Int8"
       ]
     },
@@ -70,8 +77,9 @@
       false,
       false,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "b2e5e2f1e10c0e4f39d9db1c10e31218ac1bd00310a53046e5b695d6c996a3e8"
+  "hash": "7b20764bb286ae84205c01989fa70791082f3b30347a97b89dcb2a16dede2b91"
 }

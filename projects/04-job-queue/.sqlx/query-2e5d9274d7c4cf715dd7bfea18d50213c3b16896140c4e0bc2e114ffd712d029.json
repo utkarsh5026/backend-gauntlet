@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error\n            FROM jobs\n            WHERE id = $1\n            ",
+  "query": "\n            SELECT\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error,\n                created_at\n            FROM jobs\n            WHERE state = 'dead'\n            ORDER BY id DESC\n            LIMIT $1 OFFSET $2\n            ",
   "describe": {
     "columns": [
       {
@@ -52,10 +52,16 @@
         "ordinal": 9,
         "name": "last_error",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Int8",
         "Int8"
       ]
     },
@@ -69,8 +75,9 @@
       false,
       false,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "e99164c40c1e8b46b7c37d0cc9f0d0b1e9b1fc25277389373d09ce5662b21559"
+  "hash": "2e5d9274d7c4cf715dd7bfea18d50213c3b16896140c4e0bc2e114ffd712d029"
 }

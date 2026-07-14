@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE jobs SET state = 'ready', attempts = 0, run_at = now() WHERE id = $1 AND state = 'dead'\n            RETURNING\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error\n            ",
+  "query": "\n            UPDATE jobs SET state = 'ready', attempts = 0, run_at = now() WHERE id = $1 AND state = 'dead'\n            RETURNING\n                id,\n                queue,\n                kind,\n                payload,\n                state as \"state: JobState\",\n                attempts,\n                max_attempts,\n                run_at,\n                locked_until,\n                last_error,\n                created_at\n            ",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,11 @@
         "ordinal": 9,
         "name": "last_error",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -69,8 +74,9 @@
       false,
       false,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "f8cd57ceaf8b08f48e1ad55c53a8089f44279a37b77587b058c96e14409d1760"
+  "hash": "2f958f8fd059884d2a1b04311e127820415599e1f0903b212a5b426e2916de0e"
 }

@@ -383,6 +383,7 @@ mod tests {
             run_at: Utc::now(),
             locked_until: None,
             last_error: None,
+            created_at: Utc::now(),
         }
     }
 

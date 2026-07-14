@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
@@ -34,6 +35,20 @@ pub struct WorkerConfig {
     pub retry: RetryPolicy,
 }
 
+/// Drive one worker: claim → run → ack/nack in a loop until shutdown.
+///
+/// Each iteration claims a batch of up to [`WorkerConfig::claim_batch`] jobs (V1)
+/// and hands each to [`process_one`]. When a claim comes back empty the worker
+/// parks on [`scheduler::wait_for_work`] — a `LISTEN`/`NOTIFY` wakeup bounded by
+/// [`WorkerConfig::poll_interval`] (V4) — until work arrives or `shutdown` flips.
+///
+/// `id` labels the worker in logs and spans; `queue` is shared across all workers
+/// (hence `Arc`), and `shutdown` is a broadcast flag — flipping it to `true` makes
+/// the worker finish its in-flight job and return (it re-checks between jobs, so a
+/// mid-batch shutdown drains at most one more job). Claim and `wait_for_work`
+/// errors are logged and retried on the next tick rather than bubbling up, so a
+/// transient DB hiccup doesn't kill the worker. Returns only once `shutdown` is
+/// observed.
 pub async fn run(
     id: String,
     queue: Arc<Queue>,
@@ -118,6 +133,9 @@ async fn process_one(queue: &Arc<Queue>, cfg: &WorkerConfig, worker: &str, job: 
                 info!(elapsed_ms, "job done");
                 metrics::counter!(crate::metrics::COMPLETED_TOTAL, "kind" => job.kind.clone())
                     .increment(1);
+                let e2e = (Utc::now() - job.created_at).num_milliseconds().max(0) as f64 / 1000.0;
+                metrics::histogram!(crate::metrics::END_TO_END_LATENCY_SECONDS, "kind" => job.kind.clone())
+                    .record(e2e);
             }
             Err(e) => {
                 span.record("outcome", "ack_failed");

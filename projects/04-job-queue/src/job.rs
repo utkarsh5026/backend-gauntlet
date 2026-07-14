@@ -80,6 +80,7 @@ pub struct Job {
     pub run_at: DateTime<Utc>,
     pub locked_until: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -147,7 +147,8 @@ impl Queue {
                 max_attempts,
                 run_at,
                 locked_until,
-                last_error
+                last_error,
+                created_at
             "#,
             worker_id,
             visibility_secs,
@@ -210,7 +211,8 @@ impl Queue {
                 max_attempts,
                 run_at,
                 locked_until,
-                last_error
+                last_error,
+                created_at
             FROM jobs
             WHERE id = $1
             "#,
@@ -251,7 +253,8 @@ impl Queue {
                 max_attempts,
                 run_at,
                 locked_until,
-                last_error
+                last_error,
+                created_at
             FROM jobs
             WHERE state = 'dead'
             ORDER BY id DESC
@@ -280,7 +283,8 @@ impl Queue {
                 max_attempts,
                 run_at,
                 locked_until,
-                last_error
+                last_error,
+                created_at
             "#,
             id,
         )
@@ -303,7 +307,6 @@ mod tests {
 
     const VIS: Duration = Duration::from_secs(30);
 
-    /// A minimal `NewJob` on `queue` with no overrides — the common case.
     fn new_job(queue: &str) -> NewJob {
         NewJob {
             queue: queue.to_string(),
@@ -354,7 +357,6 @@ mod tests {
         assert_eq!(row.max_attempts, 2);
     }
 
-    /// With no per-job override, the row takes the queue's default max_attempts.
     #[sqlx::test]
     async fn enqueue_falls_back_to_default_max_attempts(pool: PgPool) {
         let q = Queue::new(pool.clone(), 7);
@@ -400,8 +402,6 @@ mod tests {
         );
     }
 
-    /// A negative `delay_secs` is clamped to 0 (`.max(0)`), so `run_at` is ~now —
-    /// never scheduled in the past, which would make the job instantly overdue.
     #[sqlx::test]
     async fn enqueue_clamps_negative_delay_to_now(pool: PgPool) {
         let q = Queue::new(pool.clone(), 5);
