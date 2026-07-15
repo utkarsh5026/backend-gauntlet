@@ -3,7 +3,10 @@
 # runs the binary on the host via `cargo run` — that stays the fast edit/
 # compile loop while you're filling in the `todo!()`s; this image is for
 # exercising the real deployed shape (env vars only, no host cargo toolchain).
-FROM rust:1-slim AS build
+# Pinned to the same Debian release as the runtime stage (`rust:1-slim` alone
+# floats onto whatever Debian is current — e.g. trixie — and its newer glibc
+# won't run on a bookworm runtime: `GLIBC_2.39' not found).
+FROM rust:1-slim-bookworm AS build
 WORKDIR /app
 # Build against the whole workspace so member `{ workspace = true }` deps resolve.
 COPY . .

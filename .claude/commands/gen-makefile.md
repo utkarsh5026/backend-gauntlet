@@ -7,10 +7,12 @@ allowed-tools: Bash(make *), Bash(python3 *), Bash(ls *), Bash(cat *), Read, Wri
 Generate a task runner for: **${ARGUMENTS:-the current project}**
 
 The canonical reference implementation lives at
-`projects/01-url-shortener/makefile.py` and `projects/01-url-shortener/Makefile`.
-Treat those two files as the **template** — copy their structure and adapt the
-*tasks* to the target project. Do NOT redesign the runner; keep it consistent
-across projects so every project feels the same.
+`projects/02-rate-limiter/makefile.py` (slim, shared-runner style) and
+`projects/01-url-shortener/makefile.py` (fuller example with bench tasks).
+Shared infrastructure lives in `tools/makefile_runner.py`; help tables in
+`tools/makefile_help.py`. Treat those as the **template** — register common
+bundles and add project-specific `@runner.task` handlers. Do NOT redesign the
+runner; keep it consistent across projects so every project feels the same.
 
 ## 1. Resolve & inspect the target project
 
@@ -31,32 +33,61 @@ across projects so every project feels the same.
 
 ## 2. Generate `makefile.py`
 
-Copy the template and keep ALL of its infrastructure verbatim — only the task
-set changes:
+Use `tools/makefile_runner.py` — do **not** copy-paste infrastructure into each
+project. Pattern:
 
-- The module docstring (retitle to the target crate).
-- `class C` colors + `step`/`ok`/`warn`/`fail` helpers.
-- `_rule` + `banner_start` / `banner_end` (start/finish banners with timing).
-- `run()` (echoes the dimmed `$ cmd`, exits on failure), `cargo()`,
-  `load_dotenv()`, `require()`.
-- The `@task(name, emoji, group, help)` registry + auto-generated grouped `help`.
-- `run_task()` wrapping each top-level task in banners + try/except for
-  `SystemExit`/`Exception`, and `main()` propagating non-zero exit codes.
-- The `sys.stdout.reconfigure(line_buffering=True)` guard in `__main__` (keeps
-  banner/stderr ordering correct when piped).
+```python
+from makefile_runner import (
+    make_runner,
+    register_setup,
+    register_cargo_checks,
+    register_compose_lifecycle,
+    register_postgres,   # if sqlx + Postgres
+    register_redis,      # if Redis
+    register_run,
+    register_smoke_healthz,
+    register_help,
+)
 
-Adapt the **constants** (`CRATE`, `COMPOSE`, paths) and the **task functions** to
-the services/vars you found in step 1. Reuse the same emojis and groups
-(`Setup` / `Services` / `Checks` / `Run` / `Bench` / `Meta`) so projects stay
-uniform. `wait-db` (or equivalent) must poll the real healthcheck for the actual
-service+user from `docker-compose.yml`. Composite tasks (`verify`, `dev`,
-`reset-db`) call the other task *functions* directly so only the outer banner shows.
+runner = make_runner(crate=CRATE, help_title="…", project_dir=PROJECT_DIR, …)
+register_setup(runner)
+register_cargo_checks(runner)
+# … register bundles that apply …
+
+@runner.task("up", "🐳", "Services", "…")
+def up(): …
+
+register_help(runner)
+
+if __name__ == "__main__":
+    runner.entrypoint(sys.argv[1:])
+```
+
+**Shared bundles** (from `makefile_runner.py`):
+
+| Helper | Tasks |
+|--------|-------|
+| `register_setup` | `setup` |
+| `register_cargo_checks` | `check`, `clippy`, `fmt`, `fmt-check`, `test`, `verify`, `clean` |
+| `register_compose_lifecycle` | `down`, `ps`, `logs` |
+| `register_postgres(runner, user=…)` | `install-tools`, `wait-db`, `migrate`, `prepare`, `reset-db` |
+| `register_redis(runner, default_port=…)` | `wait-redis`, `ensure_redis` helper; optional `reset` |
+| `register_run` | `run` |
+| `register_smoke_healthz` | `smoke` (curl `/healthz`) |
+| `register_help` | `help` (Rich tables via `makefile_help.py`) |
+
+Adapt **constants** (`CRATE`, `default_port`, bundle params) and add **project-specific**
+`@runner.task` handlers for `up`/`deps`/`dev`, bench tasks, gRPC smoke, web console,
+etc. Reuse the same emojis and groups (`Setup` / `Services` / `Checks` / `Run` /
+`Bench` / `Meta`). Composite tasks (`verify`, `dev`, `reset-db`) call other task
+*functions* directly (via returned dict from bundles, e.g. `pg["migrate"]()`) so
+only the outer banner shows.
 
 ## 3. Generate the thin `Makefile`
 
 Copy the template Makefile: it just lists the task names in `TASKS` and forwards
 each to `python3 makefile.py $@`. Keep the `TASKS` list in sync with the
-`@task` registry you generated. `.DEFAULT_GOAL := help`.
+`@runner.task` registry you generated. `.DEFAULT_GOAL := help`.
 
 ## 4. Verify
 
