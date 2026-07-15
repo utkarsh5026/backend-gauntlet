@@ -26,14 +26,24 @@ use crate::protocol::{ConnId, ServerMessage};
 /// publishes to different topics don't contend.
 #[derive(Default)]
 pub struct Hub {
+    /// Topic name → the [`Mailbox`] of every connection currently subscribed
+    /// to it. Guarded by a single lock; see the module docs for the
+    /// never-hold-the-lock-while-you-send discipline this implies.
     topics: RwLock<HashMap<String, HashMap<ConnId, Mailbox>>>,
 }
 
 impl Hub {
+    /// Create an empty hub with no topics and no subscribers.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Add `conn` as a subscriber of `topic`, creating the topic if this is
+    /// its first subscriber.
+    ///
+    /// Subscribing the same `conn` to the same `topic` again is idempotent:
+    /// it replaces that connection's [`Mailbox`] rather than duplicating the
+    /// entry.
     pub fn subscribe(&self, topic: &str, conn: ConnId, mailbox: Mailbox) {
         let mut topics = self.topics.write();
         topics
@@ -42,6 +52,9 @@ impl Hub {
             .insert(conn, mailbox);
     }
 
+    /// Remove `conn` from `topic`, pruning the topic entirely once its last
+    /// subscriber leaves. A no-op if `conn` wasn't subscribed, or if `topic`
+    /// doesn't exist.
     pub fn unsubscribe(&self, topic: &str, conn: ConnId) {
         let mut topics = self.topics.write();
         if !topics.contains_key(topic) {
@@ -109,6 +122,7 @@ impl Hub {
 mod tests {
     use std::sync::Arc;
     use std::thread;
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::backpressure::{mailbox, OverflowPolicy};
@@ -242,6 +256,134 @@ mod tests {
             handle.join().expect("thread panicked");
         }
 
+        assert_eq!(hub.topic_count(), 0);
+    }
+
+    #[test]
+    fn publish_does_not_block_on_a_stalled_subscriber() {
+        let hub = Hub::new();
+        let stalled = ConnId::next();
+        let fast = ConnId::next();
+
+        // Capacity 1, never drained: every publish after the first finds it full.
+        let (stalled_mbox, _stalled_outbox) = mailbox(1, OverflowPolicy::DropNewest);
+        // Generous capacity so the fast subscriber never overflows even though
+        // we only drain it after the whole burst.
+        let (fast_mbox, mut fast_outbox) = mailbox(1_000, OverflowPolicy::DropNewest);
+
+        let room_name = "room";
+
+        hub.subscribe(room_name, stalled, stalled_mbox);
+        hub.subscribe(room_name, fast, fast_mbox);
+
+        const N: usize = 500;
+        let start = Instant::now();
+        for i in 0..N {
+            let msg = broadcast(room_name, &format!("msg-{i}"));
+            hub.publish(room_name, msg);
+        }
+        let elapsed = start.elapsed();
+
+        // `Mailbox::deliver` is `try_send`-based, so it can never block on a
+        // full outbox — this is a regression guard: if that ever changed to a
+        // blocking send, this loop would hang or take far longer than this.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "publish took {elapsed:?} against a stalled subscriber — looks blocked"
+        );
+
+        // The fast subscriber's delivery is unaffected by the stalled one.
+        let mut received = 0;
+        while fast_outbox.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, N);
+    }
+
+    /// V1 proof: once a subscriber's outbox is closed (dropped receiver, i.e.
+    /// the socket is gone), `publish` must stop delivering to it and the hub
+    /// must prune it — without the caller ever calling `disconnect` first.
+    #[test]
+    fn publish_prunes_subscriber_whose_outbox_was_dropped() {
+        let hub = Hub::new();
+        let gone = ConnId::next();
+        let alive = ConnId::next();
+        let (gone_mbox, gone_outbox) = mailbox(4, OverflowPolicy::DropNewest);
+        let (alive_mbox, mut alive_out) = mailbox(4, OverflowPolicy::DropNewest);
+
+        hub.subscribe("room", gone, gone_mbox);
+        hub.subscribe("room", alive, alive_mbox);
+
+        // Simulate the connection disappearing (socket dropped) without a
+        // clean `disconnect()` call — just the receiving half going away.
+        drop(gone_outbox);
+
+        assert_eq!(hub.publish("room", broadcast("room", "hi")), 1);
+        assert_eq!(hub.subscriber_count("room"), 1);
+        assert_eq!(alive_out.try_recv().unwrap(), broadcast("room", "hi"));
+
+        // A second publish confirms `gone` stays pruned, not just skipped once.
+        assert_eq!(hub.publish("room", broadcast("room", "again")), 1);
+    }
+
+    /// V1 proof (concurrency, `disconnect` path): the earlier
+    /// `concurrent_subscribe_publish_unsubscribe` only exercises
+    /// `unsubscribe`. This mirrors it but tears connections down via
+    /// `disconnect`, the multi-topic removal path.
+    #[test]
+    fn concurrent_subscribe_publish_disconnect() {
+        let hub = Arc::new(Hub::new());
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let hub = Arc::clone(&hub);
+            handles.push(thread::spawn(move || {
+                for i in 0..50 {
+                    let conn = ConnId::next();
+                    let (mbox, _outbox) = mailbox(4, OverflowPolicy::DropNewest);
+                    let topic = format!("room-{}", i % 4);
+                    hub.subscribe(&topic, conn, mbox);
+                    hub.publish(&topic, broadcast(&topic, "load"));
+                    hub.disconnect(conn);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+
+        assert_eq!(hub.topic_count(), 0);
+    }
+
+    /// V1 proof (concurrency, the sharp edge): one thread keeps publishing to
+    /// a topic while another concurrently disconnects the *same* connection.
+    /// Whatever interleaving the scheduler picks, this must never panic,
+    /// deadlock, or leave a dangling subscriber / non-empty topic behind.
+    #[test]
+    fn publish_racing_disconnect_on_same_conn_never_panics_or_leaks() {
+        let hub = Arc::new(Hub::new());
+        let conn = ConnId::next();
+        let (mbox, _outbox) = mailbox(4, OverflowPolicy::DropNewest);
+        hub.subscribe("room", conn, mbox);
+
+        let publisher = {
+            let hub = Arc::clone(&hub);
+            thread::spawn(move || {
+                for _ in 0..2_000 {
+                    hub.publish("room", broadcast("room", "race"));
+                }
+            })
+        };
+        let disconnector = {
+            let hub = Arc::clone(&hub);
+            thread::spawn(move || hub.disconnect(conn))
+        };
+
+        publisher.join().expect("publisher thread panicked");
+        disconnector.join().expect("disconnector thread panicked");
+
+        assert_eq!(hub.subscriber_count("room"), 0);
         assert_eq!(hub.topic_count(), 0);
     }
 }

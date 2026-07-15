@@ -49,7 +49,7 @@ pub enum ClientMessage {
 }
 
 /// Messages the server sends *to* a client (serialized into a text frame).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     /// A broadcast delivered on a topic this client subscribes to.
