@@ -1,0 +1,14 @@
+services:
+  # The cross-node bus. A single broadcast is published to a Redis channel so
+  # every node — not just the one holding the publishing socket — can fan it out
+  # to its local subscribers (V4). Single-node mode (no CLUSTER) ignores this.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6303:6379"
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
