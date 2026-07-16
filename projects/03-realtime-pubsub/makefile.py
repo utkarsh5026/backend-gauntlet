@@ -6,6 +6,10 @@ A small wrapper around the day-to-day commands for this crate
 so you get one source of truth with colors, emojis and readable output. Help
 tables use `tools/makefile_help.py` (Rich — auto-installed from `tools/requirements.txt`).
 
+`make dev` uses ``register_dev_stack`` (shared with root ``tools/dev.py``): it
+auto-detects Docker Compose, the Rust server, and ``web/``, then launches them
+together in mprocs.
+
 Usage:
     python3 makefile.py <task> [task ...]
     make <task>            # via the Makefile wrapper
@@ -26,6 +30,7 @@ from makefile_runner import (  # noqa: E402
     make_runner,
     register_cargo_checks,
     register_compose_lifecycle,
+    register_dev_stack,
     register_help,
     register_redis,
     register_run,
@@ -39,8 +44,12 @@ runner = make_runner(
     project_dir=PROJECT_DIR,
     help_footers=[
         (
-            "Typical first run",
-            "make setup && make run   (single node; add deps for V4)",
+            "Full stack (Redis + server + playground)",
+            "make dev   → open http://localhost:5173",
+        ),
+        (
+            "Single node, no Redis",
+            "make run   (V1–V3) · make frontend for the UI alone",
         ),
         ("Multi-node (V4)", "CLUSTER=true, run two nodes on different PORTs"),
         ("Run all checks", "make verify"),
@@ -65,11 +74,8 @@ def deps() -> None:
     up()
 
 
-@runner.task("dev", "🚀", "Run", "Start deps (Redis), then run the server")
-def dev() -> None:
-    deps()
-    runner.tasks["run"][0]()
-
+# Auto-detects compose + server + web/ → mprocs (also registers frontend / web-install).
+register_dev_stack(runner)
 
 register_help(runner)
 

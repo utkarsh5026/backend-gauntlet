@@ -7,11 +7,13 @@ Help tables remain in :mod:`makefile_help`.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -19,6 +21,10 @@ from pathlib import Path
 from typing import Any
 
 TaskEntry = tuple[Callable[[], None], str, str, str]
+
+# Frontend folder names auto-detected by `discover_dev_panes` / `register_dev_stack`
+# (same convention as tools/dev.py).
+FRONTEND_DIRS = ("web", "dashboard", "ui", "frontend")
 
 
 class C:
@@ -556,6 +562,183 @@ def register_smoke_healthz(runner: ProjectRunner) -> Callable[[], None]:
             sys.exit(1)
 
     return smoke
+
+
+# --------------------------------------------------------------------------- #
+# Auto-detected full-stack `make dev` (compose + server + frontend)
+# --------------------------------------------------------------------------- #
+
+
+def find_compose_file(proj: Path) -> Path | None:
+    for name in ("docker-compose.yml", "compose.yml"):
+        if (proj / name).exists():
+            return proj / name
+    return None
+
+
+def find_frontends(proj: Path) -> list[Path]:
+    return [proj / d for d in FRONTEND_DIRS if (proj / d / "package.json").exists()]
+
+
+def discover_dev_panes(
+    proj: Path,
+    *,
+    prefix: str = "",
+    use_cargo_watch: bool = True,
+) -> dict[str, dict[str, str]]:
+    """Pane name → mprocs proc entry, derived from what the project has on disk.
+
+    Same rules as ``tools/dev.py``:
+
+    * compose file → ``deps`` pane (``docker compose up``)
+    * ``src/main.rs`` → ``server`` (compose up -d --wait, optional migrate, cargo)
+    * ``web|dashboard|ui|frontend/package.json`` → Bun Vite pane per dir
+    """
+    out: dict[str, dict[str, str]] = {}
+    compose = find_compose_file(proj)
+
+    if compose is not None:
+        out[f"{prefix}deps"] = {"shell": "docker compose up", "cwd": str(proj)}
+
+    if (proj / "src" / "main.rs").exists():
+        steps: list[str] = []
+        if compose is not None:
+            steps.append("docker compose up -d --wait")
+        if (proj / "migrations").is_dir():
+            steps.append("[ -f .env ] && sqlx migrate run")
+        if use_cargo_watch:
+            steps.append("exec cargo watch -q -x run")
+        else:
+            steps.append("exec cargo run")
+        out[f"{prefix}server"] = {"shell": "; ".join(steps), "cwd": str(proj)}
+
+    for fe in find_frontends(proj):
+        out[f"{prefix}{fe.name}"] = {
+            "shell": "[ -d node_modules ] || bun install; exec bun run dev",
+            "cwd": str(fe),
+        }
+    return out
+
+
+def launch_mprocs(procs: dict[str, dict[str, str]]) -> None:
+    """Write a temp mprocs config and exec into mprocs (does not return)."""
+    if shutil.which("mprocs") is None:
+        print(
+            f"{C.RED}❌ `mprocs` not found — install with: cargo install mprocs{C.RESET}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    path = Path(tempfile.mkdtemp(prefix="gauntlet-dev-")) / "mprocs.yaml"
+    # JSON is valid YAML, so no PyYAML dependency.
+    path.write_text(json.dumps({"procs": procs}, indent=2))
+    os.execvp("mprocs", ["mprocs", "--config", str(path)])
+
+
+def register_dev_stack(
+    runner: ProjectRunner,
+    *,
+    use_cargo_watch: bool = True,
+    vite_port: str = "5173",
+) -> dict[str, Callable[[], None]]:
+    """Register ``dev`` (+ ``frontend`` / ``web-install`` when a UI exists).
+
+    Discovers Docker Compose, the Rust server, and Bun frontends under the
+    project dir — same auto-detection as root ``make dev NN=…`` — so a
+    per-project ``make dev`` launches the full local stack in one mprocs session.
+    """
+    proj = runner.project_dir
+    fes = find_frontends(proj)
+
+    def _panes() -> dict[str, dict[str, str]]:
+        return discover_dev_panes(proj, use_cargo_watch=use_cargo_watch)
+
+    @runner.task(
+        "dev",
+        "🚀",
+        "Run",
+        "Full stack: auto-detect deps + server + frontend (mprocs)",
+    )
+    def dev() -> None:
+        panes = _panes()
+        if not panes:
+            runner.fail(
+                "nothing to run (no compose file, src/main.rs, or frontend found)"
+            )
+            sys.exit(1)
+
+        if use_cargo_watch and "server" in panes:
+            runner.require(
+                "cargo-watch",
+                "Install with: cargo install cargo-watch",
+            )
+        if any(name in FRONTEND_DIRS for name in panes):
+            runner.require(
+                "bun",
+                "Install Bun: https://bun.sh  (curl -fsSL https://bun.sh/install | bash)",
+            )
+
+        runner.step("🚀", f"launching mprocs panes: {', '.join(panes)}")
+        for name in panes:
+            if name in FRONTEND_DIRS:
+                print(
+                    f"   {C.BOLD}{C.CYAN}http://localhost:{vite_port}{C.RESET} "
+                    f"{C.DIM}← open the {name} playground once Vite is ready{C.RESET}"
+                )
+        port = runner.load_dotenv().get("PORT", runner.config.default_port)
+        if "server" in panes:
+            print(
+                f"   {C.DIM}backend http://localhost:{port} "
+                f"(cargo {'watch' if use_cargo_watch else 'run'}){C.RESET}"
+            )
+        print(f"   {C.DIM}Ctrl-C inside mprocs stops the stack.{C.RESET}")
+        launch_mprocs(panes)
+
+    result: dict[str, Callable[[], None]] = {"dev": dev}
+
+    if fes:
+
+        def _ensure_web_deps(fe: Path) -> None:
+            runner.require(
+                "bun",
+                "Install Bun: https://bun.sh  (curl -fsSL https://bun.sh/install | bash)",
+            )
+            if (fe / "node_modules").is_dir():
+                return
+            runner.step("📦", f"installing {fe.name} deps (bun install)…")
+            runner.run(["bun", "install"], cwd=fe)
+
+        @runner.task(
+            "web-install",
+            "📦",
+            "Setup",
+            "Install frontend deps (bun install) for detected UI dirs",
+        )
+        def web_install() -> None:
+            for fe in fes:
+                runner.step("📦", f"bun install in {fe.name}/…")
+                runner.run(["bun", "install"], cwd=fe)
+            runner.ok("frontend deps installed")
+
+        @runner.task(
+            "frontend",
+            "🌐",
+            "Run",
+            f"Run just the web playground (Vite, :{vite_port})",
+        )
+        def frontend() -> None:
+            fe = fes[0]
+            _ensure_web_deps(fe)
+            runner.step(
+                "🌐",
+                f"starting {fe.name}/ on http://localhost:{vite_port} "
+                f"(backend must already be running)…",
+            )
+            runner.run(["bun", "run", "dev"], cwd=fe, check=False)
+
+        result["web_install"] = web_install
+        result["frontend"] = frontend
+
+    return result
 
 
 def register_help(runner: ProjectRunner) -> Callable[[], None]:
