@@ -48,6 +48,11 @@ pub enum ClientMessage {
         topic: String,
         payload: serde_json::Value,
     },
+    /// Application-level liveness ping (`{"type":"heartbeat"}`). Browsers can't
+    /// send WebSocket protocol ping frames from JS, so a live-but-idle client
+    /// sends this on a timer to prove it's still here and refresh its presence
+    /// TTL. Carries no payload — its arrival *is* the signal.
+    Heartbeat,
 }
 
 /// Messages the server sends *to* a client (serialized into a text frame).
