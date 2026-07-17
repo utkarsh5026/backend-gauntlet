@@ -19,6 +19,7 @@
 //! `DropOldest`. Filling in that second backend's actual logic is the exercise.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -77,16 +78,69 @@ pub enum DeliverOutcome {
     Disconnect,
 }
 
+/// Shared storage for the `DropOldest` (`Ring`) backend: the queue itself,
+/// the `Notify` used to wake a sleeping [`Outbox::recv`], and a live count of
+/// [`Mailbox`] clones still able to `deliver` into it.
+///
+/// `senders` is what lets the receiver detect "closed" the way an `mpsc`
+/// does — see [`SenderGuard`] for how it stays accurate across clones/drops.
+pub(crate) struct RingState {
+    queue: Mutex<VecDeque<ServerMessage>>,
+    notify: Notify,
+    senders: AtomicUsize,
+}
+
+/// The piece of [`Backend::Ring`] that owns sender-liveness bookkeeping.
+///
+/// Wrapping just this `Arc<RingState>` (rather than hand-writing `Clone` /
+/// `Drop` on [`Mailbox`] itself) keeps the bookkeeping in one place: every
+/// `Mailbox` clone using the `Ring` backend carries exactly one
+/// `SenderGuard`, so `Backend`'s and `Mailbox`'s derived `Clone` impls
+/// automatically call [`SenderGuard::clone`] below, and letting a clone (or
+/// the original) drop automatically calls [`SenderGuard::drop`] below —
+/// no manual `Clone`/`Drop` needed anywhere else.
+struct SenderGuard(Arc<RingState>);
+
+impl SenderGuard {
+    fn state(&self) -> &RingState {
+        &self.0
+    }
+}
+
+impl Clone for SenderGuard {
+    fn clone(&self) -> Self {
+        self.0.senders.fetch_add(1, Ordering::Relaxed);
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl Drop for SenderGuard {
+    fn drop(&mut self) {
+        // `fetch_sub` returns the *previous* value, so `1` here means this
+        // was the last live sender. `notify_waiters` (not `notify_one`) is
+        // required: `Outbox::recv` creates its `Notified` future *before*
+        // re-checking `senders`, and per `Notify`'s docs a `notify_waiters`
+        // call is guaranteed to reach any `Notified` future created before
+        // it — even if that future hasn't been polled yet. `notify_one`
+        // carries no such guarantee pre-poll, so it could be missed here.
+        if self.0.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.notify.notify_waiters();
+        }
+    }
+}
+
 /// A connection's shared queue storage. `Channel` backs `DropNewest` /
 /// `Disconnect` (an `mpsc` gives us non-blocking `try_send` for free).
 /// `DropOldest` needs `Ring`: evicting the oldest entry means reaching the
 /// front of the queue from the producer side, which `mpsc` doesn't expose —
-/// so both "ends" here share the same `VecDeque` directly, coordinated by a
-/// `Notify` so the consumer can still wait asynchronously instead of polling.
+/// so both "ends" here share the same [`RingState`] directly, coordinated by
+/// its `Notify` so the consumer can still wait asynchronously instead of
+/// polling. The `Weak<()>` mirrors [`Outbox::Ring`]'s `Arc<()>` — a sender
+/// asks it "is the receiver still around?" before enqueueing.
 #[derive(Clone)]
 enum Backend {
     Channel(mpsc::Sender<ServerMessage>),
-    Ring(Arc<Mutex<VecDeque<ServerMessage>>>, Arc<Notify>, Weak<()>),
+    Ring(SenderGuard, Weak<()>),
 }
 
 /// The sending half, held by the hub (cloned into each topic this connection
@@ -100,10 +154,11 @@ pub struct Mailbox {
 
 /// The receiving half, owned by the connection's writer task. Which variant
 /// it is always matches the [`Mailbox`] it was created alongside in
-/// [`mailbox`] — the two halves share a `Backend`.
+/// [`mailbox`] — the two halves share a [`RingState`] (for `Ring`) or an
+/// `mpsc` channel (for `Channel`).
 pub enum Outbox {
     Channel(mpsc::Receiver<ServerMessage>),
-    Ring(Arc<Mutex<VecDeque<ServerMessage>>>, Arc<Notify>, Arc<()>),
+    Ring(Arc<RingState>, Arc<()>),
 }
 
 /// Create a connection's mailbox/outbox pair with a bounded capacity. Which
@@ -123,21 +178,19 @@ pub fn mailbox(capacity: usize, policy: OverflowPolicy) -> (Mailbox, Outbox) {
             )
         }
         OverflowPolicy::DropOldest => {
-            let queue = VecDeque::<ServerMessage>::with_capacity(capacity);
-            let queue = Arc::new(Mutex::new(queue));
-            let notify = Arc::new(Notify::new());
+            let state = Arc::new(RingState {
+                queue: Mutex::new(VecDeque::with_capacity(capacity)),
+                notify: Notify::new(),
+                senders: AtomicUsize::new(1),
+            });
             let alive = Arc::new(());
             (
                 Mailbox {
-                    backend: Backend::Ring(
-                        Arc::clone(&queue),
-                        Arc::clone(&notify),
-                        Arc::downgrade(&alive),
-                    ),
+                    backend: Backend::Ring(SenderGuard(Arc::clone(&state)), Arc::downgrade(&alive)),
                     policy,
                     capacity,
                 },
-                Outbox::Ring(queue, notify, alive),
+                Outbox::Ring(state, alive),
             )
         }
     }
@@ -164,17 +217,18 @@ impl Mailbox {
                 },
                 Err(mpsc::error::TrySendError::Closed(_)) => DeliverOutcome::Disconnect,
             },
-            Backend::Ring(queue, notify, alive) => {
-                if alive.upgrade().is_none() {
+            Backend::Ring(guard, receiver_alive) => {
+                if receiver_alive.upgrade().is_none() {
                     return DeliverOutcome::Disconnect;
                 }
-                let mut queue_guard = queue.lock();
+                let state = guard.state();
+                let mut queue_guard = state.queue.lock();
                 if queue_guard.len() >= self.capacity {
                     queue_guard.pop_front();
                     record_dropped(OverflowPolicy::DropOldest);
                 }
                 queue_guard.push_back(msg);
-                notify.notify_one();
+                state.notify.notify_one();
                 DeliverOutcome::Delivered
             }
         }
@@ -182,24 +236,29 @@ impl Mailbox {
 }
 
 impl Outbox {
-    /// Wait for and return the next queued message, or `None` once the
-    /// mailbox side is gone and nothing is left buffered.
+    /// Wait for and return the next queued message, or `None` once every
+    /// [`Mailbox`] for this connection is gone and nothing is left buffered.
     pub async fn recv(&mut self) -> Option<ServerMessage> {
         match self {
             Outbox::Channel(rx) => rx.recv().await,
-            Outbox::Ring(queue, notify, _alive) => loop {
+            Outbox::Ring(state, _alive) => loop {
+                // Registered *before* the checks below so a `SenderGuard`
+                // drop's `notify_waiters` — which fires the moment `senders`
+                // hits zero — can never land in the gap between "we checked
+                // and it wasn't zero yet" and "we started waiting". See
+                // `SenderGuard::drop` for why `notify_waiters` specifically
+                // makes that guarantee.
+                let notified = state.notify.notified();
                 {
-                    let mut queue_guard = queue.lock();
+                    let mut queue_guard = state.queue.lock();
                     if !queue_guard.is_empty() {
                         return Some(queue_guard.pop_front().unwrap());
                     }
                 }
-                // An empty queue after waking doesn't mean "closed" the way
-                // it does for `mpsc` — there's no closed state here at all —
-                // so loop back and wait again instead of returning `None`
-                // (which would permanently stop the writer task in
-                // `routes.rs` on what's really just a transient lull).
-                notify.notified().await;
+                if state.senders.load(Ordering::Acquire) == 0 {
+                    return None;
+                }
+                notified.await;
             },
         }
     }
@@ -212,12 +271,17 @@ impl Outbox {
     pub fn try_recv(&mut self) -> Result<ServerMessage, mpsc::error::TryRecvError> {
         match self {
             Outbox::Channel(rx) => rx.try_recv(),
-            Outbox::Ring(queue, _notify, _alive) => {
-                let mut queue_guard = queue.lock();
+            Outbox::Ring(state, _alive) => {
+                let mut queue_guard = state.queue.lock();
                 if !queue_guard.is_empty() {
                     return Ok(queue_guard.pop_front().unwrap());
                 }
-                Err(mpsc::error::TryRecvError::Empty)
+                drop(queue_guard);
+                if state.senders.load(Ordering::Acquire) == 0 {
+                    Err(mpsc::error::TryRecvError::Disconnected)
+                } else {
+                    Err(mpsc::error::TryRecvError::Empty)
+                }
             }
         }
     }
