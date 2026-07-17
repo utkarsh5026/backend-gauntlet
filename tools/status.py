@@ -89,6 +89,8 @@ EMPHASIS_RE = re.compile(r"[*_`]")
 TODO_RE = re.compile(r"\btodo!\s*\(")
 CHECK_DONE_RE = re.compile(r"-\s*\[x\]", re.IGNORECASE)
 CHECK_OPEN_RE = re.compile(r"-\s*\[ \]")
+CHECK_ITEM_RE = re.compile(r"-\s*\[([ xX])\]\s*(.+)")  # captures state + text
+HEADING_RE = re.compile(r"^#{2,3}\s+(.+?)\s*$")
 
 
 class Vertical:
@@ -102,8 +104,11 @@ class Vertical:
         span: tuple[int, int] = (0, 0),
     ):
         self.vid = vid
-        # Keep only the part before the "— *concept*" dash for a tidy title.
-        self.title = EMPHASIS_RE.sub("", title.split("—")[0]).strip()
+        # Split the heading on its "— *tagline*" dash: the left is a tidy title,
+        # the right is the pithy one-liner shown as a subtitle in the detail view.
+        parts = title.split("—", 1)
+        self.title = EMPHASIS_RE.sub("", parts[0]).strip()
+        self.tagline = EMPHASIS_RE.sub("", parts[1]).strip() if len(parts) > 1 else ""
         self.module = module
         self.path = (src_dir / module) if module else None
         # The vertical's own "Done when ALL true" acceptance criteria. `span` is the
@@ -117,6 +122,14 @@ class Vertical:
         """(done, total) acceptance-criteria checkboxes in this vertical's section."""
         done = len(CHECK_DONE_RE.findall(self.body))
         return done, done + len(CHECK_OPEN_RE.findall(self.body))
+
+    @property
+    def criteria(self) -> list[tuple[bool, str]]:
+        """(done, text) for each 'Done when ALL true' acceptance box, in order."""
+        return [
+            (m.group(1).lower() == "x", EMPHASIS_RE.sub("", m.group(2)).strip())
+            for m in CHECK_ITEM_RE.finditer(self.body)
+        ]
 
     @property
     def todos(self) -> int | None:
@@ -196,14 +209,35 @@ class Project:
             total -= vtot
         return done, total
 
-    @property
-    def open_items(self) -> list[str]:
+    def checklist_sections(self) -> list[tuple[str, list[tuple[bool, str]]]]:
+        """Horizontal-checklist boxes grouped under their SPEC heading (Protocols,
+        Security, the 🐉 boss fight, …). Per-vertical criteria are excluded — they
+        live inside a vertical's span. Walks line by line so each box attaches to
+        the nearest preceding `##`/`###` heading."""
         spans = [v.span for v in self.verticals]
-        out = []
-        for m in re.finditer(r"-\s*\[ \]\s*(.+)", self.text):
-            if not any(s <= m.start() < e for s, e in spans):
-                out.append(m.group(1).strip())
-        return out
+        sections: list[tuple[str, list[tuple[bool, str]]]] = []
+        title: str | None = None
+        items: list[tuple[bool, str]] = []
+        pos = 0
+        for line in self.text.splitlines(keepends=True):
+            start, pos = pos, pos + len(line)
+            if any(s <= start < e for s, e in spans):
+                continue
+            hm = HEADING_RE.match(line)
+            if hm:
+                if items:
+                    sections.append((title or "—", items))
+                    items = []
+                title = EMPHASIS_RE.sub("", hm.group(1)).strip()
+                continue
+            im = CHECK_ITEM_RE.match(line.strip())
+            if im:
+                items.append(
+                    (im.group(1).lower() == "x", EMPHASIS_RE.sub("", im.group(2)).strip())
+                )
+        if items:
+            sections.append((title or "—", items))
+        return sections
 
     # -- rollups -------------------------------------------------------------
     @property
@@ -418,6 +452,34 @@ def discover() -> list[Project]:
     return [Project(d) for d in dirs]
 
 
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _vlen(s: str) -> int:
+    """Visible width of a cell, ignoring ANSI color escapes."""
+    return len(_ANSI_RE.sub("", s))
+
+
+def _pad(s: str, width: int, align: str = "<") -> str:
+    """Pad a (possibly colored) cell to `width` visible columns."""
+    gap = " " * max(0, width - _vlen(s))
+    return s + gap if align == "<" else gap + s
+
+
+def _trunc(s: str, width: int) -> str:
+    return s if len(s) <= width else s[: width - 1] + "…"
+
+
+def _box(done: bool) -> str:
+    return f"{C.GREEN}✅{C.RESET}" if done else f"{C.DIM}⬜{C.RESET}"
+
+
+def _count_color(done: int, total: int) -> str:
+    if total and done == total:
+        return C.GREEN
+    return C.YELLOW if done else C.DIM
+
+
 def dashboard(projects: list[Project]) -> None:
     # Aggregate across every project so the top line answers "overall, where am I?"
     vdone = sum(p.v_done for p in projects)
@@ -444,84 +506,159 @@ def dashboard(projects: list[Project]) -> None:
         f"  {C.DIM}{len(won)}/{len(tr)} · python3 tools/status.py trophies{C.RESET}"
     )
     print(rule())
+
+    # --- one aligned row per project --------------------------------------
+    # Column widths flex to the data so nothing ever truncates or misaligns.
+    # Only ASCII lives in the aligned columns; emoji/variable text stays in the
+    # trailing `next` column, so plain len() padding stays correct.
+    name_w = max((len(p.name) for p in projects), default=len("project"))
+    name_w = max(name_w, len("project"))
+    vert_w = max([len(f"{p.v_done}/{len(p.verticals)}") for p in projects] + [len("vert")])
+    chk_w = max([len(f"{p.checks[0]}/{p.checks[1]}") for p in projects] + [len("chk")])
+    prog_w = 10 + 1 + 4  # bar(10) + space + "100%"
+
+    print(
+        f"  {C.DIM}{'##':<2}  {_pad('project', name_w)} {_pad('state', BADGE_W)}  "
+        f"{_pad('progress', prog_w)}  {_pad('vert', vert_w)}  {_pad('chk', chk_w)}  next{C.RESET}"
+    )
     print()
 
     for p in projects:
-        pcdone, pctot = p.checks
-        cur = p.current
-        print(
-            f"  {C.BOLD}{p.num}{C.RESET}  {C.CYAN}{C.BOLD}{p.name:<16}{C.RESET} "
-            f"{state_badge(p.state, BADGE_W)}  {bar(p.percent)} {C.BOLD}{p.percent:>3}%{C.RESET}"
+        num = f"{C.BOLD}{p.num}{C.RESET}"
+        name = f"{C.CYAN}{C.BOLD}{p.name}{C.RESET}"
+        badge = state_badge(p.state)
+        prog = (
+            f"{bar(p.percent, 10)} "
+            f"{_bar_color(p.percent)}{C.BOLD}{p.percent:>3}%{C.RESET}"
         )
-        glyphs = "  ".join(v_glyph(v, v is cur) for v in p.verticals)
-        print(
-            f"     {C.DIM}verticals{C.RESET}  {glyphs}  {C.DIM}({p.v_done}/{len(p.verticals)}){C.RESET}"
-        )
-        print(
-            f"     {C.DIM}checklist{C.RESET}  {bar(round(100*pcdone/pctot) if pctot else 0, 10)} "
-            f"{C.DIM}{pcdone}/{pctot}{C.RESET}"
-        )
-        if cur is not None:
-            todos = cur.todos
-            tail = f" {C.DIM}· {cur.module} ({todos} todo!()){C.RESET}" if todos else ""
-            print(f"     {C.YELLOW}→ next  {cur.vid} {cur.title}{C.RESET}{tail}")
+        vd, vt = p.v_done, len(p.verticals)
+        vert = f"{_count_color(vd, vt)}{vd}/{vt}{C.RESET}"
+        pcd, pct = p.checks
+        chk = f"{_count_color(pcd, pct)}{pcd}/{pct}{C.RESET}"
+
         blocked = p.front.get("blocked-on", "~")
+        cur = p.current
         if blocked and blocked != "~":
-            print(f"     {C.RED}⛔ blocked-on: {blocked}{C.RESET}")
-        print()
+            nxt = f"{C.RED}⛔ {_trunc(blocked, 44)}{C.RESET}"
+        elif cur is not None:
+            todos = cur.todos
+            tail = f" {C.DIM}({todos} todo!()){C.RESET}" if todos else ""
+            mod = f" {C.DIM}· {cur.module}{C.RESET}" if cur.module else ""
+            nxt = f"{C.YELLOW}{cur.vid}{C.RESET} {_trunc(cur.title, 34)}{mod}{tail}"
+        elif pct and pcd < pct:
+            nxt = f"{C.DIM}{pct - pcd} checklist item(s) left{C.RESET}"
+        else:
+            nxt = f"{C.GREEN}✓ complete{C.RESET}"
+
+        print(
+            f"  {_pad(num, 2)}  {_pad(name, name_w)} {_pad(badge, BADGE_W)}  "
+            f"{_pad(prog, prog_w)}  {_pad(vert, vert_w)}  {_pad(chk, chk_w)}  {nxt}"
+        )
 
     print(rule())
     print(
-        f"  {C.GREEN}✅ done{C.RESET}   {C.YELLOW}🚧 current{C.RESET}   "
-        f"{C.DIM}⬜ pending{C.RESET}   {C.DIM}❔ unknown{C.RESET}"
+        f"  {C.DIM}vert{C.RESET} verticals done/total   {C.DIM}chk{C.RESET} checklist "
+        f"done/total   {C.GREEN}green{C.RESET}={C.DIM}done{C.RESET} "
+        f"{C.YELLOW}yellow{C.RESET}={C.DIM}in progress{C.RESET}"
     )
     print(
-        f"  {C.DIM}drill in with{C.RESET} {C.CYAN}python3 tools/status.py <NN>{C.RESET}"
-        f"  {C.DIM}· lives in code + SPEC.md, no manual upkeep{C.RESET}\n"
+        f"  {C.DIM}drill into a project →{C.RESET} {C.CYAN}make <name>{C.RESET} "
+        f"{C.DIM}or{C.RESET} {C.CYAN}make NN{C.RESET} "
+        f"{C.DIM}(e.g. make url-shortener · make 01) · make projects lists them{C.RESET}\n"
     )
+
+
+def _heading(label: str) -> None:
+    print(f"\n  {C.BOLD}{C.CYAN}{label}{C.RESET}")
+    print(rule())
 
 
 def detail(p: Project) -> None:
+    vt = len(p.verticals)
+    cdone, ctot = p.checks
+    acc_done = sum(1 for v in p.verticals for d, _ in v.criteria if d)
+    acc_tot = sum(len(v.criteria) for v in p.verticals)
+
+    # --- banner -----------------------------------------------------------
     print()
     print(
-        f"  {C.BOLD}{C.MAGENTA}{p.num} — {p.name}{C.RESET}  {state_badge(p.state)}  "
+        f"  {C.BOLD}{C.MAGENTA}{p.num} · {p.name}{C.RESET}  {state_badge(p.state)}  "
         f"{bar(p.percent)} {C.BOLD}{p.percent}%{C.RESET}"
     )
-    print(rule())
-    print()
-    print(
-        f"  {C.BOLD}{C.YELLOW}Verticals{C.RESET} "
-        f"{C.DIM}from-scratch primitives · ({p.v_done}/{len(p.verticals)}){C.RESET}"
+    tally = (
+        f"  {C.DIM}verticals {C.RESET}{C.BOLD}{p.v_done}/{vt}{C.RESET}{C.DIM} built"
     )
+    if acc_tot:
+        tally += f"  ·  acceptance {C.RESET}{C.BOLD}{acc_done}/{acc_tot}{C.RESET}{C.DIM}"
+    tally += f"  ·  checklist {C.RESET}{C.BOLD}{cdone}/{ctot}{C.RESET}"
+    print(tally)
+    blocked = p.front.get("blocked-on", "~")
+    if blocked and blocked != "~":
+        print(f"  {C.RED}⛔ blocked-on: {blocked}{C.RESET}")
+
+    # --- verticals --------------------------------------------------------
+    _heading(f"VERTICALS  ({p.v_done}/{vt} built)")
     cur = p.current
     for v in p.verticals:
         glyph = v_glyph(v, v is cur)
         todos = v.todos
         if v.module is None:
-            note = f"{C.DIM}(no module declared in SPEC){C.RESET}"
+            note = f"{C.DIM}(no module in SPEC){C.RESET}"
         elif todos is None:
             note = f"{C.RED}{v.module} — file missing{C.RESET}"
         elif todos == 0:
-            note = f"{C.GREEN}{v.module} — complete{C.RESET}"
+            note = f"{C.DIM}{v.module}{C.RESET}"
         else:
-            note = f"{C.DIM}{v.module} — {todos} todo!() left{C.RESET}"
-        cd, ct = v.checks
-        crit = (
-            f"  {C.DIM}[{cd}/{ct}]{C.RESET} {bar(round(100 * cd / ct) if ct else 0, 10)}"
-            if ct
-            else ""
-        )
-        print(f"    {glyph}  {v.title:<28} {note}{crit}")
+            note = f"{C.DIM}{v.module} · {C.YELLOW}{todos} todo!(){C.RESET}"
+        print(f"  {glyph}  {C.BOLD}{v.title}{C.RESET}  {note}")
+        if v.tagline:
+            print(f"        {C.DIM}“{_trunc(v.tagline, 70)}”{C.RESET}")
+        crit = v.criteria
+        if crit:
+            cd = sum(1 for d, _ in crit if d)
+            print(f"        {C.DIM}acceptance {cd}/{len(crit)}{C.RESET}")
+            for d, txt in crit:
+                print(f"          {_box(d)} {_trunc(txt, 66)}")
+        print()
+
+    # --- horizontal checklist, grouped by section -------------------------
+    pct = round(100 * cdone / ctot) if ctot else 0
+    _heading(f"HORIZONTAL CHECKLIST  {bar(pct, 12)} {cdone}/{ctot}")
+    for title, items in p.checklist_sections():
+        sd = len([1 for d, _ in items if d])
+        col = C.GREEN if sd == len(items) else C.YELLOW if sd else C.DIM
+        print(f"  {C.BOLD}{_trunc(title, 46)}{C.RESET}  {col}{sd}/{len(items)}{C.RESET}")
+        for d, txt in items:
+            print(f"     {_box(d)} {_trunc(txt, 66)}")
+
+    # --- proof artifacts --------------------------------------------------
+    bench = p.path / "bench"
+    has_bench = bench.is_dir() and any(bench.iterdir())
+    docs = p.path / "docs"
+    design = sorted(docs.glob("*design*.md")) if docs.is_dir() else []
+    benchdoc = sorted(docs.glob("*bench*.md")) if docs.is_dir() else []
+    _heading("PROOF ARTIFACTS")
+    print(f"  {_box(has_bench)} bench/ load test")
+    hint = design[0].name if design else "docs/*design*.md"
+    print(f"  {_box(bool(design))} design doc  {C.DIM}{hint}{C.RESET}")
+    hint = benchdoc[0].name if benchdoc else "docs/*bench*.md"
+    print(f"  {_box(bool(benchdoc))} benchmark writeup  {C.DIM}{hint}{C.RESET}")
+
+    # --- what to do next --------------------------------------------------
     print()
-    cdone, ctot = p.checks
-    print(
-        f"  {C.BOLD}{C.YELLOW}Horizontal checklist{C.RESET}  "
-        f"{bar(round(100*cdone/ctot) if ctot else 0, 12)} {C.DIM}{cdone}/{ctot} done{C.RESET}"
-    )
-    for item in p.open_items:
-        print(f"    {C.DIM}⬜ {EMPHASIS_RE.sub('', item)[:80]}{C.RESET}")
-    if not p.open_items:
-        print(f"    {C.GREEN}all checklist items done 🎉{C.RESET}")
+    if cur is not None:
+        bits = []
+        if cur.todos:
+            bits.append(f"{cur.todos} todo!() in {cur.module}")
+        open_crit = len([1 for d, _ in cur.criteria if not d])
+        if open_crit:
+            bits.append(f"{open_crit} acceptance box(es) left")
+        tail = f" {C.DIM}({'; '.join(bits)}){C.RESET}" if bits else ""
+        print(f"  {C.YELLOW}→ next: {cur.vid} {cur.title}{C.RESET}{tail}")
+    elif ctot and cdone < ctot:
+        print(f"  {C.YELLOW}→ next: {ctot - cdone} horizontal item(s) remain{C.RESET}")
+    else:
+        print(f"  {C.GREEN}→ every box checked — boss defeated. 🐉{C.RESET}")
     print()
 
 
