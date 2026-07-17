@@ -289,10 +289,167 @@ impl Outbox {
 
 #[cfg(test)]
 mod tests {
-    // TODO(V2): prove the slow-consumer invariant. Suggested cases:
-    //   - fill the outbox without draining it; assert `deliver` returns Dropped /
-    //     Disconnect per policy and that buffered memory stays bounded by capacity;
-    //   - DropOldest: after overflow, the *newest* messages survive, oldest are gone;
-    //   - a fast drainer never sees a Dropped outcome under the same load;
-    //   - `deliver` never blocks (wrap it in a tight loop with no awaiting drainer).
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    fn msg(payload: &str) -> ServerMessage {
+        ServerMessage::Message {
+            topic: "room".to_string(),
+            payload: serde_json::Value::String(payload.to_string()),
+        }
+    }
+
+    #[test]
+    fn drop_newest_drops_once_full_and_buffer_stays_bounded() {
+        let (mbox, mut outbox) = mailbox(2, OverflowPolicy::DropNewest);
+
+        assert_eq!(mbox.deliver(msg("a")), DeliverOutcome::Delivered);
+        assert_eq!(mbox.deliver(msg("b")), DeliverOutcome::Delivered);
+        // Outbox is full at capacity 2 — the newest message is shed, not buffered.
+        assert_eq!(mbox.deliver(msg("c")), DeliverOutcome::Dropped);
+
+        assert_eq!(outbox.try_recv().unwrap(), msg("a"));
+        assert_eq!(outbox.try_recv().unwrap(), msg("b"));
+        assert!(outbox.try_recv().is_err(), "\"c\" must not have been buffered");
+    }
+
+    #[test]
+    fn disconnect_policy_signals_disconnect_once_full_and_never_evicts() {
+        let (mbox, mut outbox) = mailbox(1, OverflowPolicy::Disconnect);
+
+        assert_eq!(mbox.deliver(msg("first")), DeliverOutcome::Delivered);
+        assert_eq!(mbox.deliver(msg("second")), DeliverOutcome::Disconnect);
+
+        // Disconnect never makes room for the new message by evicting the old one.
+        assert_eq!(outbox.try_recv().unwrap(), msg("first"));
+        assert!(outbox.try_recv().is_err());
+    }
+
+    #[test]
+    fn drop_oldest_evicts_the_front_so_newest_survive_and_buffer_stays_bounded() {
+        let (mbox, mut outbox) = mailbox(2, OverflowPolicy::DropOldest);
+
+        // `Ring` never reports `Dropped` to the publisher — it always makes
+        // room by evicting, so every call here reports `Delivered`.
+        for payload in ["a", "b", "c", "d"] {
+            assert_eq!(mbox.deliver(msg(payload)), DeliverOutcome::Delivered);
+        }
+
+        // Only the last `capacity` messages survive; "a" and "b" were evicted
+        // from the front to make room, oldest first.
+        assert_eq!(outbox.try_recv().unwrap(), msg("c"));
+        assert_eq!(outbox.try_recv().unwrap(), msg("d"));
+        assert!(outbox.try_recv().is_err());
+    }
+
+    #[test]
+    fn fast_drainer_never_sees_a_dropped_outcome_under_sustained_load() {
+        let (mbox, mut outbox) = mailbox(1, OverflowPolicy::DropNewest);
+
+        // Capacity 1 would overflow immediately under any backlog — but a
+        // drainer that keeps up (drains between every delivery) never lets
+        // one form, so every outcome must be `Delivered`.
+        for i in 0..1_000 {
+            let m = msg(&format!("msg-{i}"));
+            assert_eq!(mbox.deliver(m.clone()), DeliverOutcome::Delivered);
+            assert_eq!(outbox.try_recv().unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn deliver_never_blocks_on_a_stalled_reader_under_any_policy() {
+        for policy in [
+            OverflowPolicy::DropNewest,
+            OverflowPolicy::DropOldest,
+            OverflowPolicy::Disconnect,
+        ] {
+            let (mbox, _outbox) = mailbox(1, policy);
+
+            let start = Instant::now();
+            for i in 0..10_000 {
+                // Once `Disconnect` fires the "connection" is logically gone,
+                // but nothing stops the publisher from calling deliver again
+                // (the hub reaps it lazily) — so this loop must still return
+                // promptly rather than block, under every policy.
+                mbox.deliver(msg(&format!("msg-{i}")));
+            }
+            let elapsed = start.elapsed();
+
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "deliver under {policy:?} took {elapsed:?} against a stalled reader — looks blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn stalled_reader_drop_counter_climbs_while_fast_subscriber_is_unaffected() {
+        // Mirrors the V2 payoff: one connection stalls, another stays caught
+        // up, and the stalled one's losses never touch the fast one.
+        let (stalled_mbox, _stalled_outbox) = mailbox(1, OverflowPolicy::DropNewest);
+        let (fast_mbox, mut fast_outbox) = mailbox(1_000, OverflowPolicy::DropNewest);
+
+        const N: usize = 500;
+        let mut dropped = 0;
+        for i in 0..N {
+            let m = msg(&format!("msg-{i}"));
+            if stalled_mbox.deliver(m.clone()) == DeliverOutcome::Dropped {
+                dropped += 1;
+            }
+            assert_eq!(fast_mbox.deliver(m), DeliverOutcome::Delivered);
+        }
+
+        // The first delivery fills the stalled mailbox's one slot; every
+        // delivery after that is shed — the drop counter climbs in lockstep
+        // with the backlog, it's never silent.
+        assert_eq!(dropped, N - 1);
+
+        let mut received = 0;
+        while fast_outbox.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, N, "fast subscriber must receive every message");
+    }
+
+    #[test]
+    fn channel_backend_reports_disconnect_once_receiver_is_dropped() {
+        let (mbox, outbox) = mailbox(4, OverflowPolicy::DropNewest);
+        drop(outbox);
+
+        assert_eq!(mbox.deliver(msg("hi")), DeliverOutcome::Disconnect);
+    }
+
+    #[test]
+    fn ring_backend_reports_disconnect_once_receiver_is_dropped() {
+        let (mbox, outbox) = mailbox(4, OverflowPolicy::DropOldest);
+        drop(outbox);
+
+        assert_eq!(mbox.deliver(msg("hi")), DeliverOutcome::Disconnect);
+    }
+
+    #[tokio::test]
+    async fn ring_backend_recv_returns_survivors_in_order_after_overflow() {
+        let (mbox, mut outbox) = mailbox(2, OverflowPolicy::DropOldest);
+
+        for payload in ["a", "b", "c", "d"] {
+            mbox.deliver(msg(payload));
+        }
+
+        assert_eq!(outbox.recv().await.unwrap(), msg("c"));
+        assert_eq!(outbox.recv().await.unwrap(), msg("d"));
+    }
+
+    #[tokio::test]
+    async fn ring_backend_recv_drains_buffered_message_then_closes() {
+        // Regression guard for the race `SenderGuard::drop` documents: a
+        // message delivered right before the last sender drops must still be
+        // observed by `recv` before it reports the outbox closed.
+        let (mbox, mut outbox) = mailbox(2, OverflowPolicy::DropOldest);
+        assert_eq!(mbox.deliver(msg("last")), DeliverOutcome::Delivered);
+        drop(mbox);
+
+        assert_eq!(outbox.recv().await.unwrap(), msg("last"));
+        assert_eq!(outbox.recv().await, None);
+    }
 }
