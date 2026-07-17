@@ -19,6 +19,7 @@ mod protocol;
 mod routes;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::info;
 
@@ -26,9 +27,15 @@ use backpressure::OverflowPolicy;
 use cluster::ClusterBridge;
 use hub::Hub;
 use presence::PresenceRegistry;
+use protocol::ServerMessage;
 
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_OUTBOX_CAPACITY: usize = 64;
+// TTL a healthy multiple of the client's heartbeat interval (routes.rs's
+// `ClientMessage::Heartbeat`): tight enough to reap silent drops promptly,
+// loose enough that one missed beat doesn't evict a live member.
+const DEFAULT_PRESENCE_TTL_SECS: u64 = 30;
+const DEFAULT_PRESENCE_SWEEP_INTERVAL_SECS: u64 = 10;
 
 /// Shared application state, cloned into every request handler. Everything here
 /// is cheap to clone: the registries are behind `Arc`, the rest are small Copy
@@ -61,9 +68,24 @@ async fn main() -> anyhow::Result<()> {
         common_config::parse_or("OUTBOX_CAPACITY", DEFAULT_OUTBOX_CAPACITY);
     let overflow_policy: OverflowPolicy =
         common_config::parse_or("OVERFLOW_POLICY", OverflowPolicy::DropOldest);
+    let presence_ttl = Duration::from_secs(common_config::parse_or(
+        "PRESENCE_TTL_SECS",
+        DEFAULT_PRESENCE_TTL_SECS,
+    ));
+    let presence_sweep_interval = Duration::from_secs(common_config::parse_or(
+        "PRESENCE_SWEEP_INTERVAL_SECS",
+        DEFAULT_PRESENCE_SWEEP_INTERVAL_SECS,
+    ));
 
     let hub = Arc::new(Hub::new());
     let presence = Arc::new(PresenceRegistry::new());
+
+    tokio::spawn(sweep(
+        Arc::clone(&hub),
+        Arc::clone(&presence),
+        presence_sweep_interval,
+        presence_ttl,
+    ));
 
     let cluster = if cluster_enabled {
         let redis_url = common_config::or_default("REDIS_URL", "redis://localhost:6303/0");
@@ -99,6 +121,31 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     Ok(())
+}
+
+/// Background loop that reaps stale presence and fans out the survivors.
+///
+/// Every `interval`, calls [`PresenceRegistry::sweep`] with `ttl` to drop
+/// members whose last heartbeat is too old (silent TCP drops that never sent
+/// a leave). For each topic that actually changed, publishes a
+/// [`ServerMessage::Presence`] so still-connected subscribers see the updated
+/// roster without waiting for their next join/leave.
+async fn sweep(hub: Arc<Hub>, presence: Arc<PresenceRegistry>, interval: Duration, ttl: Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        for (topic, members) in presence.sweep(ttl) {
+            let members = members
+                .into_iter()
+                .map(|m| m.identity().to_string())
+                .collect();
+            let presence = ServerMessage::Presence {
+                topic: topic.clone(),
+                members,
+            };
+            hub.publish(&topic, presence);
+        }
+    }
 }
 
 /// Waits for Ctrl-C / SIGTERM so we can drain in-flight work.
