@@ -1,60 +1,54 @@
-import { Radio } from 'lucide-react'
+import { useState } from 'react'
+import { MessageCircle, Users, Wrench } from 'lucide-react'
 
-import { ClientGrid } from '@/components/ClientGrid'
-import { ConnectionBar } from '@/components/ConnectionBar'
-import { LoadPanel } from '@/components/LoadPanel'
-import { RoomsPanel } from '@/components/RoomsPanel'
-import { StatTiles } from '@/components/StatTiles'
-import { usePlayground } from '@/hooks/usePlayground'
+import { AdminPanel } from '@/components/AdminPanel'
+import { ChatPanel } from '@/components/ChatPanel'
+import { DevPanel } from '@/components/DevPanel'
+import { Sidebar } from '@/components/Sidebar'
+import { Button } from '@/components/ui/button'
+import { useChat } from '@/hooks/useChat'
 
 export default function App() {
-  const snap = usePlayground()
+  const snap = useChat()
+  const [devOpen, setDevOpen] = useState(false)
+  const [adminOpen, setAdminOpen] = useState(false)
+  const activeRoom = snap.rooms.find((r) => r.topic === snap.activeTopic) ?? null
 
   return (
-    <div className="min-h-screen">
-      <header className="bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-6 py-3">
-          <div className="bg-primary/10 text-primary flex size-9 items-center justify-center rounded-lg">
-            <Radio className="size-5" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="text-sm font-semibold leading-tight">Realtime Pub/Sub — Playground</h1>
-            <p className="text-muted-foreground text-xs leading-tight">
-              Project 03 · fan-out, presence &amp; backpressure, made visible
-            </p>
-          </div>
-          <a
-            href="https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API"
-            target="_blank"
-            rel="noreferrer"
-            className="text-muted-foreground hover:text-foreground ml-auto hidden text-xs sm:block"
+    <div className="flex h-screen flex-col overflow-hidden">
+      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-2.5">
+        <div className="bg-primary/10 text-primary flex size-8 items-center justify-center rounded-lg">
+          <MessageCircle className="size-4" />
+        </div>
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold leading-tight">Pub/Sub Chat</h1>
+          <p className="text-muted-foreground text-xs leading-tight">Project 03 — a chat room is a topic</p>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={adminOpen ? 'secondary' : 'ghost'}
+            onClick={() => setAdminOpen((v) => !v)}
           >
-            many sockets · one page
-          </a>
+            <Users className="size-3.5" /> People
+          </Button>
+          <Button
+            size="sm"
+            variant={devOpen ? 'secondary' : 'ghost'}
+            onClick={() => setDevOpen((v) => !v)}
+          >
+            <Wrench className="size-3.5" /> Dev tools
+          </Button>
         </div>
       </header>
 
-      <main className="mx-auto flex max-w-[1600px] flex-col gap-4 px-6 py-6">
-        <ConnectionBar snap={snap} />
-        <StatTiles totals={snap.totals} />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar snap={snap} />
+        <ChatPanel room={activeRoom} />
+        {devOpen && <DevPanel snap={snap} />}
+      </div>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
-          <aside className="flex flex-col gap-4">
-            <RoomsPanel snap={snap} />
-            <LoadPanel snap={snap} />
-          </aside>
-          <section>
-            <ClientGrid clients={snap.clients} />
-          </section>
-        </div>
-
-        <p className="text-muted-foreground/70 pt-2 text-center text-xs">
-          Heads up: with the V1 hub's <code className="font-mono">todo!()</code> still in place, the first{' '}
-          <span className="font-mono">subscribe</span> or <span className="font-mono">publish</span> panics the server
-          and drops your socket — that's the worklist, not a bug. Implement{' '}
-          <span className="font-mono">src/hub.rs</span> and it lights up.
-        </p>
-      </main>
+      {adminOpen && <AdminPanel onClose={() => setAdminOpen(false)} />}
     </div>
   )
 }

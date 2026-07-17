@@ -25,6 +25,8 @@ export default defineConfig({
     proxy: {
       '/ws': { target, changeOrigin: true, ws: true },
       '/healthz': { target, changeOrigin: true },
+      // The admin-panel roster REST API (people/groups/memberships).
+      '/admin': { target, changeOrigin: true },
     },
   },
 })

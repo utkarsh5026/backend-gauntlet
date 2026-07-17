@@ -1,116 +1,83 @@
-// The playground store: an external store (for `useSyncExternalStore`) that owns
-// a fleet of live WebSocket connections to the pub/sub server and derives the
-// stats that make the SPEC's hard parts *visible* from the browser:
+// The chat store: an external store (for `useSyncExternalStore`) that owns a
+// single WebSocket identity ("you") talking to the pub/sub server, and shapes
+// the wire protocol into a chat mental model — because a chat app *is* a
+// pub/sub UI wearing a costume:
 //
-//  - fan-out       — one publish lights up every subscriber of the topic at once,
-//                    and `deliverRate` = publishRate × subscribers-per-topic.
-//  - backpressure  — each publish carries a per-sender `seq`; a subscriber that
-//                    the server sheds under its overflow policy sees a HOLE in the
-//                    run, which we count as `droppedGaps`. That counter is the
-//                    client-side mirror of the server's drop metric (V2's payoff).
-//  - latency       — every payload carries `ts`; since all tabs share one clock,
-//                    `now - ts` is a true end-to-end delivery latency.
+//  - a room            = a topic you're subscribed to
+//  - sending a message = publish
+//  - the message showing up in your own thread = the server fanning your
+//    publish back out to you (you're a subscriber of your own room), not a
+//    local echo — so nothing appears until the hub actually delivers it
+//  - "who's online"    = a presence frame
+//  - another tab seeing it live = fan-out, made visible without a client grid
 //
-// Design note: under a firehose, messages arrive far faster than React should
-// re-render. Incoming frames only mutate internal runtime objects and set a
-// `dirty` flag; a single ~5 Hz tick rebuilds an immutable snapshot and notifies.
-// That keeps the UI smooth whether it's 1 msg/s or 2000.
+// The firehose/stats below (surfaced in the Dev panel, not the main thread)
+// exist for the same reason the old playground's grid did: backpressure and
+// drop-shedding need *load* and a *counter* to become visible at all.
+//
+// Design note: under a firehose, messages can arrive far faster than React
+// should re-render. Incoming frames only mutate internal runtime state and set
+// a `dirty` flag; a single ~5 Hz tick rebuilds an immutable snapshot and
+// notifies. That keeps the UI smooth whether it's 1 msg/s or 2000.
 
 import type { ClientMessage, Envelope, ServerMessage } from './protocol'
 import { isEnvelope } from './protocol'
 
 export type Status = 'closed' | 'connecting' | 'open' | 'error'
 
-export interface LogEntry {
+export interface ThreadEntry {
   id: number
-  dir: 'in' | 'out'
-  kind: 'message' | 'presence' | 'error' | 'system'
-  topic?: string
+  kind: 'message' | 'system' | 'error'
   from?: string
+  mine?: boolean
   text: string
-  latencyMs?: number
+  latencyMs?: number | null
   at: number
-}
-
-export interface ClientSnapshot {
-  id: string
-  name: string
-  status: Status
-  error?: string
-  subscriptions: string[]
-  received: number
-  published: number
-  droppedGaps: number
-  lastLatencyMs: number | null
-  avgLatencyMs: number | null
-  ratePerSec: number
-  log: LogEntry[]
 }
 
 export interface RoomSnapshot {
   topic: string
   members: string[]
-  subscriberIds: string[]
-  delivered: number
+  messages: ThreadEntry[]
+  droppedGaps: number
+  unread: number
 }
 
 export interface LoadSnapshot {
   running: boolean
-  senderId: string | null
   topic: string
   rate: number
   sent: number
 }
 
 export interface Totals {
-  clients: number
-  connected: number
-  topics: number
   published: number
-  delivered: number
-  dropped: number
+  received: number
+  droppedGaps: number
   publishRate: number
   deliverRate: number
+  avgLatencyMs: number | null
 }
 
 export interface Snapshot {
   endpoint: string
   token: string
-  clients: ClientSnapshot[]
+  name: string
+  status: Status
+  error?: string
   rooms: RoomSnapshot[]
+  activeTopic: string | null
   load: LoadSnapshot
   totals: Totals
 }
 
 const FLUSH_MS = 200
 const LOAD_TICK_MS = 50
-const LOG_CAP = 60
+const THREAD_CAP = 300
 const MAX_RATE = 2000
 const EMA = 0.4
 
-// ---- internal, mutable runtime (never handed to React directly) -------------
-
-interface ClientRuntime {
-  id: string
-  name: string
-  ws: WebSocket | null
-  status: Status
-  error?: string
-  subscriptions: Set<string>
-  received: number
-  published: number
-  droppedGaps: number
-  lastLatencyMs: number | null
-  avgLatencyMs: number | null
-  ratePerSec: number
-  rateSample: number
-  seqTrack: Map<string, number> // `${from}::${topic}` -> highest seq seen
-  outSeq: Map<string, number> // topic -> next outbound seq for this sender
-  log: LogEntry[]
-}
-
-let logSeq = 1
-let clientSeq = 1
+let entrySeq = 1
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -121,20 +88,39 @@ function load<T>(key: string, fallback: T): T {
   }
 }
 
-class PlaygroundStore {
+function randomName(): string {
+  return `guest-${Math.floor(100 + Math.random() * 900)}`
+}
+
+class ChatStore {
   private listeners = new Set<() => void>()
-  private clients: ClientRuntime[] = []
+
+  private ws: WebSocket | null = null
+  private status: Status = 'closed'
+  private error?: string
+
+  private name = load('pubsub.name', randomName())
   private endpoint = load('pubsub.endpoint', '/ws')
   private token = load('pubsub.token', '')
 
+  private subscriptions: string[] = [] // joined rooms, in join order
   private presence = new Map<string, string[]>() // topic -> members
-  private delivered = new Map<string, number>() // topic -> delivered count
+  private threads = new Map<string, ThreadEntry[]>() // topic -> messages
+  private droppedGaps = new Map<string, number>() // topic -> dropped count
+  private unread = new Map<string, number>() // topic -> unseen count
+  private seqTrack = new Map<string, number>() // `${from}::${topic}` -> highest seq seen
+  private outSeq = new Map<string, number>() // topic -> next outbound seq
+  private activeTopic: string | null = null
 
   private published = 0
+  private received = 0
   private publishSample = 0
+  private receivedSample = 0
   private publishRate = 0
+  private deliverRate = 0
+  private avgLatencyMs: number | null = null
 
-  private loadState: LoadSnapshot = { running: false, senderId: null, topic: 'firehose', rate: 200, sent: 0 }
+  private loadState: LoadSnapshot = { running: false, topic: 'firehose', rate: 200, sent: 0 }
   private loadTimer: ReturnType<typeof setInterval> | null = null
   private loadCarry = 0
 
@@ -144,9 +130,6 @@ class PlaygroundStore {
 
   constructor() {
     setInterval(() => this.tick(), FLUSH_MS)
-    // A couple of clients ready to go, so the page isn't empty on first load.
-    this.addClient('alice')
-    this.addClient('bob')
   }
 
   // ---- external-store contract ---------------------------------------------
@@ -158,7 +141,17 @@ class PlaygroundStore {
 
   getSnapshot = (): Snapshot => this.snapshot
 
-  // ---- config ---------------------------------------------------------------
+  // ---- identity / config ------------------------------------------------------
+
+  setName(v: string) {
+    this.name = v
+    try {
+      localStorage.setItem('pubsub.name', v)
+    } catch {
+      /* ignore */
+    }
+    this.commit()
+  }
 
   setEndpoint(v: string) {
     this.endpoint = v
@@ -180,188 +173,118 @@ class PlaygroundStore {
     this.commit()
   }
 
-  // ---- clients ---------------------------------------------------------------
-
-  addClient(name?: string): string {
-    const id = `c${clientSeq++}`
-    this.clients.push({
-      id,
-      name: name ?? `client-${id}`,
-      ws: null,
-      status: 'closed',
-      subscriptions: new Set(),
-      received: 0,
-      published: 0,
-      droppedGaps: 0,
-      lastLatencyMs: null,
-      avgLatencyMs: null,
-      ratePerSec: 0,
-      rateSample: 0,
-      seqTrack: new Map(),
-      outSeq: new Map(),
-      log: [],
-    })
-    this.commit()
-    return id
-  }
-
-  spawn(n: number) {
-    for (let i = 0; i < n; i++) this.addClient()
-    this.commit()
-  }
-
-  removeClient(id: string) {
-    const c = this.find(id)
-    if (c) c.ws?.close(1000, 'removed')
-    if (this.loadState.senderId === id) this.stopLoad()
-    this.clients = this.clients.filter((c) => c.id !== id)
-    this.commit()
-  }
-
-  renameClient(id: string, name: string) {
-    const c = this.find(id)
-    if (c) c.name = name
-    this.commit()
-  }
-
-  clearLog(id: string) {
-    const c = this.find(id)
-    if (c) c.log = []
-    this.commit()
-  }
-
   // ---- connection lifecycle --------------------------------------------------
 
-  connect(id: string) {
-    const c = this.find(id)
-    if (!c || c.status === 'open' || c.status === 'connecting') return
+  connect() {
+    if (this.status === 'open' || this.status === 'connecting') return
     let ws: WebSocket
     try {
       ws = new WebSocket(this.wsUrl())
     } catch (e) {
-      c.status = 'error'
-      c.error = String(e)
+      this.status = 'error'
+      this.error = String(e)
       this.commit()
       return
     }
-    c.ws = ws
-    c.status = 'connecting'
-    c.error = undefined
+    this.ws = ws
+    this.status = 'connecting'
+    this.error = undefined
 
     ws.onopen = () => {
-      c.status = 'open'
-      c.error = undefined
-      this.sys(c, `connected → ${this.wsUrl()}`)
-      // Re-establish any topics this client had joined (reconnect-safe).
-      for (const topic of c.subscriptions) this.send(c, { type: 'subscribe', topic })
+      this.status = 'open'
+      this.error = undefined
+      // Re-join every room this identity had joined (reconnect-safe).
+      for (const topic of this.subscriptions) this.send({ type: 'subscribe', topic })
       this.commit()
     }
-    ws.onmessage = (ev) => this.onMessage(c, ev.data)
+    ws.onmessage = (ev) => this.onMessage(ev.data)
     ws.onerror = () => {
-      c.status = 'error'
-      c.error = 'socket error'
+      this.status = 'error'
+      this.error = 'socket error'
       this.dirty = true
     }
     ws.onclose = (ev) => {
-      if (c.ws === ws) c.ws = null
-      c.status = c.status === 'error' ? 'error' : 'closed'
-      this.sys(c, `disconnected (code ${ev.code}${ev.reason ? ` — ${ev.reason}` : ''})`)
-      if (this.loadState.senderId === id) this.stopLoad()
+      if (this.ws === ws) this.ws = null
+      this.status = this.status === 'error' ? 'error' : 'closed'
+      if (this.loadState.running) this.stopLoad()
+      this.sysAll(`disconnected (code ${ev.code}${ev.reason ? ` — ${ev.reason}` : ''})`)
       this.commit()
     }
     this.commit()
   }
 
-  disconnect(id: string) {
-    const c = this.find(id)
-    if (!c) return
-    c.ws?.close(1000, 'client disconnect')
-    c.ws = null
-    c.status = 'closed'
+  disconnect() {
+    this.ws?.close(1000, 'client disconnect')
+    this.ws = null
+    this.status = 'closed'
     this.commit()
   }
 
-  connectAll() {
-    for (const c of this.clients) this.connect(c.id)
-  }
+  // ---- rooms ------------------------------------------------------------------
 
-  disconnectAll() {
-    for (const c of this.clients) this.disconnect(c.id)
-  }
-
-  // ---- protocol actions ------------------------------------------------------
-
-  subscribeTopic(id: string, topic: string) {
+  joinRoom(topic: string) {
     const t = topic.trim()
-    const c = this.find(id)
-    if (!c || !t) return
-    c.subscriptions.add(t)
-    // Fresh subscription → forget any stale per-sender seq for this topic so we
-    // don't count a spurious gap from a previous run.
-    for (const key of [...c.seqTrack.keys()]) if (key.endsWith(`::${t}`)) c.seqTrack.delete(key)
-    if (c.status === 'open') this.send(c, { type: 'subscribe', topic: t })
+    if (!t || this.subscriptions.includes(t)) return
+    this.subscriptions.push(t)
+    if (!this.threads.has(t)) this.threads.set(t, [])
+    this.sys(t, `you joined ${t}`)
+    if (this.status === 'open') this.send({ type: 'subscribe', topic: t })
+    if (!this.activeTopic) this.activeTopic = t
     this.commit()
   }
 
-  unsubscribeTopic(id: string, topic: string) {
-    const c = this.find(id)
-    if (!c) return
-    c.subscriptions.delete(topic)
-    if (c.status === 'open') this.send(c, { type: 'unsubscribe', topic })
+  leaveRoom(topic: string) {
+    if (!this.subscriptions.includes(topic)) return
+    this.subscriptions = this.subscriptions.filter((t) => t !== topic)
+    if (this.status === 'open') this.send({ type: 'unsubscribe', topic })
+    this.threads.delete(topic)
+    this.presence.delete(topic)
+    this.droppedGaps.delete(topic)
+    this.unread.delete(topic)
+    if (this.activeTopic === topic) this.activeTopic = this.subscriptions[0] ?? null
     this.commit()
   }
 
-  subscribeAll(topic: string) {
-    const t = topic.trim()
-    if (!t) return
-    for (const c of this.clients) if (c.status === 'open') this.subscribeTopic(c.id, t)
+  setActiveTopic(topic: string) {
+    if (!this.subscriptions.includes(topic)) return
+    this.activeTopic = topic
+    this.unread.set(topic, 0)
     this.commit()
   }
 
-  /** Publish a user `body` to `topic` through client `id`, stamped for stats. */
-  publish(id: string, topic: string, body: unknown) {
-    const c = this.find(id)
-    const t = topic.trim()
-    if (!c || !t) return
-    if (c.status !== 'open') {
-      this.sys(c, `can't publish to "${t}": not connected`)
+  // ---- messaging ----------------------------------------------------------------
+
+  sendMessage(topic: string, text: string) {
+    const body = text.trim()
+    if (!body) return
+    if (this.status !== 'open') {
+      this.sys(topic, `can't send: not connected`)
       this.commit()
       return
     }
-    const seq = (c.outSeq.get(t) ?? 0) + 1
-    c.outSeq.set(t, seq)
-    const env: Envelope = { seq, ts: Date.now(), from: c.name, body }
-    this.send(c, { type: 'publish', topic: t, payload: env })
-    c.published += 1
+    const seq = (this.outSeq.get(topic) ?? 0) + 1
+    this.outSeq.set(topic, seq)
+    const env: Envelope = { seq, ts: Date.now(), from: this.name, body }
+    this.send({ type: 'publish', topic, payload: env })
     this.published += 1
-    this.log(c, {
-      dir: 'out',
-      kind: 'message',
-      topic: t,
-      from: c.name,
-      text: typeof body === 'string' ? body : JSON.stringify(body),
-    })
     this.commit()
   }
 
-  // ---- firehose / load -------------------------------------------------------
+  // ---- firehose / load ---------------------------------------------------------
 
-  configureLoad(patch: Partial<Pick<LoadSnapshot, 'senderId' | 'topic' | 'rate'>>) {
+  configureLoad(patch: Partial<Pick<LoadSnapshot, 'topic' | 'rate'>>) {
     if (patch.rate !== undefined) patch.rate = Math.max(1, Math.min(MAX_RATE, Math.round(patch.rate)))
     this.loadState = { ...this.loadState, ...patch }
     this.commit()
   }
 
   startLoad() {
-    if (this.loadState.running) return
-    const sender = this.loadState.senderId ?? this.clients.find((c) => c.status === 'open')?.id ?? null
-    if (!sender) return
-    this.loadState = { ...this.loadState, running: true, senderId: sender, sent: 0 }
+    if (this.loadState.running || this.status !== 'open') return
+    this.loadState = { ...this.loadState, running: true, sent: 0 }
     this.loadCarry = 0
     let last = performance.now()
     this.loadTimer = setInterval(() => {
-      const c = this.find(this.loadState.senderId ?? '')
-      if (!c || c.status !== 'open') {
+      if (this.status !== 'open') {
         this.stopLoad()
         return
       }
@@ -373,11 +296,10 @@ class PlaygroundStore {
       this.loadCarry -= n
       const topic = this.loadState.topic
       while (n-- > 0) {
-        const seq = (c.outSeq.get(topic) ?? 0) + 1
-        c.outSeq.set(topic, seq)
-        const env: Envelope = { seq, ts: Date.now(), from: c.name, body: { n: seq } }
-        this.send(c, { type: 'publish', topic, payload: env })
-        c.published += 1
+        const seq = (this.outSeq.get(topic) ?? 0) + 1
+        this.outSeq.set(topic, seq)
+        const env: Envelope = { seq, ts: Date.now(), from: this.name, body: { n: seq } }
+        this.send({ type: 'publish', topic, payload: env })
         this.published += 1
         this.loadState.sent += 1
       }
@@ -393,70 +315,70 @@ class PlaygroundStore {
     this.commit()
   }
 
-  // ---- inbound frame handling ------------------------------------------------
+  // ---- inbound frame handling ----------------------------------------------------
 
-  private onMessage(c: ClientRuntime, data: unknown) {
+  private onMessage(data: unknown) {
     if (typeof data !== 'string') return
     let msg: ServerMessage
     try {
       msg = JSON.parse(data) as ServerMessage
     } catch {
-      this.log(c, { dir: 'in', kind: 'error', text: `unparseable frame: ${String(data).slice(0, 120)}` })
+      this.sysError(this.activeTopic, `unparseable frame: ${String(data).slice(0, 120)}`)
       this.dirty = true
       return
     }
     switch (msg.type) {
       case 'message': {
-        c.received += 1
-        this.delivered.set(msg.topic, (this.delivered.get(msg.topic) ?? 0) + 1)
-        let latency: number | undefined
-        let from: string | undefined
+        this.received += 1
+        let latency: number | null = null
+        let from = 'unknown'
         let text: string
+        let mine = false
         if (isEnvelope(msg.payload)) {
           const env = msg.payload as Envelope
-          from = env.from
+          from = env.from ?? 'unknown'
+          mine = from === this.name
           if (typeof env.ts === 'number') {
             latency = Date.now() - env.ts
-            c.lastLatencyMs = latency
-            c.avgLatencyMs = c.avgLatencyMs === null ? latency : c.avgLatencyMs + EMA * (latency - c.avgLatencyMs)
+            this.avgLatencyMs = this.avgLatencyMs === null ? latency : this.avgLatencyMs + EMA * (latency - this.avgLatencyMs)
           }
-          if (typeof env.seq === 'number' && from) {
+          if (typeof env.seq === 'number') {
             const key = `${from}::${msg.topic}`
-            const prev = c.seqTrack.get(key)
-            if (prev !== undefined && env.seq > prev + 1) c.droppedGaps += env.seq - prev - 1
-            if (prev === undefined || env.seq > prev) c.seqTrack.set(key, env.seq)
+            const prev = this.seqTrack.get(key)
+            if (prev !== undefined && env.seq > prev + 1) {
+              this.droppedGaps.set(msg.topic, (this.droppedGaps.get(msg.topic) ?? 0) + (env.seq - prev - 1))
+            }
+            if (prev === undefined || env.seq > prev) this.seqTrack.set(key, env.seq)
           }
           text = env.body === undefined ? JSON.stringify(env) : typeof env.body === 'string' ? env.body : JSON.stringify(env.body)
         } else {
           text = typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload)
         }
-        this.log(c, { dir: 'in', kind: 'message', topic: msg.topic, from, text, latencyMs: latency })
+        this.append(msg.topic, { kind: 'message', from, mine, text, latencyMs: latency })
+        if (msg.topic !== this.activeTopic) this.unread.set(msg.topic, (this.unread.get(msg.topic) ?? 0) + 1)
         break
       }
       case 'presence': {
         this.presence.set(msg.topic, msg.members)
-        this.log(c, { dir: 'in', kind: 'presence', topic: msg.topic, text: `${msg.members.length} present: ${msg.members.join(', ') || '—'}` })
+        this.sys(msg.topic, `${msg.members.length} present: ${msg.members.join(', ') || '—'}`)
         break
       }
       case 'error': {
-        this.log(c, { dir: 'in', kind: 'error', text: msg.reason })
+        this.error = msg.reason
+        this.sysError(this.activeTopic, msg.reason)
         break
       }
       default:
-        this.log(c, { dir: 'in', kind: 'system', text: `unknown frame: ${data.slice(0, 120)}` })
+        this.sysError(this.activeTopic, `unknown frame: ${String(data).slice(0, 120)}`)
     }
     this.dirty = true
   }
 
-  // ---- internals -------------------------------------------------------------
+  // ---- internals ---------------------------------------------------------------
 
-  private find(id: string): ClientRuntime | undefined {
-    return this.clients.find((c) => c.id === id)
-  }
-
-  private send(c: ClientRuntime, msg: ClientMessage) {
+  private send(msg: ClientMessage) {
     try {
-      c.ws?.send(JSON.stringify(msg))
+      this.ws?.send(JSON.stringify(msg))
     } catch {
       /* socket went away between the guard and here; onclose will clean up */
     }
@@ -475,13 +397,24 @@ class PlaygroundStore {
     return base
   }
 
-  private sys(c: ClientRuntime, text: string) {
-    this.log(c, { dir: 'in', kind: 'system', text })
+  private sys(topic: string, text: string) {
+    this.append(topic, { kind: 'system', text })
   }
 
-  private log(c: ClientRuntime, e: Omit<LogEntry, 'id' | 'at'>) {
-    c.log.unshift({ ...e, id: logSeq++, at: Date.now() })
-    if (c.log.length > LOG_CAP) c.log.length = LOG_CAP
+  private sysError(topic: string | null, text: string) {
+    if (!topic) return
+    this.append(topic, { kind: 'error', text })
+  }
+
+  private sysAll(text: string) {
+    for (const t of this.subscriptions) this.sys(t, text)
+  }
+
+  private append(topic: string, e: Omit<ThreadEntry, 'id' | 'at'>) {
+    const list = this.threads.get(topic) ?? []
+    list.push({ ...e, id: entrySeq++, at: Date.now() })
+    if (list.length > THREAD_CAP) list.splice(0, list.length - THREAD_CAP)
+    this.threads.set(topic, list)
   }
 
   private tick() {
@@ -490,12 +423,11 @@ class PlaygroundStore {
     this.lastTickAt = now
     let active = false
     if (dt > 0) {
-      for (const c of this.clients) {
-        const inst = (c.received - c.rateSample) / dt
-        c.rateSample = c.received
-        c.ratePerSec += EMA * (inst - c.ratePerSec)
-        if (Math.round(c.ratePerSec) > 0) active = true
-      }
+      const rinst = (this.received - this.receivedSample) / dt
+      this.receivedSample = this.received
+      this.deliverRate += EMA * (rinst - this.deliverRate)
+      if (Math.round(this.deliverRate) > 0) active = true
+
       const pinst = (this.published - this.publishSample) / dt
       this.publishSample = this.published
       this.publishRate += EMA * (pinst - this.publishRate)
@@ -511,52 +443,33 @@ class PlaygroundStore {
   }
 
   private build(): Snapshot {
-    const clients: ClientSnapshot[] = this.clients.map((c) => ({
-      id: c.id,
-      name: c.name,
-      status: c.status,
-      error: c.error,
-      subscriptions: [...c.subscriptions].sort(),
-      received: c.received,
-      published: c.published,
-      droppedGaps: c.droppedGaps,
-      lastLatencyMs: c.lastLatencyMs,
-      avgLatencyMs: c.avgLatencyMs,
-      ratePerSec: Math.max(0, Math.round(c.ratePerSec)),
-      log: c.log,
+    const rooms: RoomSnapshot[] = this.subscriptions.map((topic) => ({
+      topic,
+      members: this.presence.get(topic) ?? [],
+      messages: this.threads.get(topic) ?? [],
+      droppedGaps: this.droppedGaps.get(topic) ?? 0,
+      unread: this.unread.get(topic) ?? 0,
     }))
-
-    const topics = new Set<string>()
-    for (const c of this.clients) for (const t of c.subscriptions) topics.add(t)
-    for (const t of this.presence.keys()) topics.add(t)
-    for (const t of this.delivered.keys()) topics.add(t)
-    const rooms: RoomSnapshot[] = [...topics]
-      .sort()
-      .map((topic) => ({
-        topic,
-        members: this.presence.get(topic) ?? [],
-        subscriberIds: this.clients.filter((c) => c.subscriptions.has(topic)).map((c) => c.id),
-        delivered: this.delivered.get(topic) ?? 0,
-      }))
 
     return {
       endpoint: this.endpoint,
       token: this.token,
-      clients,
+      name: this.name,
+      status: this.status,
+      error: this.error,
       rooms,
+      activeTopic: this.activeTopic,
       load: { ...this.loadState },
       totals: {
-        clients: this.clients.length,
-        connected: this.clients.filter((c) => c.status === 'open').length,
-        topics: rooms.length,
         published: this.published,
-        delivered: clients.reduce((a, c) => a + c.received, 0),
-        dropped: clients.reduce((a, c) => a + c.droppedGaps, 0),
+        received: this.received,
+        droppedGaps: rooms.reduce((a, r) => a + r.droppedGaps, 0),
         publishRate: Math.max(0, Math.round(this.publishRate)),
-        deliverRate: clients.reduce((a, c) => a + c.ratePerSec, 0),
+        deliverRate: Math.max(0, Math.round(this.deliverRate)),
+        avgLatencyMs: this.avgLatencyMs,
       },
     }
   }
 }
 
-export const store = new PlaygroundStore()
+export const store = new ChatStore()

@@ -21,3 +21,12 @@ export function clockTime(at: number): string {
   const d = new Date(at)
   return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0')
 }
+
+export function shortTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+export function initials(name: string): string {
+  const t = name.trim()
+  return t ? t.slice(0, 2).toUpperCase() : '??'
+}
