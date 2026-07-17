@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use parking_lot::RwLock;
 
 use crate::backpressure::{DeliverOutcome, Mailbox};
-use crate::protocol::{ConnId, ServerMessage};
+use crate::protocol::{ConnId, ServerMessage, Topic};
 
 /// The in-process subscription registry.
 ///
@@ -29,7 +29,7 @@ pub struct Hub {
     /// Topic name → the [`Mailbox`] of every connection currently subscribed
     /// to it. Guarded by a single lock; see the module docs for the
     /// never-hold-the-lock-while-you-send discipline this implies.
-    topics: RwLock<HashMap<String, HashMap<ConnId, Mailbox>>>,
+    topics: RwLock<HashMap<Topic, HashMap<ConnId, Mailbox>>>,
 }
 
 impl Hub {

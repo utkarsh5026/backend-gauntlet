@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+pub type Topic = String;
+
 /// A process-unique id for one open WebSocket connection. Cheap to copy; used as
 /// the key a subscriber is tracked under in the hub and presence registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
