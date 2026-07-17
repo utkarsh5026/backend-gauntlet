@@ -20,6 +20,13 @@ parking_lot.workspace = true
 # The cross-node bus (V4) rides on Redis pub/sub.
 redis.workspace = true
 
+# The directory (admin-panel roster) persists people/groups/memberships in
+# Postgres. Playground scaffolding — NOT part of the store-free pub/sub core
+# (V1–V4); gated behind an optional DATABASE_URL. See src/directory.rs.
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
 serde.workspace = true
 serde_json.workspace = true
 

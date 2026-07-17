@@ -1,4 +1,24 @@
 services:
+  # The admin-panel roster (people / groups / memberships) — the persistent
+  # "hard state" behind the frontend admin UI. Playground scaffolding, NOT part
+  # of the pub/sub core: V1–V4 stay store-free. Only needed when DATABASE_URL is
+  # set. Host port 5403 per the repo's port convention (postgres → 54NN).
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pubsub
+      POSTGRES_PASSWORD: pubsub
+      POSTGRES_DB: pubsub
+    ports:
+      - "5403:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pubsub"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # The cross-node bus. A single broadcast is published to a Redis channel so
   # every node — not just the one holding the publishing socket — can fan it out
   # to its local subscribers (V4). Single-node mode (no CLUSTER) ignores this.
@@ -12,3 +32,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+volumes:
+  pgdata:
