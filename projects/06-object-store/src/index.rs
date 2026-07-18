@@ -441,7 +441,7 @@ mod tests {
     /// digest + etag + size — a genuine blob the GC can later reclaim.
     async fn store_bytes(store: &Store, bytes: &[u8]) -> Stored {
         let chunk: Result<Bytes, axum::Error> = Ok(Bytes::copy_from_slice(bytes));
-        stream_to_store(store, stream::iter(vec![chunk]), 1 << 20)
+        stream_to_store(store, stream::iter(vec![chunk]), 1 << 20, None)
             .await
             .expect("storing bytes should succeed")
     }

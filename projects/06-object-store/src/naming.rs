@@ -189,9 +189,13 @@ mod tests {
 
     #[test]
     fn validate_key_accepts_normal_and_max_length_keys() {
-        for key in ["a", "a/b/c.jpg", "with spaces & symbols!", "../../etc/passwd"] {
-            validate_key(key)
-                .unwrap_or_else(|e| panic!("{key:?} should be a valid key, got {e}"));
+        for key in [
+            "a",
+            "a/b/c.jpg",
+            "with spaces & symbols!",
+            "../../etc/passwd",
+        ] {
+            validate_key(key).unwrap_or_else(|e| panic!("{key:?} should be a valid key, got {e}"));
         }
         // The 1024-byte boundary (S3's max) is allowed.
         validate_key(&"k".repeat(1024)).expect("a 1024-byte key is exactly at the cap");

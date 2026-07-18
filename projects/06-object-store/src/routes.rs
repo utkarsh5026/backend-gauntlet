@@ -27,6 +27,7 @@ use crate::error::AppError;
 use crate::index::Index;
 use crate::naming::validate_key;
 use crate::object::{ETag, ObjectMeta};
+use crate::streaming::ChecksumSpec;
 use crate::{streaming, AppState};
 
 const BUCKET_KEY: &str = "bucket";
@@ -135,6 +136,10 @@ async fn list_objects(
 /// the content-addressed layout — never a raw user path — so a traversal-shaped
 /// key can't escape the data dir.
 ///
+/// A `Content-MD5` or `X-Amz-Checksum-*` header opts the upload into checksum
+/// verification; the three-header negotiation lives in [`ChecksumSpec`], so the
+/// handler only ever sees the parsed result.
+///
 /// TODO(security): still unauthenticated — an open PUT is an open disk for the
 /// whole internet. Gate writes behind a credential (SigV4, or a simpler HMAC).
 #[tracing::instrument(
@@ -150,6 +155,7 @@ async fn put_object(
     Path((bucket, key)): Path<(String, String)>,
     Query(q): Query<PutQuery>,
     headers: HeaderMap,
+    ChecksumSpec(checksum_algo): ChecksumSpec,
     body: Body,
 ) -> Result<Response, AppError> {
     let span = make_span(&bucket, &key);
@@ -168,7 +174,9 @@ async fn put_object(
 
     validate_key(&key)?;
 
-    let stored = streaming::stream_to_store(&state.store, stream, state.max_object_size).await?;
+    let stored =
+        streaming::stream_to_store(&state.store, stream, state.max_object_size, checksum_algo)
+            .await?;
     let meta = ObjectMeta {
         bucket,
         key,

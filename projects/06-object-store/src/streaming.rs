@@ -9,9 +9,155 @@
 use crate::error::AppError;
 use crate::object::{Digest, ETag};
 use crate::store::Store;
+use axum::extract::FromRequestParts;
+use axum::http::{request::Parts, HeaderMap};
 use futures_util::StreamExt;
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt;
+
+pub enum CheckSumAlgorithm {
+    Sha256(String),
+    Md5(String),
+}
+
+impl CheckSumAlgorithm {
+    pub fn suffix(&self) -> &str {
+        match self {
+            CheckSumAlgorithm::Sha256(_) => "SHA256",
+            CheckSumAlgorithm::Md5(_) => "MD5",
+        }
+    }
+
+    pub fn checksum(&self) -> &str {
+        match self {
+            CheckSumAlgorithm::Sha256(checksum) => checksum,
+            CheckSumAlgorithm::Md5(checksum) => checksum,
+        }
+    }
+
+    /// Check the client-supplied checksum against the digests already computed
+    /// while streaming the body. `sha256` and `md5` are the RAW digest bytes of
+    /// the whole object — the same values behind the content [`Digest`] (sha256)
+    /// and the [`ETag`] (md5). Whichever algorithm the client named, its digest
+    /// is already one of these two, so no extra hash pass over the body is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::InvalidRequest`] when the computed digest doesn't match
+    /// what the client sent (S3 calls this `BadDigest`, a 400).
+    fn verify(&self, sha256: &[u8], md5: &[u8]) -> Result<(), AppError> {
+        // Pick the raw digest for the algorithm the client asked about — the
+        // whole point of reusing the two body hashers instead of a third.
+        let computed = match self {
+            CheckSumAlgorithm::Sha256(_) => sha256,
+            CheckSumAlgorithm::Md5(_) => md5,
+        };
+        let _ = computed;
+        // TODO(V-checksum): decode `self.checksum()` and compare it against
+        // `computed`. Mind the encoding — S3 sends the header as base64 of the
+        // raw digest, so decode it rather than comparing against the hex
+        // `Digest`/`ETag`; return AppError::InvalidRequest on mismatch.
+        todo!("compare the client checksum against the matching computed digest")
+    }
+}
+
+/// Extractor: the checksum the client asked us to verify on a PUT, if any.
+///
+/// One request-level decision spans three headers — `Content-MD5` wins
+/// outright; otherwise `X-Amz-Checksum-Algorithm` names the algorithm and
+/// `X-Amz-Checksum-{ALGO}` carries the expected value — so it's modelled as a
+/// single [`FromRequestParts`] extractor rather than per-header plumbing in the
+/// handler. Malformed input (an unknown algorithm, a named algorithm with no
+/// value header, a non-ASCII header value) becomes a 400 rejection before the
+/// handler body ever runs, exactly like a bad `Query` string.
+pub struct ChecksumSpec(pub Option<CheckSumAlgorithm>);
+
+impl ChecksumSpec {
+    /// The whole parse as a pure function over the headers, so unit tests can
+    /// drive every branch without building an HTTP request.
+    fn from_headers(headers: &HeaderMap) -> Result<Self, AppError> {
+        if let Some(md5) = header_str(headers, "Content-MD5")? {
+            return Ok(Self(Some(CheckSumAlgorithm::Md5(md5.to_owned()))));
+        }
+
+        let Some(algo) = header_str(headers, "X-Amz-Checksum-Algorithm")? else {
+            return Ok(Self(None));
+        };
+        let algo: ChecksumAlgo = algo.parse()?;
+
+        let value_header = format!("X-Amz-Checksum-{}", algo.suffix());
+        let value = header_str(headers, &value_header)?
+            .ok_or_else(|| AppError::InvalidRequest(format!("missing {value_header} header")))?;
+        Ok(Self(Some(algo.with_value(value.to_owned()))))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for ChecksumSpec {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Self::from_headers(&parts.headers)
+    }
+}
+
+/// A checksum algorithm named by `X-Amz-Checksum-Algorithm`, matched
+/// case-insensitively. Exists separately from [`CheckSumAlgorithm`] because the
+/// algorithm arrives one header *before* its value — it has to be parsed first
+/// to know which `X-Amz-Checksum-{ALGO}` header to read.
+#[derive(Clone, Copy)]
+enum ChecksumAlgo {
+    Sha256,
+    Md5,
+}
+
+impl ChecksumAlgo {
+    /// The canonical suffix in the value header's name (`X-Amz-Checksum-SHA256`).
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Sha256 => "SHA256",
+            Self::Md5 => "MD5",
+        }
+    }
+
+    /// Pair the algorithm with the expected value read from its value header.
+    fn with_value(self, value: String) -> CheckSumAlgorithm {
+        match self {
+            Self::Sha256 => CheckSumAlgorithm::Sha256(value),
+            Self::Md5 => CheckSumAlgorithm::Md5(value),
+        }
+    }
+}
+
+impl std::str::FromStr for ChecksumAlgo {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("sha256") {
+            Ok(Self::Sha256)
+        } else if s.eq_ignore_ascii_case("md5") {
+            Ok(Self::Md5)
+        } else {
+            Err(AppError::InvalidRequest(format!(
+                "unsupported checksum algorithm {s:?}"
+            )))
+        }
+    }
+}
+
+/// A header's value as `&str`: `Ok(None)` when absent, a 400 when present but
+/// not visible ASCII. Header values are arbitrary bytes on the wire, so calling
+/// `to_str().unwrap()` on client input is a remotely triggerable panic — every
+/// checksum header read goes through here instead.
+fn header_str<'h>(headers: &'h HeaderMap, name: &str) -> Result<Option<&'h str>, AppError> {
+    headers
+        .get(name)
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| AppError::InvalidRequest(format!("{name} header is not valid ASCII")))
+        })
+        .transpose()
+}
 
 /// The outcome of streaming one body into the store: its content digest, S3
 /// `ETag`, and byte count.
@@ -75,13 +221,14 @@ pub struct Stored {
 /// ]);
 ///
 /// let rt = tokio::runtime::Runtime::new().unwrap();
-/// let stored = rt.block_on(stream_to_store(&store, body, 1024)).unwrap();
+/// let stored = rt.block_on(stream_to_store(&store, body, 1024, None)).unwrap();
 /// assert_eq!(stored.size, 11);
 /// ```
 pub async fn stream_to_store<S>(
     store: &Store,
     mut body: S,
     max_size: u64,
+    checksum_algo: Option<CheckSumAlgorithm>,
 ) -> Result<Stored, AppError>
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Unpin,
@@ -112,11 +259,19 @@ where
         }
     }
 
-    let stored = {
-        let digest = Digest(hex::encode(sha_hasher.finalize()));
-        let etag = ETag(hex::encode(md5_hasher.finalize()));
-        let size = total_file_size;
-        Stored { digest, etag, size }
+    // Both digests of the whole body, as raw bytes. Any checksum the client
+    // asked us to verify is one of these two, so check it *before* publishing —
+    // a mismatch returns here and the temp guard's Drop unlinks the staged blob.
+    let sha256 = sha_hasher.finalize();
+    let md5 = md5_hasher.finalize();
+    if let Some(expected) = &checksum_algo {
+        expected.verify(&sha256, &md5)?;
+    }
+
+    let stored = Stored {
+        digest: Digest(hex::encode(sha256)),
+        etag: ETag(hex::encode(md5)),
+        size: total_file_size,
     };
 
     store.commit_temp(temp.path(), &stored.digest).await?;
@@ -170,7 +325,7 @@ mod tests {
         let expected_digest = hex::encode(Sha256::digest(&whole));
 
         let chunks = parts.iter().map(|p| ok(p)).collect();
-        let stored: Stored = stream_to_store(&store, body(chunks), 1024)
+        let stored: Stored = stream_to_store(&store, body(chunks), 1024, None)
             .await
             .expect("a clean stream should commit");
 
@@ -201,7 +356,7 @@ mod tests {
         let chunk = vec![b'x'; 32];
         let chunks = (0..4).map(|_| ok(&chunk)).collect();
 
-        let outcome = stream_to_store(&store, body(chunks), 100).await;
+        let outcome = stream_to_store(&store, body(chunks), 100, None).await;
 
         assert!(
             matches!(outcome, Err(AppError::EntityTooLarge)),
@@ -227,7 +382,7 @@ mod tests {
             ))),
         ];
 
-        let outcome = stream_to_store(&store, body(chunks), 1 << 20).await;
+        let outcome = stream_to_store(&store, body(chunks), 1 << 20, None).await;
 
         assert!(
             outcome.is_err(),
@@ -238,5 +393,107 @@ mod tests {
             0,
             "a mid-stream disconnect must not leak a partial temp file"
         );
+    }
+}
+
+#[cfg(test)]
+mod checksum_tests {
+    use super::{CheckSumAlgorithm, ChecksumSpec};
+    use crate::error::AppError;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    /// Parse headers and unwrap both layers: "parsed fine" and "found one".
+    fn extracted(headers: &HeaderMap) -> CheckSumAlgorithm {
+        ChecksumSpec::from_headers(headers)
+            .expect("headers should parse")
+            .0
+            .expect("a checksum should be extracted")
+    }
+
+    fn rejected(headers: &HeaderMap) -> bool {
+        matches!(
+            ChecksumSpec::from_headers(headers),
+            Err(AppError::InvalidRequest(_))
+        )
+    }
+
+    #[test]
+    fn absent_headers_mean_no_checksum() {
+        let spec = ChecksumSpec::from_headers(&HeaderMap::new()).expect("empty headers parse");
+        assert!(spec.0.is_none(), "no checksum headers → no verification");
+    }
+
+    #[test]
+    fn content_md5_is_used_directly() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-MD5", HeaderValue::from_static("abc123"));
+        let algo = extracted(&headers);
+        assert_eq!(algo.suffix(), "MD5");
+        assert_eq!(algo.checksum(), "abc123");
+    }
+
+    #[test]
+    fn amz_algorithm_selects_its_value_header_case_insensitively() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Amz-Checksum-Algorithm",
+            HeaderValue::from_static("sha256"),
+        );
+        headers.insert("X-Amz-Checksum-SHA256", HeaderValue::from_static("cafe"));
+        let algo = extracted(&headers);
+        assert_eq!(algo.suffix(), "SHA256");
+        assert_eq!(algo.checksum(), "cafe");
+    }
+
+    #[test]
+    fn content_md5_wins_over_amz_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-MD5", HeaderValue::from_static("md5-value"));
+        headers.insert(
+            "X-Amz-Checksum-Algorithm",
+            HeaderValue::from_static("SHA256"),
+        );
+        headers.insert(
+            "X-Amz-Checksum-SHA256",
+            HeaderValue::from_static("sha-value"),
+        );
+        let algo = extracted(&headers);
+        assert_eq!(algo.suffix(), "MD5");
+        assert_eq!(algo.checksum(), "md5-value");
+    }
+
+    #[test]
+    fn unknown_algorithm_is_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Amz-Checksum-Algorithm",
+            HeaderValue::from_static("crc32"),
+        );
+        assert!(rejected(&headers), "unsupported algorithm must be a 400");
+    }
+
+    #[test]
+    fn named_algorithm_without_value_header_is_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Amz-Checksum-Algorithm",
+            HeaderValue::from_static("SHA256"),
+        );
+        assert!(
+            rejected(&headers),
+            "an algorithm with no X-Amz-Checksum-SHA256 value must be a 400"
+        );
+    }
+
+    /// Header values are bytes, not strings: a non-ASCII value must become a
+    /// 400, never a `to_str().unwrap()` panic (the bug this extractor replaced).
+    #[test]
+    fn non_ascii_header_value_is_rejected_not_a_panic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Content-MD5",
+            HeaderValue::from_bytes(&[0xFF]).expect("0xFF is a legal opaque header byte"),
+        );
+        assert!(rejected(&headers), "non-ASCII header value must be a 400");
     }
 }
