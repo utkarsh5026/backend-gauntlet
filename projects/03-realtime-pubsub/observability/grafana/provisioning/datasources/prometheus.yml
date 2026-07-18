@@ -1,0 +1,15 @@
+# Auto-provisions the Prometheus datasource so Grafana is wired up on first boot
+# (no clicking through the UI). `uid: prometheus` is a stable handle the bundled
+# dashboard references — keep them in sync.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    # Reached over the compose network by service name — NOT localhost, which
+    # inside the Grafana container would mean Grafana itself.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

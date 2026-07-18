@@ -1,5 +1,5 @@
 <!-- status:
-state: not-started       # active | paused | blocked | done | not-started
+state: active            # active | paused | blocked | done | not-started
 blocked-on: ~            # free text, or ~ for none
 -->
 
@@ -52,10 +52,10 @@ library (`tokio::sync::broadcast`, an actor framework) to get:
   freezes the whole hub).
 
 **Done when ALL true:**
-- [ ] `subscribe` / `unsubscribe` / `publish` work, and `publish` reports how many current subscribers it reached.
-- [ ] `disconnect(conn)` removes the connection from **every** topic it joined — no leaked entries, no empty topics growing forever.
-- [ ] The hub **never holds its lock while sending** to a subscriber, so one slow client can't freeze publishes to everyone else.
-- [ ] Concurrent subscribe/publish/disconnect from many tasks leaves **no dangling subscriber** and never delivers to a closed socket.
+- [x] `subscribe` / `unsubscribe` / `publish` work, and `publish` reports how many current subscribers it reached.
+- [x] `disconnect(conn)` removes the connection from **every** topic it joined — no leaked entries, no empty topics growing forever.
+- [x] The hub **never holds its lock while sending** to a subscriber, so one slow client can't freeze publishes to everyone else.
+- [x] Concurrent subscribe/publish/disconnect from many tasks leaves **no dangling subscriber** and never delivers to a closed socket.
 
 **Proof:** concurrency tests for clean teardown + no-leak, and a test proving a stalled receiver doesn't block delivery to others.
 
@@ -80,10 +80,10 @@ mailbox** and decide what happens when it fills:
   grow memory without bound, nor slow down delivery to everyone else.**
 
 **Done when ALL true:**
-- [ ] Each connection has a **bounded** outbound mailbox — there is no unbounded queue anywhere on the publish path.
-- [ ] An explicit overflow **policy switch** exists (drop-newest / drop-oldest / disconnect-slow) and is honored.
-- [ ] **Invariant under a deliberately stalled reader:** server memory stays bounded **and** delivery to other subscribers is unaffected.
-- [ ] Messages shed by the policy are **counted** (a metric) — the loss is observable, never silent.
+- [x] Each connection has a **bounded** outbound mailbox — there is no unbounded queue anywhere on the publish path.
+- [x] An explicit overflow **policy switch** exists (drop-newest / drop-oldest / disconnect-slow) and is honored.
+- [x] **Invariant under a deliberately stalled reader:** server memory stays bounded **and** delivery to other subscribers is unaffected.
+- [x] Messages shed by the policy are **counted** (a metric) — the loss is observable, never silent.
 
 **Proof:** a test that stalls one reader and asserts the drop counter climbs while memory and other-subscriber delivery stay flat (the V2 payoff in the bench).
 
@@ -107,10 +107,10 @@ must converge as connections come and go.
   room.
 
 **Done when ALL true:**
-- [ ] Per-topic membership tracks join on subscribe, leave on unsubscribe, and removal on **every** disconnect path (including an abrupt socket drop).
-- [ ] Absence is handled via **heartbeat + TTL**: an entry not refreshed within the window is presumed gone and swept (in-process version).
+- [x] Per-topic membership tracks join on subscribe, leave on unsubscribe, and removal on **every** disconnect path (including an abrupt socket drop).
+- [x] Absence is handled via **heartbeat + TTL**: an entry not refreshed within the window is presumed gone and swept (in-process version).
 - [ ] Presence changes are published as their own server messages, so rooms see joins/leaves live.
-- [ ] An abrupt drop (no clean leave) **still leaves the room** — no ghost members linger.
+- [x] An abrupt drop (no clean leave) **still leaves the room** — no ghost members linger.
 
 **Proof:** a test that drops a socket without a clean leave and asserts the member disappears within the TTL; design-doc note on the heartbeat.
 

@@ -16,6 +16,7 @@ RUNNER := $(PY) $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/makefile.py)
 
 # Every known task. Keep in sync with the @task registry in makefile.py.
 TASKS := help setup web-install up deps down ps logs wait-redis \
+         obs-up obs-down \
          check clippy fmt fmt-check test verify clean \
          run dev frontend smoke
 

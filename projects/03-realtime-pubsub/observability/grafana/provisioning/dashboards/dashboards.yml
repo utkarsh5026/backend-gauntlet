@@ -1,0 +1,16 @@
+# Tells Grafana to load any dashboard JSON dropped into /var/lib/grafana/dashboards
+# (mounted from ./observability/grafana/dashboards). Add a .json file there and it
+# shows up on next boot — no manual import.
+apiVersion: 1
+
+providers:
+  - name: realtime-pubsub
+    orgId: 1
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

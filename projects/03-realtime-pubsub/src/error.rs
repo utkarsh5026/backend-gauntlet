@@ -25,6 +25,15 @@ pub enum AppError {
     #[error(transparent)]
     Bus(#[from] redis::RedisError),
 
+    /// A directory (admin-panel roster) database query failed.
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
+
+    /// A feature is disabled by configuration — e.g. the `/admin` roster API
+    /// when `DATABASE_URL` is unset. The pub/sub core runs without it.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -34,7 +43,8 @@ impl IntoResponse for AppError {
         let status = match &self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Bus(_) | Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Db(_) | Self::Bus(_) | Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         // Log the full error server-side; only leak a generic message on 5xx so

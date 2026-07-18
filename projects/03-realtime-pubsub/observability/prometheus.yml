@@ -1,0 +1,30 @@
+# Prometheus scrape config for the real-time pub/sub server.
+#
+# Prometheus runs in a container (see docker-compose.yml) but the app runs on the
+# HOST via `cargo run` — so it reaches the app through `host.docker.internal`,
+# which the compose file maps to the host gateway. If you ever run the app itself
+# in a container on this compose network, change the target to `<service>:8080`.
+#
+# `scrape_interval: 5s` means Prometheus polls /metrics 12x/min; that cadence is
+# what lets `rate()` turn the monotonic *_total counters into per-second rates.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: realtime-pubsub
+    metrics_path: /metrics
+    static_configs:
+      # node-a — the app's PORT (see .env). This one target covers single-node
+      # mode (V1–V3) and CLUSTER=false.
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          service: realtime-pubsub
+          node: node-a
+      # V4 multi-node run: start a second node on another port
+      # (PORT=8081 NODE_ID=node-b cargo run ...) and uncomment this so both nodes
+      # scrape into the same dashboard — you'll see a publish on A fan out to B.
+      # - targets: ["host.docker.internal:8081"]
+      #   labels:
+      #     service: realtime-pubsub
+      #     node: node-b

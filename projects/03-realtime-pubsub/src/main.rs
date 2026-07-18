@@ -11,6 +11,7 @@
 
 mod backpressure;
 mod cluster;
+mod directory;
 mod error;
 mod hub;
 mod metrics;
@@ -21,10 +22,12 @@ mod routes;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sqlx::postgres::PgPoolOptions;
 use tracing::info;
 
 use backpressure::OverflowPolicy;
 use cluster::ClusterBridge;
+use directory::Directory;
 use hub::Hub;
 use presence::PresenceRegistry;
 use protocol::ServerMessage;
@@ -53,6 +56,18 @@ pub struct AppState {
     pub outbox_capacity: usize,
     /// What a full outbox does to that connection (V2).
     pub overflow_policy: OverflowPolicy,
+    /// Shared secret required on `GET /ws?token=...`. Empty means the server
+    /// is misconfigured — every upgrade is rejected (fail closed), not "auth
+    /// disabled".
+    pub ws_auth_token: Arc<str>,
+    /// The persistent roster (people/groups) behind the admin panel. `None`
+    /// when `DATABASE_URL` is unset — the pub/sub core runs DB-free; only the
+    /// `/admin` API needs this. Playground scaffolding, not a vertical.
+    pub directory: Option<Directory>,
+    /// The configured Redis URL (`REDIS_URL`), always resolved. Lets the
+    /// `/debug/health` devtools probe check the bus for reachability independent
+    /// of cluster mode; the bus is only *used* when `cluster` is `Some` (V4).
+    pub redis_url: Arc<str>,
 }
 
 #[tokio::main]
@@ -76,6 +91,12 @@ async fn main() -> anyhow::Result<()> {
         "PRESENCE_SWEEP_INTERVAL_SECS",
         DEFAULT_PRESENCE_SWEEP_INTERVAL_SECS,
     ));
+    let ws_auth_token: Arc<str> = common_config::or_default("WS_AUTH_TOKEN", "").into();
+    if ws_auth_token.is_empty() {
+        tracing::warn!(
+            "WS_AUTH_TOKEN is not set — every websocket upgrade will be rejected with 401"
+        );
+    }
 
     let hub = Arc::new(Hub::new());
     let presence = Arc::new(PresenceRegistry::new());
@@ -87,8 +108,32 @@ async fn main() -> anyhow::Result<()> {
         presence_ttl,
     ));
 
+    // The admin-panel roster (people/groups/memberships) lives in Postgres and
+    // is *optional*: the pub/sub core (V1–V4) is deliberately store-free, so it
+    // runs fine with no DB. Set DATABASE_URL to enable the `/admin` API.
+    let directory = {
+        let database_url = common_config::or_default("DATABASE_URL", "");
+        if database_url.is_empty() {
+            info!("directory: DATABASE_URL unset — /admin roster API disabled");
+            None
+        } else {
+            let pool = PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&database_url)
+                .await?;
+            sqlx::migrate!().run(&pool).await?;
+            info!("directory: connected to postgres, migrations applied");
+            Some(Directory::new(pool))
+        }
+    };
+
+    // Resolve the Redis URL up front (not only in cluster mode) so /debug/health
+    // can probe the bus for reachability even when we're single-node and never
+    // actually bridge through it.
+    let redis_url: Arc<str> =
+        common_config::or_default("REDIS_URL", "redis://localhost:6303/0").into();
+
     let cluster = if cluster_enabled {
-        let redis_url = common_config::or_default("REDIS_URL", "redis://localhost:6303/0");
         let bridge = Arc::new(ClusterBridge::connect(
             &redis_url,
             node_id.clone(),
@@ -108,6 +153,9 @@ async fn main() -> anyhow::Result<()> {
         cluster,
         outbox_capacity,
         overflow_policy,
+        ws_auth_token,
+        directory,
+        redis_url,
     };
 
     let app = routes::router(state).merge(routes::metrics_router(metrics_handle));

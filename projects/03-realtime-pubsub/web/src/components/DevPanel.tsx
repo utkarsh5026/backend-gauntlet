@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DepsHealth } from '@/components/DepsHealth'
 import { store } from '@/lib/store'
 import { fmtLatency, fmtNum, fmtRate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -26,6 +27,8 @@ export function DevPanel({ snap }: { snap: Snapshot }) {
 
   return (
     <aside className="bg-card flex w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l p-4">
+      <DepsHealth />
+
       <div>
         <h3 className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
           What the protocol is doing

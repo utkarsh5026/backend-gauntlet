@@ -74,6 +74,36 @@ def deps() -> None:
     up()
 
 
+@runner.task(
+    "obs-up", "📊", "Services", "Start Prometheus (:9003) + Grafana (:3003)"
+)
+def obs_up() -> None:
+    runner.step("📊", "starting Prometheus + Grafana…")
+    runner.run(
+        [*runner.compose, "up", "-d", "prometheus", "grafana"],
+        cwd=runner.project_dir,
+    )
+    runner.ok(
+        "Grafana → http://localhost:3003  ·  Prometheus → http://localhost:9003"
+    )
+    runner.warn("run the app (make run / make dev) so there's something to scrape")
+
+
+@runner.task(
+    "obs-down",
+    "🛑",
+    "Services",
+    "Stop Prometheus + Grafana (leaves Postgres/Redis running)",
+)
+def obs_down() -> None:
+    runner.step("🛑", "stopping Prometheus + Grafana…")
+    runner.run(
+        [*runner.compose, "stop", "prometheus", "grafana"],
+        cwd=runner.project_dir,
+    )
+    runner.ok("observability stopped")
+
+
 # Auto-detects compose + server + web/ → mprocs (also registers frontend / web-install).
 register_dev_stack(runner)
 
