@@ -1,9 +1,8 @@
 //! HTTP surface: the path-style S3 API.
 //!
-//! The routing, body streaming, and query-param dispatch are wired; what the
-//! handlers call into — `streaming::stream_to_store`, `index.*`, `multipart.*` —
-//! is where the `todo!()`s live. Run as-is and `GET /healthz` works; the first
-//! real PUT/GET/list panics with a V1/V2/V3 todo, which is the worklist.
+//! Path-style routing, body streaming, query-param dispatch (including
+//! `?versionId=`), and the `AppError →` status mapping live here. The vertical
+//! meat sits in `streaming` / `index` / `multipart` / `store`.
 //!
 //! S3 multipart reuses the object routes and dispatches on query params:
 //!   - `POST   /{bucket}/{key}?uploads`                 → InitiateMultipartUpload
@@ -167,6 +166,18 @@ async fn put_object(
     let _guard = crate::metrics::InFlightGuard::new();
     let content_type = content_type_of(&headers);
     let stream = body.into_data_stream();
+
+    if let Some(if_match) = headers.get(header::IF_MATCH) {
+        let index = state.index.get(&bucket, &key).await?;
+        if let Some(index) = index {
+            let live = index.latest_live().ok_or(AppError::PreconditionFailed)?;
+            if live.etag.as_str() != if_match.to_str().unwrap() {
+                return Err(AppError::PreconditionFailed);
+            }
+        } else {
+            return Err(AppError::PreconditionFailed);
+        }
+    }
 
     if let (Some(upload_id), Some(part_number)) = (q.upload_id.as_deref(), q.part_number) {
         let part = state
@@ -549,4 +560,449 @@ struct ListQuery {
 struct GetQuery {
     #[serde(rename = "versionId")]
     version_id: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    fn fresh_router() -> (TempDir, Router) {
+        let dir = TempDir::new().expect("temp data dir");
+        let state = AppState::open(dir.path(), 1 << 20).expect("open AppState");
+        (dir, router(state))
+    }
+
+    async fn send(router: &Router, req: Request<Body>) -> (StatusCode, HeaderMap, bytes::Bytes) {
+        let res = router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("router is infallible");
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = res
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        (status, headers, body)
+    }
+
+    async fn put_bytes(router: &Router, bucket: &str, key: &str, body: &[u8]) -> StatusCode {
+        put_bytes_if_match(router, bucket, key, body, None)
+            .await
+            .0
+    }
+
+    async fn put_bytes_if_match(
+        router: &Router,
+        bucket: &str,
+        key: &str,
+        body: &[u8],
+        if_match: Option<&str>,
+    ) -> (StatusCode, HeaderMap, bytes::Bytes) {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri(format!("/{bucket}/{key}"))
+            .header(header::CONTENT_TYPE, "text/plain");
+        if let Some(etag) = if_match {
+            req = req.header(header::IF_MATCH, etag);
+        }
+        send(router, req.body(Body::from(body.to_vec())).unwrap()).await
+    }
+
+    async fn ensure_bucket(router: &Router, bucket: &str) {
+        let (status, _, _) = send(
+            router,
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/{bucket}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[test]
+    fn validate_range_parses_inclusive_byte_bounds() {
+        assert_eq!(validate_range("bytes=0-0").unwrap(), (0, 0));
+        assert_eq!(validate_range("bytes=2-5").unwrap(), (2, 5));
+        assert_eq!(validate_range("bytes=9-9").unwrap(), (9, 9));
+    }
+
+    #[test]
+    fn validate_range_rejects_malformed_values() {
+        for bad in [
+            "bytes",
+            "items=0-1",
+            "bytes=0",
+            "bytes=abc-1",
+            "bytes=1-xyz",
+            "bytes=-",
+        ] {
+            assert!(
+                matches!(validate_range(bad), Err(AppError::InvalidRequest(_))),
+                "{bad:?} must be InvalidRequest"
+            );
+        }
+    }
+
+    #[test]
+    fn content_type_of_defaults_when_header_absent() {
+        let headers = HeaderMap::new();
+        assert_eq!(content_type_of(&headers), "application/octet-stream");
+    }
+
+    #[test]
+    fn content_type_of_reads_the_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+        assert_eq!(content_type_of(&headers), "image/png");
+    }
+
+    #[test]
+    fn check_etag_present_is_none_without_header() {
+        let headers = HeaderMap::new();
+        let etag = ETag("abc".into());
+        assert!(check_etag_present(&headers, &etag).unwrap().is_none());
+    }
+
+    #[test]
+    fn check_etag_present_returns_304_on_match() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("abc"));
+        let etag = ETag("abc".into());
+        let resp = check_etag_present(&headers, &etag)
+            .unwrap()
+            .expect("matching If-None-Match must short-circuit");
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn check_etag_present_falls_through_on_mismatch() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("stale"));
+        let etag = ETag("fresh".into());
+        assert!(check_etag_present(&headers, &etag).unwrap().is_none());
+    }
+
+    #[test]
+    fn http_date_formats_rfc7231_gmt() {
+        let dt = DateTime::parse_from_rfc3339("1994-11-15T08:12:31Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(http_date(dt), "Tue, 15 Nov 1994 08:12:31 GMT");
+    }
+
+    #[test]
+    fn get_query_absent_version_id_means_latest() {
+        let q = GetQuery { version_id: None };
+        assert_eq!(ObjectRef::from_query(q.version_id), ObjectRef::Latest);
+    }
+
+    #[test]
+    fn get_query_version_id_pins_a_version() {
+        let q = GetQuery {
+            version_id: Some(3),
+        };
+        assert_eq!(ObjectRef::from_query(q.version_id), ObjectRef::Version(3));
+    }
+
+    #[test]
+    fn delete_query_version_id_pins_a_version() {
+        let q = DeleteQuery {
+            upload_id: None,
+            version_id: Some(1),
+        };
+        assert_eq!(ObjectRef::from_query(q.version_id), ObjectRef::Version(1));
+    }
+
+    // ── router: health + versionId dispatch ──────────────────────────────────
+
+    #[tokio::test]
+    async fn healthz_returns_ok() {
+        let (_dir, router) = fresh_router();
+        let req = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, body) = send(&router, req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn get_with_version_id_serves_that_version() {
+        let (_dir, router) = fresh_router();
+        assert_eq!(
+            send(
+                &router,
+                Request::builder()
+                    .method("PUT")
+                    .uri("/docs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+
+        assert_eq!(
+            put_bytes(&router, "docs", "readme", b"first").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            put_bytes(&router, "docs", "readme", b"second").await,
+            StatusCode::OK
+        );
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/readme?versionId=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"first");
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/readme")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"second", "no versionId → latest");
+    }
+
+    #[tokio::test]
+    async fn head_with_version_id_reports_that_versions_length() {
+        let (_dir, router) = fresh_router();
+        send(
+            &router,
+            Request::builder()
+                .method("PUT")
+                .uri("/docs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        put_bytes(&router, "docs", "readme", b"ab").await;
+        put_bytes(&router, "docs", "readme", b"abcdef").await;
+
+        let (status, headers, body) = send(
+            &router,
+            Request::builder()
+                .method("HEAD")
+                .uri("/docs/readme?versionId=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+        assert_eq!(
+            headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("2"),
+            "HEAD ?versionId=1 must report v1's size"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_with_version_id_removes_only_that_version() {
+        let (_dir, router) = fresh_router();
+        send(
+            &router,
+            Request::builder()
+                .method("PUT")
+                .uri("/docs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        put_bytes(&router, "docs", "readme", b"keep").await;
+        put_bytes(&router, "docs", "readme", b"drop").await;
+
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .method("DELETE")
+                .uri("/docs/readme?versionId=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/readme?versionId=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/readme")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"keep");
+    }
+
+    #[tokio::test]
+    async fn list_json_includes_latest_version_id() {
+        let (_dir, router) = fresh_router();
+        send(
+            &router,
+            Request::builder()
+                .method("PUT")
+                .uri("/docs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        put_bytes(&router, "docs", "readme", b"v1").await;
+        put_bytes(&router, "docs", "readme", b"v2").await;
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder().uri("/docs").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("list JSON");
+        let objects = json["objects"].as_array().expect("objects array");
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0]["key"], "readme");
+        assert_eq!(objects[0]["versionId"], 2);
+    }
+
+    #[tokio::test]
+    async fn post_without_multipart_params_is_400() {
+        let (_dir, router) = fresh_router();
+        ensure_bucket(&router, "docs").await;
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .method("POST")
+                .uri("/docs/readme")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("unrecognised POST"),
+            "bare POST must explain the missing multipart query"
+        );
+    }
+
+    // ── Conditional writes (`If-Match` on PUT) ───────────────────────────────
+
+    #[tokio::test]
+    async fn put_if_match_with_current_etag_succeeds() {
+        let (_dir, router) = fresh_router();
+        ensure_bucket(&router, "docs").await;
+
+        let (status, headers, _) = put_bytes_if_match(&router, "docs", "k", b"v1", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let etag = headers
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("PUT returns ETag")
+            .to_string();
+
+        let (status, _, _) =
+            put_bytes_if_match(&router, "docs", "k", b"v2", Some(&etag)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/k")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"v2");
+    }
+
+    #[tokio::test]
+    async fn put_if_match_with_stale_etag_is_412() {
+        let (_dir, router) = fresh_router();
+        ensure_bucket(&router, "docs").await;
+
+        let (status, headers, _) = put_bytes_if_match(&router, "docs", "k", b"v1", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let stale = headers
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("PUT returns ETag")
+            .to_string();
+
+        assert_eq!(put_bytes(&router, "docs", "k", b"v2").await, StatusCode::OK);
+
+        let (status, _, body) =
+            put_bytes_if_match(&router, "docs", "k", b"lost", Some(&stale)).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "precondition failed");
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/k")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"v2", "stale If-Match must not overwrite");
+    }
+
+    #[tokio::test]
+    async fn put_if_match_on_missing_key_is_412() {
+        let (_dir, router) = fresh_router();
+        ensure_bucket(&router, "docs").await;
+
+        let (status, _, _) =
+            put_bytes_if_match(&router, "docs", "ghost", b"nope", Some("deadbeef")).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/ghost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 }

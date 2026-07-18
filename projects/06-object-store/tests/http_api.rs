@@ -15,7 +15,8 @@
 
 use axum::body::Body;
 use axum::http::header::{
-    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_NONE_MATCH, LAST_MODIFIED, RANGE,
+    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH, LAST_MODIFIED,
+    RANGE,
 };
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
@@ -106,13 +107,28 @@ impl TestApp {
     }
 
     async fn put_object(&self, bucket: &str, key: &str, content_type: &str, body: &[u8]) -> Resp {
-        let req = Request::builder()
+        self.put_object_if_match(bucket, key, content_type, body, None)
+            .await
+    }
+
+    /// PUT with an optional `If-Match` precondition (compare-and-swap write).
+    async fn put_object_if_match(
+        &self,
+        bucket: &str,
+        key: &str,
+        content_type: &str,
+        body: &[u8],
+        if_match: Option<&str>,
+    ) -> Resp {
+        let mut req = Request::builder()
             .method("PUT")
             .uri(format!("/{bucket}/{key}"))
-            .header(CONTENT_TYPE, content_type)
-            .body(Body::from(body.to_vec()))
-            .unwrap();
-        self.send(req).await
+            .header(CONTENT_TYPE, content_type);
+        if let Some(etag) = if_match {
+            req = req.header(IF_MATCH, etag);
+        }
+        self.send(req.body(Body::from(body.to_vec())).unwrap())
+            .await
     }
 
     async fn get_object(&self, bucket: &str, key: &str) -> Resp {
@@ -581,6 +597,76 @@ async fn put_overwrite_serves_the_latest_bytes() {
 
     let get = app.get_object(bucket, key).await;
     assert_eq!(&get.body[..], b"version two now", "last writer wins");
+}
+
+#[tokio::test]
+async fn put_if_match_with_current_etag_succeeds() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    app.create_bucket(bucket).await;
+
+    let first = app.put_object(bucket, key, "text/plain", b"original").await;
+    assert_eq!(first.status, StatusCode::OK);
+    let etag = first.header(ETAG).expect("PUT returns ETag");
+
+    let second = app
+        .put_object_if_match(bucket, key, "text/plain", b"updated", Some(&etag))
+        .await;
+    assert_eq!(second.status, StatusCode::OK);
+    assert_eq!(
+        second.header(ETAG).as_deref(),
+        Some(expected_single_put_etag(b"updated").as_str()),
+        "successful CAS must return the new body's ETag"
+    );
+
+    let get = app.get_object(bucket, key).await;
+    assert_eq!(&get.body[..], b"updated");
+}
+
+#[tokio::test]
+async fn put_if_match_with_stale_etag_is_412_and_keeps_bytes() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    app.create_bucket(bucket).await;
+
+    let first = app.put_object(bucket, key, "text/plain", b"original").await;
+    let etag = first.header(ETAG).expect("PUT returns ETag");
+
+    app.put_object(bucket, key, "text/plain", b"someone else won")
+        .await;
+
+    let lost = app
+        .put_object_if_match(bucket, key, "text/plain", b"lost update", Some(&etag))
+        .await;
+    assert_eq!(lost.status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(lost.json()["error"], "precondition failed");
+
+    let get = app.get_object(bucket, key).await;
+    assert_eq!(
+        &get.body[..],
+        b"someone else won",
+        "a failed If-Match PUT must not overwrite the current object"
+    );
+}
+
+#[tokio::test]
+async fn put_if_match_on_missing_key_is_412() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "never-created";
+    app.create_bucket(bucket).await;
+
+    let resp = app
+        .put_object_if_match(bucket, key, "text/plain", b"nope", Some("deadbeef"))
+        .await;
+    assert_eq!(resp.status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        app.get_object(bucket, key).await.status,
+        StatusCode::NOT_FOUND,
+        "a failed If-Match on a missing key must not create it"
+    );
 }
 
 #[tokio::test]

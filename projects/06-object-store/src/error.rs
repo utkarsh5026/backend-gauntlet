@@ -36,6 +36,13 @@ pub enum AppError {
     #[error("entity too large")]
     EntityTooLarge,
 
+    /// Conditional request failed (`If-Match` / `If-None-Match` write guard).
+    ///
+    /// Maps to HTTP 412 — the classic S3 response when a compare-and-swap
+    /// precondition does not hold (stale ETag, or the key is absent).
+    #[error("precondition failed")]
+    PreconditionFailed,
+
     /// A filesystem operation failed (the store *is* the filesystem).
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -57,6 +64,7 @@ impl IntoResponse for AppError {
             Self::BucketAlreadyExists => StatusCode::CONFLICT,
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::EntityTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::Io(_) | Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
