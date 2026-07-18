@@ -182,7 +182,8 @@ class ProjectRunner:
 
     def run_task(self, name: str, entry: TaskEntry) -> int:
         fn, _, _, help_text = entry
-        if name == "help":
+        # help: plain output. md: hands off to glow (no banner chrome).
+        if name in ("help", "md"):
             fn()
             return 0
 
@@ -739,6 +740,32 @@ def register_dev_stack(
         result["frontend"] = frontend
 
     return result
+
+
+def register_md(runner: ProjectRunner) -> Callable[[], None]:
+    """View this project's markdown in glow (interactive picker or ``FILE=``)."""
+
+    @runner.task(
+        "md",
+        "📖",
+        "Docs",
+        "View project markdown in glow (FILE=SPEC.md optional)",
+    )
+    def md() -> None:
+        script = runner.workspace / "tools" / "md.py"
+        cmd = [
+            sys.executable,
+            str(script),
+            "--project-dir",
+            str(runner.project_dir),
+        ]
+        file_arg = os.environ.get("FILE")
+        if file_arg:
+            cmd.extend(["--file", file_arg])
+        # Replace this process so glow owns the TTY (pager / keys work).
+        os.execvp(cmd[0], cmd)
+
+    return md
 
 
 def register_help(runner: ProjectRunner) -> Callable[[], None]:

@@ -20,6 +20,10 @@ infra: ## Web control panel for each project's Docker deps (up/down + port colli
 dev: ## One-window dev stack: deps + server + frontend (make dev NN=01; multi: NN="01 03")
 	@python3 tools/dev.py $(NN)
 
+.PHONY: md
+md: ## View project markdown in glow (make md NN=01 [FILE=SPEC.md])
+	@python3 tools/md.py $(NN) $(if $(FILE),--file $(FILE),)
+
 # ── per-project status cards (auto-generated — zero upkeep) ──────────────────
 # Every project under projects/NN-* gets two targets that open its detailed
 # status card:  `make url-shortener`  and the short  `make 01`.
@@ -31,9 +35,10 @@ PROJECT_NAMES := $(foreach s,$(PROJECT_SLUGS),$(patsubst $(firstword $(subst -, 
 .PHONY: $(PROJECT_NAMES) $(PROJECT_NUMS) projects
 
 # One recipe, two target names (the full name + its NN) → status.py NN.
+# Pass FULL=1 to expand every acceptance box, not just the open ones.
 define PROJECT_RULE
 $(patsubst $(firstword $(subst -, ,$(1)))-%,%,$(1)) $(firstword $(subst -, ,$(1))):
-	@python3 tools/status.py $(firstword $(subst -, ,$(1)))
+	@python3 tools/status.py $(firstword $(subst -, ,$(1))) $(if $(FULL),full,)
 endef
 $(foreach s,$(PROJECT_SLUGS),$(eval $(call PROJECT_RULE,$(s))))
 
@@ -43,6 +48,7 @@ projects: ## List the per-project status shortcuts (make <name> or make NN)
 		n=$${s%%-*}; nm=$${s#*-}; \
 		printf '  make %-22s (make %s)\n' "$$nm" "$$n"; \
 	done
+	@echo "  (add FULL=1 to expand every box, e.g. make object-store FULL=1)"
 
 .PHONY: portainer
 portainer: ## Start Portainer — web UI for all containers (https://localhost:9443)

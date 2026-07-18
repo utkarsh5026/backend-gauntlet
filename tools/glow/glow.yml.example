@@ -1,0 +1,12 @@
+# Optional: copy into ~/.config/glow/ for bare `glow` defaults.
+#
+#   mkdir -p ~/.config/glow/styles
+#   cp tools/glow/glow.yml.example ~/.config/glow/glow.yml
+#   cp tools/glow/styles/roomy.json ~/.config/glow/styles/roomy.json
+#
+# `make md` always uses tools/glow/styles/roomy.json directly.
+style: ~/.config/glow/styles/roomy.json
+width: 72
+pager: true
+preserveNewLines: true
+mouse: true

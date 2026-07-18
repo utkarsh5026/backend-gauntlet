@@ -8,6 +8,9 @@ the two sources of truth that ARE the work:
   * vertical challenges  ← `todo!()` markers in each vertical's `src/*.rs`
                             (a vertical is "done" once its module has no todo!())
   * horizontal checklist ← `- [ ]` / `- [x]` checkboxes in that project's SPEC.md
+  * from-the-field backlog ← `- [~]` / `- [✔]` in SPEC's "From the field" section
+                            (shown ungraded in detail view when present; never
+                            counted toward progress bars)
 
 The only hand-written input is an optional, render-invisible status block at the
 top of each SPEC.md, for the one thing code can't tell you — whether a project
@@ -90,7 +93,11 @@ TODO_RE = re.compile(r"\btodo!\s*\(")
 CHECK_DONE_RE = re.compile(r"-\s*\[x\]", re.IGNORECASE)
 CHECK_OPEN_RE = re.compile(r"-\s*\[ \]")
 CHECK_ITEM_RE = re.compile(r"-\s*\[([ xX])\]\s*(.+)")  # captures state + text
+# Ungraded harvest backlog: [~] open, [✔] adopted — never counted in progress bars.
+RESEARCH_ITEM_RE = re.compile(r"-\s*\[([~✔])\]\s*(.+)")
+FIELD_HEADING_RE = re.compile(r"^##\s+.*From the field\s*$", re.MULTILINE)
 HEADING_RE = re.compile(r"^#{2,3}\s+(.+?)\s*$")
+H2_RE = re.compile(r"^##\s+", re.MULTILINE)
 
 
 class Vertical:
@@ -238,6 +245,46 @@ class Project:
         if items:
             sections.append((title or "—", items))
         return sections
+
+    def research_sections(self) -> list[tuple[str, list[tuple[bool, str]]]]:
+        """Ungraded 'From the field' backlog grouped under ### subheadings.
+
+        Returns [] when the section is absent so callers can skip the whole block.
+        Markers are [~] (open) / [✔] (adopted) — never folded into graded checks.
+        """
+        m = FIELD_HEADING_RE.search(self.text)
+        if not m:
+            return []
+        start = m.end()
+        nxt = H2_RE.search(self.text, start)
+        body = self.text[start : nxt.start()] if nxt else self.text[start:]
+
+        sections: list[tuple[str, list[tuple[bool, str]]]] = []
+        title: str | None = None
+        items: list[tuple[bool, str]] = []
+        for line in body.splitlines():
+            hm = HEADING_RE.match(line)
+            if hm:
+                if items:
+                    sections.append((title or "—", items))
+                    items = []
+                title = EMPHASIS_RE.sub("", hm.group(1)).strip()
+                continue
+            im = RESEARCH_ITEM_RE.match(line.strip())
+            if im:
+                items.append(
+                    (im.group(1) == "✔", EMPHASIS_RE.sub("", im.group(2)).strip())
+                )
+        if items:
+            sections.append((title or "—", items))
+        return sections
+
+    @property
+    def research(self) -> tuple[int, int]:
+        """(adopted, total) from-the-field boxes — informational only."""
+        items = [i for _, sec in self.research_sections() for i in sec]
+        done = sum(1 for d, _ in items if d)
+        return done, len(items)
 
     # -- rollups -------------------------------------------------------------
     @property
@@ -573,93 +620,149 @@ def _heading(label: str) -> None:
     print(rule())
 
 
-def detail(p: Project) -> None:
+def _meter(done: int, total: int, width: int = 0) -> str:
+    """A dot meter — ● (green) per done item, ○ (dim) per remaining — left-aligned
+    and padded to `width` cells so ratios line up down the column."""
+    dots = f"{C.GREEN}{'●' * done}{C.RESET}{C.DIM}{'○' * (total - done)}{C.RESET}"
+    return _pad(dots, max(width, total))
+
+
+def _ratio(done: int, total: int) -> str:
+    col = C.GREEN if total and done == total else C.YELLOW if done else C.DIM
+    return f"{col}{done}/{total}{C.RESET}"
+
+
+def _summary_row(label: str, done: int, total: int) -> None:
+    pct = round(100 * done / total) if total else 0
+    print(f"  {C.DIM}{label:<10}{C.RESET} {bar(pct, 16)}  {_ratio(done, total)}")
+
+
+def _clean_section(title: str) -> str:
+    """'🐉 Boss fight — The Thundering Herd' → '🐉 The Thundering Herd'."""
+    if title.startswith("🐉") and "—" in title:
+        return f"🐉 {title.split('—', 1)[1].strip()}"
+    return title
+
+
+def _print_check_groups(
+    sections: list[tuple[str, list[tuple[bool, str]]]],
+    full: bool,
+    text_width: int = 58,
+) -> None:
+    """Shared layout for horizontal checklist / from-the-field groups."""
+    smax = max((len(items) for _, items in sections), default=0)
+    namew = min(max((len(_clean_section(t)) for t, _ in sections), default=0), 26)
+    for title, items in sections:
+        sd = sum(1 for d, _ in items if d)
+        name = _trunc(_clean_section(title), namew)
+        col = C.GREEN if sd == len(items) else C.YELLOW if sd else C.DIM
+        print(
+            f"  {_pad(f'{col}{name}{C.RESET}', namew)}  "
+            f"{_meter(sd, len(items), smax)}  {_ratio(sd, len(items))}"
+        )
+        for d, txt in items if full else [(d, t) for d, t in items if not d]:
+            body = f"{C.DIM}{_trunc(txt, text_width)}{C.RESET}" if d else _trunc(txt, text_width)
+            print(f"       {_box(d)} {body}")
+
+
+def detail(p: Project, full: bool = False) -> None:
     vt = len(p.verticals)
     cdone, ctot = p.checks
     acc_done = sum(1 for v in p.verticals for d, _ in v.criteria if d)
     acc_tot = sum(len(v.criteria) for v in p.verticals)
+    sections = p.checklist_sections()
+    research = p.research_sections()
+    rtot = sum(len(items) for _, items in research)
+    rdone = sum(1 for _, items in research for d, _ in items if d)
+    cur = p.current
 
-    # --- banner -----------------------------------------------------------
+    # --- banner + summary meters -----------------------------------------
     print()
     print(
         f"  {C.BOLD}{C.MAGENTA}{p.num} · {p.name}{C.RESET}  {state_badge(p.state)}  "
         f"{bar(p.percent)} {C.BOLD}{p.percent}%{C.RESET}"
     )
-    tally = (
-        f"  {C.DIM}verticals {C.RESET}{C.BOLD}{p.v_done}/{vt}{C.RESET}{C.DIM} built"
-    )
-    if acc_tot:
-        tally += f"  ·  acceptance {C.RESET}{C.BOLD}{acc_done}/{acc_tot}{C.RESET}{C.DIM}"
-    tally += f"  ·  checklist {C.RESET}{C.BOLD}{cdone}/{ctot}{C.RESET}"
-    print(tally)
     blocked = p.front.get("blocked-on", "~")
     if blocked and blocked != "~":
         print(f"  {C.RED}⛔ blocked-on: {blocked}{C.RESET}")
+    print()
+    _summary_row("verticals", p.v_done, vt)
+    if acc_tot:
+        _summary_row("acceptance", acc_done, acc_tot)
+    _summary_row("checklist", cdone, ctot)
+    if rtot:
+        _summary_row("research", rdone, rtot)
 
     # --- verticals --------------------------------------------------------
-    _heading(f"VERTICALS  ({p.v_done}/{vt} built)")
-    cur = p.current
+    _heading("VERTICALS")
+    vmax = max((len(v.criteria) for v in p.verticals), default=0)
     for v in p.verticals:
         glyph = v_glyph(v, v is cur)
         todos = v.todos
         if v.module is None:
-            note = f"{C.DIM}(no module in SPEC){C.RESET}"
+            note = f"{C.DIM}(no module){C.RESET}"
         elif todos is None:
-            note = f"{C.RED}{v.module} — file missing{C.RESET}"
+            note = f"{C.RED}{v.module} · missing{C.RESET}"
         elif todos == 0:
             note = f"{C.DIM}{v.module}{C.RESET}"
         else:
-            note = f"{C.DIM}{v.module} · {C.YELLOW}{todos} todo!(){C.RESET}"
+            note = f"{C.YELLOW}{v.module} · {todos} todo!(){C.RESET}"
         print(f"  {glyph}  {C.BOLD}{v.title}{C.RESET}  {note}")
-        if v.tagline:
-            print(f"        {C.DIM}“{_trunc(v.tagline, 70)}”{C.RESET}")
         crit = v.criteria
+        cd = sum(1 for d, _ in crit if d)
         if crit:
-            cd = sum(1 for d, _ in crit if d)
-            print(f"        {C.DIM}acceptance {cd}/{len(crit)}{C.RESET}")
-            for d, txt in crit:
-                print(f"          {_box(d)} {_trunc(txt, 66)}")
+            line = f"        {_meter(cd, len(crit), vmax)}  {_ratio(cd, len(crit))}"
+            if v.tagline:
+                line += f"   {C.DIM}“{_trunc(v.tagline, 50)}”{C.RESET}"
+            print(line)
+        elif v.tagline:
+            print(f"        {C.DIM}“{_trunc(v.tagline, 62)}”{C.RESET}")
+        for d, txt in crit if full else [(d, t) for d, t in crit if not d]:
+            body = f"{C.DIM}{_trunc(txt, 62)}{C.RESET}" if d else _trunc(txt, 62)
+            print(f"          {_box(d)} {body}")
         print()
 
-    # --- horizontal checklist, grouped by section -------------------------
-    pct = round(100 * cdone / ctot) if ctot else 0
-    _heading(f"HORIZONTAL CHECKLIST  {bar(pct, 12)} {cdone}/{ctot}")
-    for title, items in p.checklist_sections():
-        sd = len([1 for d, _ in items if d])
-        col = C.GREEN if sd == len(items) else C.YELLOW if sd else C.DIM
-        print(f"  {C.BOLD}{_trunc(title, 46)}{C.RESET}  {col}{sd}/{len(items)}{C.RESET}")
-        for d, txt in items:
-            print(f"     {_box(d)} {_trunc(txt, 66)}")
+    # --- horizontal checklist, grouped by section ------------------------
+    _heading("HORIZONTAL CHECKLIST")
+    _print_check_groups(sections, full)
 
-    # --- proof artifacts --------------------------------------------------
+    # --- ungraded from-the-field backlog (only when harvested) -----------
+    if research:
+        _heading("FROM THE FIELD")
+        _print_check_groups(research, full)
+
+    # --- proof artifacts + what's next -----------------------------------
     bench = p.path / "bench"
     has_bench = bench.is_dir() and any(bench.iterdir())
     docs = p.path / "docs"
     design = sorted(docs.glob("*design*.md")) if docs.is_dir() else []
     benchdoc = sorted(docs.glob("*bench*.md")) if docs.is_dir() else []
-    _heading("PROOF ARTIFACTS")
-    print(f"  {_box(has_bench)} bench/ load test")
-    hint = design[0].name if design else "docs/*design*.md"
-    print(f"  {_box(bool(design))} design doc  {C.DIM}{hint}{C.RESET}")
-    hint = benchdoc[0].name if benchdoc else "docs/*bench*.md"
-    print(f"  {_box(bool(benchdoc))} benchmark writeup  {C.DIM}{hint}{C.RESET}")
-
-    # --- what to do next --------------------------------------------------
     print()
+    print(
+        f"  {C.BOLD}{C.CYAN}PROOF{C.RESET}   {_box(has_bench)} bench   "
+        f"{_box(bool(design))} design doc   {_box(bool(benchdoc))} benchmarks"
+    )
+
     if cur is not None:
         bits = []
         if cur.todos:
             bits.append(f"{cur.todos} todo!() in {cur.module}")
-        open_crit = len([1 for d, _ in cur.criteria if not d])
+        open_crit = sum(1 for d, _ in cur.criteria if not d)
         if open_crit:
             bits.append(f"{open_crit} acceptance box(es) left")
         tail = f" {C.DIM}({'; '.join(bits)}){C.RESET}" if bits else ""
-        print(f"  {C.YELLOW}→ next: {cur.vid} {cur.title}{C.RESET}{tail}")
+        print(f"  {C.BOLD}{C.YELLOW}NEXT{C.RESET}    {C.YELLOW}{cur.vid} {cur.title}{C.RESET}{tail}")
     elif ctot and cdone < ctot:
-        print(f"  {C.YELLOW}→ next: {ctot - cdone} horizontal item(s) remain{C.RESET}")
+        print(f"  {C.BOLD}{C.YELLOW}NEXT{C.RESET}    {ctot - cdone} horizontal item(s) remain")
     else:
-        print(f"  {C.GREEN}→ every box checked — boss defeated. 🐉{C.RESET}")
-    print()
+        print(f"  {C.BOLD}{C.GREEN}DONE{C.RESET}    every box checked — boss defeated 🐉")
+
+    legend = (
+        "showing every item"
+        if full
+        else "only open items shown · FULL=1 for the full list"
+    )
+    print(f"\n  {C.DIM}● done  ○ todo  ·  {legend}{C.RESET}\n")
 
 
 def main(argv: list[str]) -> int:
@@ -670,15 +773,17 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] in ("trophies", "trophy", "case", "🏆"):
         trophy_case(projects)
         return 0
-    if argv:
-        key = argv[0].lstrip("0") or "0"
+    full = any(a in ("full", "--full", "-f") for a in argv[1:])
+    args = [a for a in argv if a not in ("full", "--full", "-f")]
+    if args:
+        key = args[0].lstrip("0") or "0"
         match = next(
-            (p for p in projects if p.num.lstrip("0") == key or argv[0] in p.slug), None
+            (p for p in projects if p.num.lstrip("0") == key or args[0] in p.slug), None
         )
         if match is None:
-            print(f"{C.RED}no project matching '{argv[0]}'{C.RESET}")
+            print(f"{C.RED}no project matching '{args[0]}'{C.RESET}")
             return 1
-        detail(match)
+        detail(match, full=full)
     else:
         dashboard(projects)
     return 0

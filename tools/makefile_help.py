@@ -13,10 +13,17 @@ REQUIREMENTS = TOOLS_DIR / "requirements.txt"
 
 
 def ensure_deps() -> None:
-    """Install ``tools/requirements.txt`` when Rich is not already available."""
+    """Install ``tools/requirements.txt`` when a required package is missing."""
+    missing = False
     try:
         import rich  # noqa: F401
     except ImportError:
+        missing = True
+    try:
+        import questionary  # noqa: F401
+    except ImportError:
+        missing = True
+    if missing:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS), "-q"],
             check=True,
