@@ -32,7 +32,14 @@ PROJECT_DIR = Path(__file__).resolve().parent
 if str(PROJECT_DIR.parent.parent / "tools") not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR.parent.parent / "tools"))
 
-from makefile_runner import C, make_runner, register_cargo_checks, register_help, register_setup  # noqa: E402
+from makefile_runner import (  # noqa: E402
+    C,
+    make_runner,
+    register_cargo_checks,
+    register_help,
+    register_md,
+    register_setup,
+)
 
 WEB_DIR = PROJECT_DIR / "web"
 
@@ -237,6 +244,7 @@ def smoke() -> None:
         sys.exit(1)
 
 
+register_md(runner)
 register_help(runner)
 
 if __name__ == "__main__":

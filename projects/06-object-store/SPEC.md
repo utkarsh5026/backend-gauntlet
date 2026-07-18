@@ -174,11 +174,14 @@ as a concrete, testable definition of protocol compatibility.
   finish.
 
 ### State & durability
+
 - [x] The atomic commit (V1) holds under a crash: a `kill -9` during a PUT leaves
   **either** the whole object **or** nothing — never a truncated blob under
   its final name. Demonstrate it (kill mid-write, then read back).
+
 - [x] The blob-then-pointer order (V3) holds: a crash between commit and index
   leaves an orphan blob (GC-able), never a dangling key.
+
 - [x] Dedup is real: PUT the same bytes under two keys and assert one blob on
   disk. Delete one key and the blob survives until the other key is gone too.
 
@@ -199,9 +202,11 @@ as a concrete, testable definition of protocol compatibility.
 - [x] Counters: objects PUT / GET / DELETE, multipart initiated / completed /
   aborted, **dedup hits** (a PUT whose content already existed), GC blobs
   reclaimed, range requests served.
+
 - [x] Gauges: total bytes stored, blob count, in-flight uploads, open multipart
   sessions (a climbing count of never-completed sessions is a leak/abuse
   signal).
+
 - [x] Histograms: upload/download **throughput** (bytes/sec) and object-size
   distribution; a `tracing` span per request carrying `bucket`, `key`, and
   `size`. Never log object bodies.
@@ -270,3 +275,86 @@ curl         localhost:9000/my-bucket/hello.txt
 # The gold standard once you're S3-compatible — point the real AWS CLI at it:
 aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
 ```
+
+## 🔬 From the field
+
+<!-- Adoption backlog distilled from RESEARCH.md by /harvest. NOT graded:
+     [~] = open, [✔] = adopted — not counted toward graded progress;
+     shown under FROM THE FIELD in status detail.
+     Tick a box when the idea has actually landed in this project. -->
+
+### API & protocol extras
+
+- [~] Conditional writes: `PUT` with `If-None-Match: *` is atomic create-once
+  (two racing creators → exactly one 200, the loser gets 412) and
+  `If-Match: <etag>` is compare-and-swap — the primitive that lets the store
+  double as a lock service / commit pointer *(→ RESEARCH.md §Part 7)*
+
+- [~] Checksum-validated uploads: a PUT that declares a checksum (`Content-MD5`
+  / `x-amz-checksum-*`) not matching the streamed bytes is rejected and leaves
+  nothing durable *(→ RESEARCH.md §Part 4)*
+
+- [~] Object versioning: an overwrite is a new immutable version behind an
+  atomic pointer flip — the previous version stays retrievable by version id,
+  and delete becomes a removable delete marker *(→ RESEARCH.md §Part 1)*
+
+- [~] Session-scoped auth (the Express One Zone trick): a `CreateSession`-style
+  endpoint mints a short-lived scoped token so the hot path skips per-request
+  HMAC verification — auth cost is paid once per session, not per request
+  *(→ RESEARCH.md §Part 7)*
+  
+- [~] Lifecycle rules: objects expire (or migrate to a compressed cold tier)
+  after a configured age, and a GET of a tiered object still round-trips
+  transparently *(→ RESEARCH.md §Part 5)*
+
+- [~] Interop beyond the AWS CLI: the Rust `object_store` crate (Arrow's)
+  performs put/get/list/multipart against your endpoint unpatched
+  *(→ RESEARCH.md §Part 6, Recommendations 4)*
+
+- [~] A Mountpoint-style FUSE veneer: the bucket mounts as a read-only
+  filesystem whose reads are served by ranged GETs — file API on top, object
+  semantics underneath *(→ RESEARCH.md §Part 7)*
+
+### Storage-engine labs
+
+- [~] Erasure-coding lab: RS(4,2) over GF(2⁸) with log/antilog tables — a blob
+  split into 6 shards reconstructs bit-exact after any 2 are deleted
+  *(→ RESEARCH.md §Part 3)*
+  
+- [~] Local Reconstruction Codes on top of the RS lab: with (k, l, r) local
+  groups, repairing a single lost shard reads only its local group (≈ k/l
+  shards), not all k — measure the repair-read fan-in both ways
+  *(→ RESEARCH.md §Part 3)*
+- [~] Your own durability number: a calculator that turns (k, m, per-shard
+  annual failure rate, repair window) into nines, Backblaze-style, with the
+  result and its assumptions in the bench doc *(→ RESEARCH.md §Part 3)*
+- [~] Small-object packing (Haystack "needles"): thousands of tiny objects
+  occupy a handful of append-only volume files instead of one file each, and
+  GET still streams each one correctly *(→ RESEARCH.md §Part 6)*
+- [~] Transparent compression: blobs are Zstd-compressed at rest with dedup
+  intact, and the design doc states the hash-then-compress vs compress-then-hash
+  choice and why *(→ RESEARCH.md §Part 6)*
+- [~] Chunk-level dedup (content-defined chunking): two large objects differing
+  by a small edit share most of their on-disk bytes — whole-object dedup only
+  ever shares identical files *(→ RESEARCH.md §Part 6)*
+
+### Durability & correctness practice
+
+- [✔] Property-based tests attack every vertical's invariant with random inputs
+  (naming safety, chunking-independent digests, listing/GC laws, the multipart
+  ETag) — `tests/property.rs` *(→ RESEARCH.md §Recommendations 5)*
+- [~] Reference-model checking (the ShardStore method): the same random op
+  sequence drives the real store and a tiny in-memory model, and their
+  observable state never diverges *(→ RESEARCH.md §Part 2 & 8)*
+- [~] Continuous scrubbing: a background auditor re-hashes stored blobs; a
+  deliberately flipped byte on disk is detected, quarantined, and surfaced as a
+  metric before any reader is served the corrupt bytes *(→ RESEARCH.md §Part 4)*
+- [~] A crash-injection harness: property tests kill the commit sequence at
+  every step boundary (not one hand-picked `kill -9`) and assert every reachable
+  post-crash state is all-or-nothing *(→ RESEARCH.md §Part 8)*
+- [~] The GC ↔ in-flight-PUT race under a model checker: the stated resolution
+  is exercised with Loom (exhaustive) or Shuttle (randomized) interleavings,
+  not just reasoned about *(→ RESEARCH.md §Part 2 & 8)*
+- [~] A durability review for the commit path: a written threat list ("think
+  like an adversary") with the guardrail that answers each threat, kept next to
+  the design doc *(→ RESEARCH.md §Part 4)*
