@@ -8,9 +8,10 @@
 //! a throwaway data dir that is wiped when each test's `TestApp` drops.
 //!
 //! Scope: V1 (content-addressed store), V2 (streaming PUT/GET + size cap), and
-//! V3 (bucket namespace, prefix/delimiter listing, pagination). The V4 multipart
-//! verbs (`?uploads`, `?uploadId&partNumber`) are deliberately NOT exercised —
-//! their handlers still `todo!()` and would panic. Those belong to a `/quest`.
+//! V3 (bucket namespace, prefix/delimiter listing, pagination), plus the
+//! versioning surface (`?versionId=` on GET/HEAD/DELETE, `versionId` on list).
+//! The V4 multipart verbs (`?uploads`, `?uploadId&partNumber`) are deliberately
+//! NOT exercised here — those belong to a `/quest`.
 
 use axum::body::Body;
 use axum::http::header::{
@@ -115,9 +116,18 @@ impl TestApp {
     }
 
     async fn get_object(&self, bucket: &str, key: &str) -> Resp {
+        self.get_object_at(bucket, key, None).await
+    }
+
+    /// GET with an optional `?versionId=` — `None` means latest.
+    async fn get_object_at(&self, bucket: &str, key: &str, version_id: Option<u64>) -> Resp {
+        let uri = match version_id {
+            Some(id) => format!("/{bucket}/{key}?versionId={id}"),
+            None => format!("/{bucket}/{key}"),
+        };
         let req = Request::builder()
             .method("GET")
-            .uri(format!("/{bucket}/{key}"))
+            .uri(uri)
             .body(Body::empty())
             .unwrap();
         self.send(req).await
@@ -148,9 +158,22 @@ impl TestApp {
     /// HEAD — metadata only, no body (S3 `HeadObject`). `if_none_match` sets the
     /// conditional header when `Some`.
     async fn head_object(&self, bucket: &str, key: &str, if_none_match: Option<&str>) -> Resp {
-        let mut req = Request::builder()
-            .method("HEAD")
-            .uri(format!("/{bucket}/{key}"));
+        self.head_object_at(bucket, key, None, if_none_match).await
+    }
+
+    /// HEAD with an optional `?versionId=`.
+    async fn head_object_at(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<u64>,
+        if_none_match: Option<&str>,
+    ) -> Resp {
+        let uri = match version_id {
+            Some(id) => format!("/{bucket}/{key}?versionId={id}"),
+            None => format!("/{bucket}/{key}"),
+        };
+        let mut req = Request::builder().method("HEAD").uri(uri);
         if let Some(etag) = if_none_match {
             req = req.header(IF_NONE_MATCH, etag);
         }
@@ -158,9 +181,19 @@ impl TestApp {
     }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Resp {
+        self.delete_object_at(bucket, key, None).await
+    }
+
+    /// DELETE with an optional `?versionId=` — `None` drops the whole key;
+    /// `Some(id)` removes that one version from history.
+    async fn delete_object_at(&self, bucket: &str, key: &str, version_id: Option<u64>) -> Resp {
+        let uri = match version_id {
+            Some(id) => format!("/{bucket}/{key}?versionId={id}"),
+            None => format!("/{bucket}/{key}"),
+        };
         let req = Request::builder()
             .method("DELETE")
-            .uri(format!("/{bucket}/{key}"))
+            .uri(uri)
             .body(Body::empty())
             .unwrap();
         self.send(req).await
@@ -551,6 +584,157 @@ async fn put_overwrite_serves_the_latest_bytes() {
 }
 
 #[tokio::test]
+async fn get_by_version_id_returns_a_prior_version_after_overwrite() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    let v1 = b"version one";
+    let v2 = b"version two now";
+    app.create_bucket(bucket).await;
+
+    app.put_object(bucket, key, "text/plain", v1).await;
+    app.put_object(bucket, key, "text/plain", v2).await;
+
+    let prior = app.get_object_at(bucket, key, Some(1)).await;
+    assert_eq!(prior.status, StatusCode::OK);
+    assert_eq!(&prior.body[..], v1, "versionId=1 must return the first PUT");
+    assert_eq!(
+        prior.header(ETAG).as_deref(),
+        Some(expected_single_put_etag(v1).as_str()),
+        "historical GET must carry that version's ETag"
+    );
+
+    let current = app.get_object_at(bucket, key, Some(2)).await;
+    assert_eq!(current.status, StatusCode::OK);
+    assert_eq!(
+        &current.body[..],
+        v2,
+        "versionId=2 must return the second PUT"
+    );
+}
+
+#[tokio::test]
+async fn get_unknown_version_id_is_404() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"only-one").await;
+
+    let get = app.get_object_at(bucket, key, Some(99)).await;
+    assert_eq!(get.status, StatusCode::NOT_FOUND);
+    assert_eq!(get.json()["error"], "no such key");
+}
+
+#[tokio::test]
+async fn head_by_version_id_returns_that_versions_metadata() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    let v1 = b"small";
+    let v2 = b"a much longer second version";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", v1).await;
+    app.put_object(bucket, key, "image/png", v2).await;
+
+    let head = app.head_object_at(bucket, key, Some(1), None).await;
+    assert_eq!(head.status, StatusCode::OK);
+    assert!(head.body.is_empty(), "HEAD never carries a body");
+    let v1_len = v1.len().to_string();
+    assert_eq!(
+        head.header(CONTENT_LENGTH).as_deref(),
+        Some(v1_len.as_str()),
+        "HEAD ?versionId=1 must report v1's size, not latest"
+    );
+    assert_eq!(
+        head.header(CONTENT_TYPE).as_deref(),
+        Some("text/plain"),
+        "HEAD ?versionId=1 must report v1's content type"
+    );
+    assert_eq!(
+        head.header(ETAG).as_deref(),
+        Some(expected_single_put_etag(v1).as_str())
+    );
+}
+
+#[tokio::test]
+async fn delete_by_version_id_removes_only_that_version() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    let v1 = b"keep-me";
+    let v2 = b"drop-me";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", v1).await;
+    app.put_object(bucket, key, "text/plain", v2).await;
+
+    // Drop the current version; latest should retarget to v1.
+    let del = app.delete_object_at(bucket, key, Some(2)).await;
+    assert_eq!(del.status, StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        app.get_object_at(bucket, key, Some(2)).await.status,
+        StatusCode::NOT_FOUND,
+        "deleted version id must 404"
+    );
+
+    let latest = app.get_object(bucket, key).await;
+    assert_eq!(latest.status, StatusCode::OK);
+    assert_eq!(
+        &latest.body[..],
+        v1,
+        "after deleting v2, latest must serve the surviving v1"
+    );
+}
+
+#[tokio::test]
+async fn delete_by_version_id_of_unknown_version_is_404() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"only-one").await;
+
+    let del = app.delete_object_at(bucket, key, Some(99)).await;
+    assert_eq!(del.status, StatusCode::NOT_FOUND);
+    assert_eq!(del.json()["error"], "no such key");
+
+    // The live object is untouched.
+    assert_eq!(
+        app.get_object(bucket, key).await.status,
+        StatusCode::OK,
+        "a failed version delete must not drop the key"
+    );
+}
+
+#[tokio::test]
+async fn list_includes_latest_version_id() {
+    let app = TestApp::new();
+    let bucket = "docs";
+    let key = "readme";
+    app.create_bucket(bucket).await;
+    app.put_object(bucket, key, "text/plain", b"v1").await;
+    app.put_object(bucket, key, "text/plain", b"v2").await;
+
+    let resp = app.list(bucket, "").await;
+    assert_eq!(resp.status, StatusCode::OK);
+
+    let body = resp.json();
+    let objects = body["objects"].as_array().expect("objects is an array");
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0]["key"], key);
+    assert_eq!(
+        objects[0]["versionId"], 2,
+        "list must expose the current (latest) version id"
+    );
+    assert_eq!(
+        objects[0]["etag"],
+        expected_single_put_etag(b"v2"),
+        "list etag must be the latest version's"
+    );
+}
+
+#[tokio::test]
 async fn get_missing_key_is_404() {
     let app = TestApp::new();
     let bucket = "photos";
@@ -609,7 +793,10 @@ async fn put_with_an_over_long_key_is_400_and_writes_no_blob() {
         .await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST);
     assert!(
-        resp.json()["error"].as_str().unwrap().contains("object key"),
+        resp.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("object key"),
         "the 400 body should explain the key-length rule it broke"
     );
 

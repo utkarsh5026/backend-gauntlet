@@ -17,7 +17,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::AppError;
 use crate::naming::{encode_key, validate_bucket_name, validate_key};
-use crate::object::{Digest, ObjectMeta};
+use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject};
 use crate::store::{Store, TempEntry};
 
 /// Maps `(bucket, key)` → the blob (and metadata) backing it, and owns the
@@ -113,25 +113,67 @@ impl Index {
         Ok(())
     }
 
-    pub async fn put(&self, meta: ObjectMeta) -> Result<(), AppError> {
+    /// Append a new live version for `(bucket, key)` and flip `latest` to it.
+    ///
+    /// Creates the key if absent. Overwrite = new immutable version + pointer
+    /// flip; prior versions stay retrievable via [`ObjectRef::Version`].
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::InvalidRequest`] for a bad bucket/key name, or an I/O error
+    /// writing the index entry.
+    pub async fn put(
+        &self,
+        bucket: &str,
+        key: &str,
+        digest: Digest,
+        etag: ETag,
+        size: u64,
+        content_type: impl Into<String>,
+    ) -> Result<ObjectMeta, AppError> {
+        let content_type = content_type.into();
+        let meta = match self.get(bucket, key).await? {
+            Some(mut existing) => {
+                existing.append_live(digest, etag, size, content_type);
+                existing
+            }
+            None => ObjectMeta::new_live(
+                bucket.to_string(),
+                key.to_string(),
+                digest,
+                etag,
+                size,
+                content_type,
+            ),
+        };
+
+        self.write_meta(&meta).await?;
+
+        metrics::counter!(crate::metrics::OBJECTS_PUT_TOTAL).increment(1);
+        if let Some(live) = meta.latest_live() {
+            metrics::histogram!(crate::metrics::OBJECT_SIZE_BYTES).record(live.size as f64);
+        }
+        Ok(meta)
+    }
+
+    /// Persist a fully-built [`ObjectMeta`] (temp→rename). Used by GC tests that
+    /// plant an in-flight `tmp/` entry, and by delete paths that rewrite history.
+    async fn write_meta(&self, meta: &ObjectMeta) -> Result<(), AppError> {
         use tokio::fs as tfs;
 
-        let ObjectMeta { bucket, key, .. } = &meta;
-        let path = self.index_path(bucket, key)?;
-        let temp_path = self.temp_entry_path(bucket, key);
+        let path = self.index_path(&meta.bucket, &meta.key)?;
+        let temp_path = self.temp_entry_path(&meta.bucket, &meta.key);
         let mut temp_guard = TempEntry::new(temp_path.clone());
 
-        tfs::create_dir_all(self.objects_dir(bucket)).await?;
-        tfs::create_dir_all(self.tmp_dir(bucket)).await?;
+        tfs::create_dir_all(self.objects_dir(&meta.bucket)).await?;
+        tfs::create_dir_all(self.tmp_dir(&meta.bucket)).await?;
 
-        let bytes = serde_json::to_vec(&meta)?;
+        let bytes = serde_json::to_vec(meta)?;
         let mut file = tfs::File::create(&temp_path).await?;
         file.write_all(&bytes).await?;
         file.sync_all().await?;
         tfs::rename(&temp_path, &path).await?;
         temp_guard.disarm();
-        metrics::counter!(crate::metrics::OBJECTS_PUT_TOTAL).increment(1);
-        metrics::histogram!(crate::metrics::OBJECT_SIZE_BYTES).record(meta.size as f64);
         Ok(())
     }
 
@@ -152,20 +194,59 @@ impl Index {
         Ok(Some(read_json(&path).await?))
     }
 
-    /// Drop the `(bucket, key)` pointer; idempotent if the key is already gone.
+    /// Resolve `(bucket, key, object_ref)` to a live object.
     ///
-    /// This only removes the index entry — never the blob. Bytes shared by
-    /// another key must survive; the now-unreferenced blob, if any, is left for
-    /// [`gc`](Self::gc) to reclaim later.
+    /// [`ObjectRef::Latest`] follows the current pointer; [`ObjectRef::Version`]
+    /// pins a historical id. Missing keys, unknown ids, and delete markers all
+    /// surface as [`AppError::NoSuchKey`].
+    pub async fn resolve(
+        &self,
+        bucket: &str,
+        key: &str,
+        object_ref: ObjectRef,
+    ) -> Result<ResolvedObject, AppError> {
+        let meta = self.get(bucket, key).await?.ok_or(AppError::NoSuchKey)?;
+        meta.resolve_live(object_ref)
+    }
+
+    /// Delete under `(bucket, key)` according to `object_ref`.
+    ///
+    /// - [`ObjectRef::Latest`] — drop the whole index entry (all history). Idempotent
+    ///   if the key is already gone. This is the non-versioned S3 delete shape;
+    ///   blobs stay for [`gc`](Self::gc).
+    /// - [`ObjectRef::Version`] — remove that one version. If history empties, the
+    ///   entry is removed; if `latest` was removed, it retargets to the newest
+    ///   remaining version.
     ///
     /// # Errors
     ///
-    /// [`AppError::InvalidRequest`] for a bad bucket name, or an I/O error
-    /// removing the entry.
-    pub async fn delete(&self, bucket: &str, key: &str) -> Result<(), AppError> {
-        let path = self.index_path(bucket, key)?;
-        if tokio::fs::try_exists(&path).await? {
-            tokio::fs::remove_file(&path).await?;
+    /// [`AppError::NoSuchKey`] when deleting a specific version that isn't there;
+    /// [`AppError::InvalidRequest`] for a bad bucket name, or an I/O error.
+    pub async fn delete(
+        &self,
+        bucket: &str,
+        key: &str,
+        object_ref: ObjectRef,
+    ) -> Result<(), AppError> {
+        match object_ref {
+            ObjectRef::Latest => {
+                let path = self.index_path(bucket, key)?;
+                if tokio::fs::try_exists(&path).await? {
+                    tokio::fs::remove_file(&path).await?;
+                }
+            }
+            ObjectRef::Version(id) => {
+                let mut meta = self.get(bucket, key).await?.ok_or(AppError::NoSuchKey)?;
+                if !meta.remove_version(id) {
+                    return Err(AppError::NoSuchKey);
+                }
+                if meta.versions.is_empty() {
+                    let path = self.index_path(bucket, key)?;
+                    tokio::fs::remove_file(&path).await?;
+                } else {
+                    self.write_meta(&meta).await?;
+                }
+            }
         }
         metrics::counter!(crate::metrics::OBJECTS_DELETED_TOTAL).increment(1);
         Ok(())
@@ -198,7 +279,8 @@ impl Index {
         Self::push_index_files(&mut paths, &self.objects_dir(bucket)).await?;
 
         let mut objects = Self::read_index_entries(paths).await?;
-        objects.retain(|meta| meta.key.starts_with(prefix));
+
+        objects.retain(|meta| meta.key.starts_with(prefix) && meta.latest_live().is_some());
 
         objects.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -340,13 +422,19 @@ impl Index {
         let committed_digests = Self::read_index_entries(committed)
             .await?
             .into_iter()
-            .map(|m| m.digest)
+            .flat_map(|m| m.digests().cloned().collect::<Vec<_>>())
             .collect::<Vec<_>>();
 
         let tmp_digests = stream::iter(tmp_files)
-            .map(|path| async move { read_json(&path).await.ok().map(|m| m.digest) })
+            .map(|path| async move {
+                read_json(&path)
+                    .await
+                    .ok()
+                    .map(|m| m.digests().cloned().collect::<Vec<_>>())
+            })
             .buffer_unordered(Self::GC_READ_CONCURRENCY)
             .filter_map(futures_util::future::ready)
+            .flat_map(stream::iter)
             .collect::<Vec<_>>()
             .await;
 
@@ -446,17 +534,30 @@ mod tests {
             .expect("storing bytes should succeed")
     }
 
-    /// An index entry pointing `(bucket, key)` at an already-stored blob.
+    async fn put_stored(index: &Index, bucket: &str, key: &str, stored: &Stored) {
+        index
+            .put(
+                bucket,
+                key,
+                stored.digest.clone(),
+                stored.etag.clone(),
+                stored.size,
+                "image/jpeg",
+            )
+            .await
+            .expect("put stored object");
+    }
+
+    /// Fully-built meta for planting an in-flight `tmp/` JSON by hand.
     fn meta_for(bucket: &str, key: &str, stored: &Stored) -> ObjectMeta {
-        ObjectMeta {
-            bucket: bucket.into(),
-            key: key.into(),
-            digest: stored.digest.clone(),
-            size: stored.size,
-            etag: stored.etag.clone(),
-            content_type: "image/jpeg".into(),
-            last_modified: chrono::Utc::now(),
-        }
+        ObjectMeta::new_live(
+            bucket.into(),
+            key.into(),
+            stored.digest.clone(),
+            stored.etag.clone(),
+            stored.size,
+            "image/jpeg".into(),
+        )
     }
 
     #[tokio::test]
@@ -539,18 +640,20 @@ mod tests {
         );
     }
 
-    /// A synthetic index entry. `put`/`get` only move the JSON pointer — they
-    /// never touch a blob — so a made-up digest is enough to exercise them.
-    fn sample_meta(bucket: &str, key: &str, digest: &str) -> ObjectMeta {
-        ObjectMeta {
-            bucket: bucket.into(),
-            key: key.into(),
-            digest: Digest(digest.into()),
-            size: 1024,
-            etag: ETag(format!("etag-{digest}")),
-            content_type: "application/octet-stream".into(),
-            last_modified: chrono::Utc::now(),
-        }
+    /// Synthetic put — `put`/`get` only move the JSON pointer, so a made-up
+    /// digest is enough to exercise them.
+    async fn put_sample(index: &Index, bucket: &str, key: &str, digest: &str) -> ObjectMeta {
+        index
+            .put(
+                bucket,
+                key,
+                Digest(digest.into()),
+                ETag(format!("etag-{digest}")),
+                1024,
+                "application/octet-stream",
+            )
+            .await
+            .expect("put should succeed")
     }
 
     /// put → get round-trips the full metadata, and a key containing `/` is
@@ -560,16 +663,12 @@ mod tests {
         let (_root, index) = fresh();
         index.create_bucket("photos").await.unwrap();
 
-        index
-            .put(sample_meta("photos", "vacation/beach.jpg", "a1b2c3"))
-            .await
-            .expect("put should succeed");
+        put_sample(&index, "photos", "vacation/beach.jpg", "a1b2c3").await;
 
         let got = index
-            .get("photos", "vacation/beach.jpg")
+            .resolve("photos", "vacation/beach.jpg", ObjectRef::Latest)
             .await
-            .expect("get should not error")
-            .expect("the key must exist after put");
+            .expect("resolve should not error");
         assert_eq!(got.key, "vacation/beach.jpg", "key round-trips");
         assert_eq!(got.digest, Digest("a1b2c3".into()), "digest round-trips");
         assert_eq!(got.size, 1024, "size round-trips");
@@ -591,31 +690,34 @@ mod tests {
         );
     }
 
-    /// Re-PUT of an existing key replaces the pointer (last-writer-wins), via the
-    /// atomic rename over the existing entry.
+    /// Re-PUT of an existing key appends a version and flips `latest`
+    /// (last-writer-wins on the hot path); the prior version stays addressable.
     #[tokio::test]
     async fn put_overwrite_replaces_the_pointer() {
         let (_root, index) = fresh();
         index.create_bucket("photos").await.unwrap();
 
-        index
-            .put(sample_meta("photos", "beach.jpg", "aaaa"))
-            .await
-            .unwrap();
-        index
-            .put(sample_meta("photos", "beach.jpg", "bbbb"))
-            .await
-            .unwrap();
+        put_sample(&index, "photos", "beach.jpg", "aaaa").await;
+        put_sample(&index, "photos", "beach.jpg", "bbbb").await;
 
         let got = index
-            .get("photos", "beach.jpg")
+            .resolve("photos", "beach.jpg", ObjectRef::Latest)
             .await
-            .unwrap()
-            .expect("the key must still exist after overwrite");
+            .expect("the key must still resolve after overwrite");
         assert_eq!(
             got.digest,
             Digest("bbbb".into()),
             "the second put must win — the pointer now names the new blob"
+        );
+
+        let prior = index
+            .resolve("photos", "beach.jpg", ObjectRef::Version(1))
+            .await
+            .expect("version 1 must still resolve");
+        assert_eq!(
+            prior.digest,
+            Digest("aaaa".into()),
+            "overwrite keeps the previous version retrievable by id"
         );
     }
 
@@ -629,14 +731,8 @@ mod tests {
         index.create_bucket("photos").await.unwrap();
 
         let stored = store_bytes(&store, b"identical image bytes").await;
-        index
-            .put(meta_for("photos", "vacation/beach.jpg", &stored))
-            .await
-            .unwrap();
-        index
-            .put(meta_for("photos", "backup/beach-copy.jpg", &stored))
-            .await
-            .unwrap();
+        put_stored(&index, "photos", "vacation/beach.jpg", &stored).await;
+        put_stored(&index, "photos", "backup/beach-copy.jpg", &stored).await;
 
         assert!(
             store.contains(&stored.digest).await,
@@ -644,14 +740,12 @@ mod tests {
         );
         // Both pointers resolve, to the same digest.
         let a = index
-            .get("photos", "vacation/beach.jpg")
+            .resolve("photos", "vacation/beach.jpg", ObjectRef::Latest)
             .await
-            .unwrap()
             .unwrap();
         let b = index
-            .get("photos", "backup/beach-copy.jpg")
+            .resolve("photos", "backup/beach-copy.jpg", ObjectRef::Latest)
             .await
-            .unwrap()
             .unwrap();
         assert_eq!(a.digest, b.digest, "two keys, one digest");
     }
@@ -664,16 +758,13 @@ mod tests {
         index.create_bucket("photos").await.unwrap();
 
         let stored = store_bytes(&store, b"shared bytes").await;
-        index
-            .put(meta_for("photos", "a.jpg", &stored))
-            .await
-            .unwrap();
-        index
-            .put(meta_for("photos", "b.jpg", &stored))
-            .await
-            .unwrap();
+        put_stored(&index, "photos", "a.jpg", &stored).await;
+        put_stored(&index, "photos", "b.jpg", &stored).await;
 
-        index.delete("photos", "a.jpg").await.unwrap();
+        index
+            .delete("photos", "a.jpg", ObjectRef::Latest)
+            .await
+            .unwrap();
 
         assert!(
             index.get("photos", "a.jpg").await.unwrap().is_none(),
@@ -698,17 +789,14 @@ mod tests {
 
         let live = store_bytes(&store, b"still referenced").await;
         let orphan = store_bytes(&store, b"about to be orphaned").await;
-        index
-            .put(meta_for("photos", "live.txt", &live))
-            .await
-            .unwrap();
-        index
-            .put(meta_for("photos", "doomed.txt", &orphan))
-            .await
-            .unwrap();
+        put_stored(&index, "photos", "live.txt", &live).await;
+        put_stored(&index, "photos", "doomed.txt", &orphan).await;
 
         // Orphan the second blob by removing its only pointer.
-        index.delete("photos", "doomed.txt").await.unwrap();
+        index
+            .delete("photos", "doomed.txt", ObjectRef::Latest)
+            .await
+            .unwrap();
 
         let reclaimed = index.gc().await.expect("gc should run");
 
@@ -738,10 +826,7 @@ mod tests {
 
         // A real, referenced object (also creates the bucket's tmp/ dir).
         let live = store_bytes(&store, b"keep me").await;
-        index
-            .put(meta_for("photos", "live.txt", &live))
-            .await
-            .unwrap();
+        put_stored(&index, "photos", "live.txt", &live).await;
 
         // Simulate the crash-leftover: truncated JSON in the bucket's tmp/.
         let tmp_dir = root.path().join("index").join("photos").join("tmp");
@@ -802,10 +887,7 @@ mod tests {
     /// pointer, not the blob).
     async fn put_keys(index: &Index, bucket: &str, keys: &[&str]) {
         for (i, key) in keys.iter().enumerate() {
-            index
-                .put(sample_meta(bucket, key, &format!("d{i}")))
-                .await
-                .unwrap();
+            put_sample(index, bucket, key, &format!("d{i}")).await;
         }
     }
 
@@ -970,11 +1052,14 @@ mod tests {
                 for (key, (group, _)) in &entries {
                     let stored = store_bytes(&store, &group_bytes(*group)).await;
                     digest_of_group.insert(*group, stored.digest.clone());
-                    index.put(meta_for("photos", key, &stored)).await.map_err(fail)?;
+                    put_stored(&index, "photos", key, &stored).await;
                 }
                 for (key, (_, delete)) in &entries {
                     if *delete {
-                        index.delete("photos", key).await.map_err(fail)?;
+                        index
+                            .delete("photos", key, ObjectRef::Latest)
+                            .await
+                            .map_err(fail)?;
                     }
                 }
 

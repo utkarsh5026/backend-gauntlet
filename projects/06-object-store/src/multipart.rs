@@ -356,27 +356,29 @@ impl Multipart {
         self.store.commit_temp(temp.path(), &digest).await?;
         temp.disarm();
 
-        let meta = ObjectMeta {
-            bucket: session.bucket,
-            key: session.key,
-            digest,
-            size: total_size,
-            etag,
-            content_type: session.content_type,
-            last_modified: chrono::Utc::now(),
-        };
-        self.index.put(meta.clone()).await?;
+        let meta = self
+            .index
+            .put(
+                &session.bucket,
+                &session.key,
+                digest,
+                etag,
+                total_size,
+                session.content_type,
+            )
+            .await?;
         tfs::remove_dir_all(&staging_dir).await?;
 
+        let live = meta.latest_live().ok_or(AppError::NoSuchKey)?;
         let span = tracing::Span::current();
         span.record("bucket", meta.bucket.as_str());
         span.record("key", meta.key.as_str());
-        span.record("size", meta.size);
+        span.record("size", live.size);
 
         metrics::counter!(crate::metrics::MULTIPART_COMPLETED_TOTAL).increment(1);
         metrics::gauge!(crate::metrics::MULTIPART_OPEN_SESSIONS).decrement(1.0);
-        metrics::histogram!(crate::metrics::MULTIPART_OBJECT_BYTES).record(meta.size as f64);
-        tracing::info!(size = meta.size, part_count, "multipart upload completed");
+        metrics::histogram!(crate::metrics::MULTIPART_OBJECT_BYTES).record(live.size as f64);
+        tracing::info!(size = live.size, part_count, "multipart upload completed");
         Ok(meta)
     }
 
@@ -572,13 +574,14 @@ mod tests {
 
         // Hand the parts to complete in reverse too, to prove it sorts.
         let meta = mp.complete(&id, vec![p2, p1]).await.expect("complete");
+        let live = meta.latest_live().expect("completed object must be live");
 
-        let assembled = read_blob(&store, &meta.digest).await;
+        let assembled = read_blob(&store, &live.digest).await;
         assert_eq!(
             assembled, b"<part-one><part-two>",
             "parts must concatenate in part-number order, not arrival order"
         );
-        assert_eq!(meta.size, assembled.len() as u64, "size is the byte count");
+        assert_eq!(live.size, assembled.len() as u64, "size is the byte count");
     }
 
     #[tokio::test]
@@ -593,18 +596,19 @@ mod tests {
         let p2 = upload(&mp, &id, 2, b).await;
 
         let meta = mp.complete(&id, vec![p1, p2]).await.expect("complete");
+        let live = meta.latest_live().expect("completed object must be live");
 
         assert_eq!(
-            meta.etag.0,
+            live.etag.0,
             expected_multipart_etag(&[a, b]),
             "multipart ETag = hex(md5(concat(raw part md5s)))-N"
         );
         assert!(
-            meta.etag.0.ends_with("-2"),
+            live.etag.0.ends_with("-2"),
             "the -N suffix carries the part count"
         );
         assert_ne!(
-            meta.etag.0,
+            live.etag.0,
             hex::encode(Md5::digest([a, b].concat())),
             "the multipart ETag is NOT the plain MD5 of the assembled bytes"
         );
@@ -622,14 +626,17 @@ mod tests {
         let p2 = upload(&mp, &id, 2, b"world").await;
 
         let meta = mp.complete(&id, vec![p1, p2]).await.expect("complete");
+        let live = meta.latest_live().expect("completed object must be live");
 
         let indexed = index
             .get(BUCKET, "a/b.txt")
             .await
             .unwrap()
-            .expect("completed object must be indexed");
-        assert_eq!(indexed.digest, meta.digest);
-        assert_eq!(indexed.etag, meta.etag);
+            .expect("completed object must be indexed")
+            .latest_live()
+            .expect("indexed object must be live");
+        assert_eq!(indexed.digest, live.digest);
+        assert_eq!(indexed.etag, live.etag);
         assert_eq!(
             indexed.content_type, "application/json",
             "content_type round-trips from initiate"
@@ -747,14 +754,13 @@ mod tests {
         let good = upload(&mp, &id, 1, b"fresh").await;
 
         let meta = mp.complete(&id, vec![good]).await.expect("complete");
+        let live = meta.latest_live().expect("completed object must be live");
         assert_eq!(
-            read_blob(&store, &meta.digest).await,
+            read_blob(&store, &live.digest).await,
             b"fresh",
             "a re-uploaded part N must overwrite the earlier staged part N"
         );
     }
-
-    // ── abort ───────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn abort_reclaims_staged_parts_and_indexes_nothing() {

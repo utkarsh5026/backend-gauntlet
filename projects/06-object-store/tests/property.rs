@@ -29,7 +29,7 @@ use object_store::error::AppError;
 use object_store::index::Index;
 use object_store::multipart::{Multipart, PartETag};
 use object_store::naming::{encode_key, validate_bucket_name};
-use object_store::object::{Digest, ETag, ObjectMeta};
+use object_store::object::{Digest, ETag, ObjectRef};
 use object_store::store::Store;
 use object_store::streaming::{stream_to_store, Stored};
 use proptest::prelude::*;
@@ -158,7 +158,7 @@ fn rechunk(data: &[u8], chunk: usize) -> Vec<Vec<u8>> {
 /// Stream `bytes` through V2 into the store as a single chunk; hand back what was
 /// stored (digest / etag / size).
 async fn store_bytes(store: &Store, bytes: &[u8]) -> Stored {
-    stream_to_store(store, body(vec![bytes.to_vec()]), u64::MAX)
+    stream_to_store(store, body(vec![bytes.to_vec()]), u64::MAX, None)
         .await
         .expect("storing bytes should succeed")
 }
@@ -199,31 +199,35 @@ fn temp_count(store: &Store) -> usize {
         .unwrap_or(0)
 }
 
-/// An index row pointing `(bucket, key)` at an already-stored blob.
-fn meta_for(bucket: &str, key: &str, stored: &Stored) -> ObjectMeta {
-    ObjectMeta {
-        bucket: bucket.into(),
-        key: key.into(),
-        digest: stored.digest.clone(),
-        size: stored.size,
-        etag: stored.etag.clone(),
-        content_type: "application/octet-stream".into(),
-        last_modified: chrono::Utc::now(),
-    }
+/// Put an index row pointing `(bucket, key)` at an already-stored blob.
+async fn put_stored(index: &Index, bucket: &str, key: &str, stored: &Stored) -> Result<(), AppError> {
+    index
+        .put(
+            bucket,
+            key,
+            stored.digest.clone(),
+            stored.etag.clone(),
+            stored.size,
+            "application/octet-stream",
+        )
+        .await?;
+    Ok(())
 }
 
-/// A synthetic index row (a made-up but well-shaped digest). `put`/`get`/`list`
-/// only move the JSON pointer — they never open a blob — so this is enough.
-fn sample_meta(bucket: &str, key: &str, seed: usize) -> ObjectMeta {
-    ObjectMeta {
-        bucket: bucket.into(),
-        key: key.into(),
-        digest: Digest(format!("{seed:064x}")),
-        size: seed as u64,
-        etag: ETag(format!("etag-{seed}")),
-        content_type: "application/octet-stream".into(),
-        last_modified: chrono::Utc::now(),
-    }
+/// Synthetic put — `put`/`get`/`list` only move the JSON pointer, so a made-up
+/// digest is enough.
+async fn put_sample(index: &Index, bucket: &str, key: &str, seed: usize) -> Result<(), AppError> {
+    index
+        .put(
+            bucket,
+            key,
+            Digest(format!("{seed:064x}")),
+            ETag(format!("etag-{seed}")),
+            seed as u64,
+            "application/octet-stream",
+        )
+        .await?;
+    Ok(())
 }
 
 /// Four distinct contents keyed by a small group id → at most 4 distinct blobs,
@@ -393,7 +397,7 @@ proptest! {
         block_on(async {
             let (_dir, store) = fresh_store();
             let data = chunks.concat();
-            let stored = stream_to_store(&store, body(chunks), u64::MAX)
+            let stored = stream_to_store(&store, body(chunks), u64::MAX, None)
                 .await
                 .map_err(fail)?;
 
@@ -419,13 +423,13 @@ proptest! {
 
             let (_dir, store) = fresh_store();
             prop_assert!(
-                stream_to_store(&store, body(chunks.clone()), total).await.is_ok(),
+                stream_to_store(&store, body(chunks.clone()), total, None).await.is_ok(),
                 "a body exactly at the cap must be accepted"
             );
 
             if total > 0 {
                 let (_dir2, store2) = fresh_store();
-                let outcome = stream_to_store(&store2, body(chunks), total - 1).await;
+                let outcome = stream_to_store(&store2, body(chunks), total - 1, None).await;
                 prop_assert!(
                     matches!(outcome, Err(AppError::EntityTooLarge)),
                     "a body one byte over the cap must be EntityTooLarge"
@@ -448,8 +452,8 @@ proptest! {
     ) {
         block_on(async {
             let (_dir, store) = fresh_store();
-            let a = stream_to_store(&store, body(rechunk(&data, chunk_a)), u64::MAX).await.map_err(fail)?;
-            let b = stream_to_store(&store, body(rechunk(&data, chunk_b)), u64::MAX).await.map_err(fail)?;
+            let a = stream_to_store(&store, body(rechunk(&data, chunk_a)), u64::MAX, None).await.map_err(fail)?;
+            let b = stream_to_store(&store, body(rechunk(&data, chunk_b)), u64::MAX, None).await.map_err(fail)?;
 
             prop_assert_eq!(a.digest.as_str(), b.digest.as_str(), "same bytes → same digest, any chunking");
             prop_assert_eq!(blob_count(&store), 1, "identical content must dedup to a single blob");
@@ -472,18 +476,16 @@ proptest! {
             let (_dir, index) = fresh_index();
             index.create_bucket("photos").await.map_err(fail)?;
 
-            let meta = sample_meta("photos", &key, seed);
-            index.put(meta.clone()).await.map_err(fail)?;
+            put_sample(&index, "photos", &key, seed).await.map_err(fail)?;
 
             let got = index
-                .get("photos", &key)
+                .resolve("photos", &key, ObjectRef::Latest)
                 .await
-                .map_err(fail)?
-                .ok_or_else(|| TestCaseError::fail("key must exist after put"))?;
+                .map_err(fail)?;
 
             prop_assert_eq!(&got.key, &key, "key round-trips");
-            prop_assert_eq!(got.digest, meta.digest, "digest round-trips");
-            prop_assert_eq!(got.size, meta.size, "size round-trips");
+            prop_assert_eq!(got.digest, Digest(format!("{seed:064x}")), "digest round-trips");
+            prop_assert_eq!(got.size, seed as u64, "size round-trips");
             prop_assert_eq!(got.content_type.as_str(), "application/octet-stream", "content type round-trips");
             Ok::<(), TestCaseError>(())
         })?;
@@ -503,7 +505,7 @@ proptest! {
             let (_dir, index) = fresh_index();
             index.create_bucket("photos").await.map_err(fail)?;
             for (i, key) in keys.iter().enumerate() {
-                index.put(sample_meta("photos", key, i)).await.map_err(fail)?;
+                put_sample(&index, "photos", key, i).await.map_err(fail)?;
             }
 
             let mut seen: Vec<String> = Vec::new();
@@ -561,11 +563,14 @@ proptest! {
 
             for (key, (group, _)) in &entries {
                 let stored = store_bytes(&store, &group_bytes(*group)).await;
-                index.put(meta_for("photos", key, &stored)).await.map_err(fail)?;
+                put_stored(&index, "photos", key, &stored).await.map_err(fail)?;
             }
             for (key, (_, delete)) in &entries {
                 if *delete {
-                    index.delete("photos", key).await.map_err(fail)?;
+                    index
+                        .delete("photos", key, ObjectRef::Latest)
+                        .await
+                        .map_err(fail)?;
                 }
             }
 
@@ -577,10 +582,9 @@ proptest! {
                     continue;
                 }
                 let got = index
-                    .get("photos", key)
+                    .resolve("photos", key, ObjectRef::Latest)
                     .await
-                    .map_err(fail)?
-                    .ok_or_else(|| TestCaseError::fail("a surviving key must still resolve"))?;
+                    .map_err(fail)?;
                 let present = store.contains(&got.digest).await;
                 prop_assert!(present, "a live key's blob must survive GC");
                 prop_assert_eq!(got.digest, digest_of(&group_bytes(*group)), "digest matches its group");
@@ -626,22 +630,25 @@ proptest! {
             }
 
             let meta = mp.complete(&upload_id, part_etags).await.map_err(fail)?;
+            let live = meta
+                .latest_live()
+                .ok_or_else(|| TestCaseError::fail("completed object must be live"))?;
 
             let whole = parts.concat();
             prop_assert_eq!(
-                read_blob(&store, &meta.digest).await,
+                read_blob(&store, &live.digest).await,
                 whole.clone(),
                 "parts must concatenate in part-number order, not arrival order"
             );
-            prop_assert_eq!(meta.size, whole.len() as u64, "size is the assembled byte count");
+            prop_assert_eq!(live.size, whole.len() as u64, "size is the assembled byte count");
             let expected_etag = multipart_etag(&parts);
             prop_assert_eq!(
-                meta.etag.as_str(),
+                live.etag.as_str(),
                 expected_etag.as_str(),
                 "the multipart ETag must match S3's -N formula"
             );
             prop_assert!(
-                meta.etag.as_str().ends_with(&format!("-{}", parts.len())),
+                live.etag.as_str().ends_with(&format!("-{}", parts.len())),
                 "the -N suffix must carry the part count"
             );
             Ok::<(), TestCaseError>(())

@@ -26,7 +26,7 @@ use tower_http::trace::TraceLayer;
 use crate::error::AppError;
 use crate::index::Index;
 use crate::naming::validate_key;
-use crate::object::{ETag, ObjectMeta};
+use crate::object::{ETag, ObjectRef, ResolvedObject};
 use crate::streaming::ChecksumSpec;
 use crate::{streaming, AppState};
 
@@ -116,12 +116,16 @@ async fn list_objects(
     let body = json!({
         "name": bucket,
         "prefix": q.prefix.unwrap_or_default(),
-        "objects": listing.objects.iter().map(|o| json!({
-            "key": o.key,
-            "size": o.size,
-            "etag": o.etag.0,
-            "lastModified": o.last_modified,
-        })).collect::<Vec<_>>(),
+        "objects": listing.objects.iter().filter_map(|o| {
+            let live = o.latest_live()?;
+            Some(json!({
+                "key": o.key,
+                "size": live.size,
+                "etag": live.etag.0,
+                "lastModified": live.last_modified,
+                "versionId": live.version_id,
+            }))
+        }).collect::<Vec<_>>(),
         "commonPrefixes": listing.common_prefixes,
         "isTruncated": listing.next_continuation_token.is_some(),
         "nextContinuationToken": listing.next_continuation_token,
@@ -174,21 +178,16 @@ async fn put_object(
 
     validate_key(&key)?;
 
-    let stored =
+    let streaming::Stored { digest, etag, size } =
         streaming::stream_to_store(&state.store, stream, state.max_object_size, checksum_algo)
             .await?;
-    let meta = ObjectMeta {
-        bucket,
-        key,
-        digest: stored.digest,
-        size: stored.size,
-        etag: stored.etag.clone(),
-        content_type,
-        last_modified: Utc::now(),
-    };
-    state.index.put(meta).await?;
-    span.record(SIZE_KEY, stored.size);
-    Ok((StatusCode::OK, [(header::ETAG, stored.etag.0)]).into_response())
+
+    state
+        .index
+        .put(&bucket, &key, digest, etag.clone(), size, content_type)
+        .await?;
+    span.record(SIZE_KEY, size);
+    Ok((StatusCode::OK, [(header::ETAG, etag.0)]).into_response())
 }
 
 /// `GET /{bucket}/{key}` — stream an object back (V2). Fully wired: it looks up
@@ -211,11 +210,13 @@ async fn put_object(
 async fn get_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(q): Query<GetQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let span = make_span(&bucket, &key);
+    let object_ref = ObjectRef::from_query(q.version_id);
 
-    let meta = require_object(&state.index, &bucket, &key, &span).await?;
+    let meta = require_object(&state.index, &bucket, &key, object_ref, &span).await?;
     if let Some(response) = check_etag_present(&headers, &meta.etag)? {
         return Ok(response);
     }
@@ -226,34 +227,7 @@ async fn get_object(
             .to_str()
             .map_err(|_| invalid_err("Range header is not valid UTF-8"))?;
 
-        let Some((unit, bounds)) = range.split_once('=') else {
-            return Err(invalid_err(format!(
-                "Range header must be '<unit>=<start>-<end>', got {range:?}"
-            )));
-        };
-        if unit != "bytes" {
-            return Err(invalid_err(format!(
-                "Range unit must be 'bytes', got {unit:?}"
-            )));
-        }
-
-        let Some((start_str, end_str)) = bounds.split_once('-') else {
-            return Err(invalid_err(format!(
-                "Range bounds must be '<start>-<end>', got {bounds:?}"
-            )));
-        };
-
-        let start = start_str.parse::<u64>().map_err(|_| {
-            invalid_err(format!(
-                "Range start must be a non-negative integer, got {start_str:?}"
-            ))
-        })?;
-        let end = end_str.parse::<u64>().map_err(|_| {
-            invalid_err(format!(
-                "Range end must be a non-negative integer, got {end_str:?}"
-            ))
-        })?;
-        (start, end)
+        validate_range(range)?
     } else {
         (0, meta.size.saturating_sub(1))
     };
@@ -297,6 +271,45 @@ async fn get_object(
     Ok(response)
 }
 
+/// Parse an HTTP `Range` header value into inclusive `(start, end)` byte
+/// offsets.
+///
+/// Accepts only the form S3/`GetObject` needs here: `bytes=<start>-<end>`,
+/// with both ends required (no open-ended `bytes=N-` / `bytes=-N` suffixes).
+/// The unit must be `bytes`; anything else is [`AppError::InvalidRequest`].
+/// Bounds are not checked against object size — [`crate::store::Store::open_blob_range`]
+/// rejects an out-of-range slice after the blob is known.
+fn validate_range(range: &str) -> Result<(u64, u64), AppError> {
+    let Some((unit, bounds)) = range.split_once('=') else {
+        return Err(invalid_err(format!(
+            "Range header must be '<unit>=<start>-<end>', got {range:?}"
+        )));
+    };
+    if unit != "bytes" {
+        return Err(invalid_err(format!(
+            "Range unit must be 'bytes', got {unit:?}"
+        )));
+    }
+
+    let Some((start_str, end_str)) = bounds.split_once('-') else {
+        return Err(invalid_err(format!(
+            "Range bounds must be '<start>-<end>', got {bounds:?}"
+        )));
+    };
+
+    let start = start_str.parse::<u64>().map_err(|_| {
+        invalid_err(format!(
+            "Range start must be a non-negative integer, got {start_str:?}"
+        ))
+    })?;
+    let end = end_str.parse::<u64>().map_err(|_| {
+        invalid_err(format!(
+            "Range end must be a non-negative integer, got {end_str:?}"
+        ))
+    })?;
+    Ok((start, end))
+}
+
 /// `HEAD /{bucket}/{key}` — the object's metadata headers with **no body**
 /// (S3 `HeadObject`). Same lookup and conditional-request handling as GET, but it
 /// deliberately never opens the blob: HEAD exists precisely so a client can read
@@ -313,10 +326,12 @@ async fn get_object(
 async fn head_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(q): Query<GetQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let span = make_span(&bucket, &key);
-    let meta = require_object(&state.index, &bucket, &key, &span).await?;
+    let object_ref = ObjectRef::from_query(q.version_id);
+    let meta = require_object(&state.index, &bucket, &key, object_ref, &span).await?;
 
     if let Some(resp) = check_etag_present(&headers, &meta.etag)? {
         return Ok(resp);
@@ -336,11 +351,13 @@ async fn head_object(
 }
 
 /// Query params on `DELETE /{bucket}/{key}`; `?uploadId` switches delete to
-/// AbortMultipartUpload.
+/// AbortMultipartUpload. Optional `versionId` deletes one historical version.
 #[derive(Debug, Deserialize)]
 struct DeleteQuery {
     #[serde(rename = "uploadId")]
     upload_id: Option<String>,
+    #[serde(rename = "versionId")]
+    version_id: Option<u64>,
 }
 
 /// `DELETE /{bucket}/{key}` — delete an object (V3), OR abort a multipart
@@ -371,10 +388,11 @@ async fn delete_object(
         state.multipart.abort(upload_id).await?;
         return Ok(StatusCode::NO_CONTENT);
     }
-    if let Some(meta) = state.index.get(&bucket, &key).await? {
+    let object_ref = ObjectRef::from_query(q.version_id);
+    if let Ok(meta) = state.index.resolve(&bucket, &key, object_ref).await {
         span.record(SIZE_KEY, meta.size);
     }
-    state.index.delete(&bucket, &key).await?;
+    state.index.delete(&bucket, &key, object_ref).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -418,10 +436,12 @@ async fn post_object(
         let _ = &body;
         let parts = Vec::new();
         let meta = state.multipart.complete(upload_id, parts).await?;
+        let live = meta.latest_live().ok_or(AppError::NoSuchKey)?;
         return Ok(Json(json!({
             BUCKET_KEY: meta.bucket,
             KEY: meta.key,
-            "etag": meta.etag.0,
+            "etag": live.etag.0,
+            "versionId": live.version_id,
         }))
         .into_response());
     }
@@ -462,14 +482,21 @@ async fn require_object(
     index: &Index,
     bucket: &str,
     key: &str,
+    object_ref: ObjectRef,
     span: &tracing::Span,
-) -> Result<ObjectMeta, AppError> {
-    let meta = index.get(bucket, key).await?.ok_or(AppError::NoSuchKey)?;
+) -> Result<ResolvedObject, AppError> {
+    let meta = index.resolve(bucket, key, object_ref).await?;
     span.record(SIZE_KEY, meta.size);
     Ok(meta)
 }
 
-/// Returns `304 Not Modified` when the request's `If-None-Match` matches `etag`.
+/// Conditional GET/HEAD helper for `If-None-Match`.
+///
+/// Returns `Some(304 Not Modified)` when the request's `If-None-Match` value
+/// equals the object's [`ETag`] — the client already has the current bytes and
+/// needs no body. Returns `Ok(None)` when the header is absent or does not
+/// match, so the caller proceeds with a normal response. Non-UTF-8 header
+/// values are [`AppError::InvalidRequest`].
 fn check_etag_present(headers: &HeaderMap, etag: &ETag) -> Result<Option<Response>, AppError> {
     let Some(header_value) = headers.get(header::IF_NONE_MATCH) else {
         return Ok(None);
@@ -514,4 +541,12 @@ struct ListQuery {
     continuation_token: Option<String>,
     #[serde(rename = "max-keys")]
     max_keys: Option<usize>,
+}
+
+/// Query params on `GET` / `HEAD /{bucket}/{key}` — optional `versionId` pins a
+/// historical version; absent means latest.
+#[derive(Debug, Deserialize)]
+struct GetQuery {
+    #[serde(rename = "versionId")]
+    version_id: Option<u64>,
 }
