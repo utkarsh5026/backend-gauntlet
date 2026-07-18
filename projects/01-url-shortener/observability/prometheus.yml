@@ -1,0 +1,20 @@
+# Prometheus scrape config for the URL shortener.
+#
+# Prometheus runs in a container (see docker-compose.yml) but the app runs on the
+# HOST via `cargo run` — so it reaches the app through `host.docker.internal`,
+# which the compose file maps to the host gateway. If you ever run the app itself
+# in a container on this compose network, change the target to `<service>:8080`.
+#
+# `scrape_interval: 5s` means Prometheus polls /metrics 12x/min; that cadence is
+# what lets `rate()` turn a monotonic counter into requests-per-second.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: url-shortener
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8080"] # app's PORT (see .env); change if you move it
+        labels:
+          service: url-shortener
