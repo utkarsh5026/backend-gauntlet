@@ -27,17 +27,20 @@ jobs:
           # Need the default branch tip so the commit can push cleanly.
           fetch-depth: 0
 
-      - name: Generate status dashboard into README
+      - name: Install screenshot deps
+        run: pip install -r tools/requirements.txt
+
+      - name: Generate status dashboard screenshot into README
         run: make status-readme
 
       - name: Commit and push if changed
         run: |
-          if git diff --quiet -- README.md; then
+          if git diff --quiet -- README.md assets/status-dashboard.svg; then
             echo "README progress dashboard already up to date"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
+          git add README.md assets/status-dashboard.svg
           git commit -m "docs: refresh README progress dashboard [skip ci]"
           git push

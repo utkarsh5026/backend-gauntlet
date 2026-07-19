@@ -9,7 +9,7 @@ status: ## Progress dashboard across all projects (pass NN to drill in: make sta
 	@python3 tools/status.py $(NN)
 
 .PHONY: status-readme
-status-readme: ## Refresh the README.md progress block from `make status`
+status-readme: ## Render make status → assets/status-dashboard.svg and splice into README.md
 	@python3 tools/update_readme_status.py
 
 .PHONY: trophies
