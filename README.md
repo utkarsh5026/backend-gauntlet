@@ -83,7 +83,7 @@ image on every push to `master`.
 
 <!-- status-dashboard:start -->
 <p align="center">
-  <img src="assets/status-dashboard.svg?h=7171d90e80e7" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
+  <img src="assets/status-dashboard.svg?h=a8909e462fa3" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
 </p>
 <!-- status-dashboard:end -->
 

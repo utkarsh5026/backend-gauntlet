@@ -93,6 +93,15 @@ def status_ansi() -> str:
     return out.replace("\r\n", "\n").replace("\r", "\n").strip("\n") + "\n"
 
 
+def _dashboard_width(ansi: str) -> int:
+    """Widest visible line + a little gutter (ANSI codes stripped)."""
+    import re
+
+    plain = re.compile(r"\x1b\[[0-9;]*m")
+    widths = (len(plain.sub("", line)) for line in ansi.splitlines())
+    return max(widths, default=80) + 4
+
+
 def render_svg(ansi: str, dest: Path) -> None:
     """Paint the ANSI dashboard into a Rich terminal SVG screenshot."""
     import io
@@ -107,14 +116,16 @@ def render_svg(ansi: str, dest: Path) -> None:
             "pip install -r tools/requirements.txt"
         ) from e
 
-    # Wide enough for `verticals` / `checklist` headers; file=StringIO keeps
-    # the render quiet (record=True still captures what would have been printed).
-    # soft_wrap=True is load-bearing: Rich's default word-wrap breaks at the
-    # padding spaces before the checklist column, shoving `N/M` onto the next
-    # row even when the line is well under `width`.
+    # Size the virtual terminal to the dashboard. Rich only honors `width`
+    # when `height` is also set (otherwise it falls back to 80 cols and the
+    # checklist column gets clipped mid-word — "che…" / "13/"). file=StringIO
+    # keeps the render quiet; record=True still captures for save_svg.
+    width = _dashboard_width(ansi)
+    height = max(40, ansi.count("\n") + 4)
     console = Console(
         record=True,
-        width=120,
+        width=width,
+        height=height,
         force_terminal=True,
         color_system="truecolor",
         highlight=False,
