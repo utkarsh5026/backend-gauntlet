@@ -54,16 +54,30 @@ hyper = "1"
 # pooled upstream client that reuses keep-alive connections (V1), plus the Tokio
 # executor/IO glue hyper 1.x factored out of core. `http-body-util` supplies the body
 # combinators used to relay a streamed request/response upstream without buffering.
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+hyper-util = { version = "0.1", features = [
+    "client",
+    "client-legacy",
+    "http1",
+    "http2",
+    "tokio",
+] }
 http-body-util = "0.1"
 # Project 03 (pub/sub) needs Stream/Sink combinators to drive the split halves
 # of an axum WebSocket. `futures-util` is the lightweight half of `futures`.
 futures-util = "0.3"
+# Project 03's hub (V1) and presence registry (V3) lock a shared `HashMap` from
+# many tasks at once. `parking_lot`'s `Mutex`/`RwLock` drop std's poisoning (one
+# panicking holder doesn't taint the lock for every other subscriber/publisher)
+# and are smaller/faster — no `Result`/`.unwrap()` at each `lock()`/`read()`.
+parking_lot = "0.12"
 # Project 06 (object store) streams request/response bodies chunk by chunk.
 # `bytes` is the zero-copy chunk type; `tokio-util`'s `ReaderStream` turns a
 # blob file (AsyncRead) into a response Body without buffering it in RAM.
+# `async-compression` is the cold-tier path: stream hot bytes through zstd into
+# `cold/<h>.zst` (and the reverse decode on GET) without buffering the object.
 bytes = "1"
 tokio-util = { version = "0.7", features = ["io"] }
+async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 # Project 05 (metrics pipeline) streams closed rollup windows to SSE clients.
 # `tokio-stream`'s `BroadcastStream` (the "sync" feature) bridges a broadcast
 # receiver into the `Stream` axum's SSE response wants.
@@ -88,7 +102,13 @@ tonic-prost-build = "0.14"
 protoc-bin-vendored = "3"
 
 # --- data ---
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "postgres",
+    "macros",
+    "chrono",
+    "uuid",
+] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # --- serde / errors / time ---
@@ -106,6 +126,12 @@ url = "2"
 sha2 = "0.10"
 md-5 = "0.10"
 hex = "0.4"
+# S3 XML wire format (ListBucketResult, multipart init/complete, Error).
+quick-xml = { version = "0.37", features = ["serialize"] }
+# Arrow's S3 client — aliased in project 06 as `arrow-object-store` so it does
+# not collide with this learning crate's own `object_store` import path.
+# Dev-only interop harness (put/get/list/multipart against a local endpoint).
+arrow-object-store = { package = "object_store", version = "0.12", features = ["aws"] }
 
 # --- randomness (project 07 — distributed cache · project 09 — Raft) ---
 # SWIM gossip probes a *random* peer each round; that randomness is what gives it
@@ -120,7 +146,10 @@ rand = "0.9"
 # with reqwest. `rustls-tls` (not OpenSSL) keeps the workspace free of a system
 # TLS dependency — nodes speak plain HTTP here, but enabling TLS later needs no
 # dep change. `default-features = false` drops the unused blocking client + charset.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 
 # --- TLS / mTLS (project 10 — API gateway, src/tls.rs) ---
 # The gateway terminates TLS from clients and can present a client cert to upstreams
@@ -128,8 +157,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # TcpStream in a TLS session (the acceptor), and `rustls-pemfile` parses PEM cert/key
 # files. Pinned to the `ring` provider (not the default aws-lc-rs) so the workspace
 # builds with no C toolchain — matching reqwest's `rustls-tls` above.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
 rustls-pemfile = "2"
 
 # --- memory-mapped I/O (project 20 — full-text search) ---
@@ -157,7 +195,11 @@ sha1 = "0.10"
 
 # --- observability ---
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
 # `http` gives `common-telemetry` the `Request` type so it can mint one span
 # (with a request id) per HTTP request without depending on axum. Pinned to 1.x
 # to match axum 0.8's re-exported `http`.
