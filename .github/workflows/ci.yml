@@ -37,7 +37,7 @@ jobs:
       frontend_dirs: ${{ steps.resolve.outputs.frontend_dirs }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           # Negations keep dashboard/web-only edits out of the Rust package list.
