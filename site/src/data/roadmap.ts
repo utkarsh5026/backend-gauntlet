@@ -43,6 +43,7 @@ export const tiers: Tier[] = [
         blurb: 'Token bucket + sliding window over gRPC',
         state: 'paused',
         progress: 0,
+        href: '/projects/02',
       },
     ],
   },
@@ -58,6 +59,7 @@ export const tiers: Tier[] = [
         blurb: 'WebSocket fan-out, backpressure',
         state: 'active',
         progress: 17,
+        href: '/projects/03',
       },
       {
         id: '04',
@@ -66,6 +68,7 @@ export const tiers: Tier[] = [
         blurb: 'Durable jobs, retries, DLQ, SKIP LOCKED',
         state: 'active',
         progress: 75,
+        href: '/projects/04',
       },
     ],
   },
@@ -81,6 +84,7 @@ export const tiers: Tier[] = [
         blurb: 'Ingest → ClickHouse → SSE dashboard',
         state: 'not-started',
         progress: 0,
+        href: '/projects/05',
       },
       {
         id: '06',
@@ -89,6 +93,7 @@ export const tiers: Tier[] = [
         blurb: 'Multipart uploads, CAS blobs, streaming',
         state: 'active',
         progress: 94,
+        href: '/projects/06',
       },
       {
         id: '07',
@@ -97,6 +102,7 @@ export const tiers: Tier[] = [
         blurb: 'Consistent hashing, LRU/LFU, gossip',
         state: 'not-started',
         progress: 0,
+        href: '/projects/07',
       },
     ],
   },
@@ -112,6 +118,7 @@ export const tiers: Tier[] = [
         blurb: 'Append-only log, partitions, consumer groups',
         state: 'not-started',
         progress: 0,
+        href: '/projects/08',
       },
       {
         id: '09',
@@ -120,6 +127,7 @@ export const tiers: Tier[] = [
         blurb: 'Leader election, replication, snapshots',
         state: 'not-started',
         progress: 0,
+        href: '/projects/09',
       },
       {
         id: '10',
@@ -128,6 +136,7 @@ export const tiers: Tier[] = [
         blurb: 'Routing, load balancing, circuit breaking, mTLS',
         state: 'not-started',
         progress: 0,
+        href: '/projects/10',
       },
     ],
   },
@@ -143,6 +152,7 @@ export const tiers: Tier[] = [
         blurb: 'fMP4 segmenter, manifests, ABR',
         state: 'not-started',
         progress: 0,
+        href: '/projects/11',
       },
       {
         id: '12',
@@ -151,6 +161,7 @@ export const tiers: Tier[] = [
         blurb: 'Chunked parallel transcode + job DAG',
         state: 'not-started',
         progress: 0,
+        href: '/projects/12',
       },
       {
         id: '13',
@@ -159,6 +170,7 @@ export const tiers: Tier[] = [
         blurb: 'RTMP parse → low-latency HLS',
         state: 'not-started',
         progress: 0,
+        href: '/projects/13',
       },
       {
         id: '14',
@@ -167,6 +179,7 @@ export const tiers: Tier[] = [
         blurb: 'RTP/RTCP, jitter buffer, NACK',
         state: 'not-started',
         progress: 0,
+        href: '/projects/14',
       },
       {
         id: '15',
@@ -175,6 +188,7 @@ export const tiers: Tier[] = [
         blurb: 'Selective forwarding, ICE, simulcast',
         state: 'not-started',
         progress: 0,
+        href: '/projects/15',
       },
     ],
   },
@@ -190,6 +204,7 @@ export const tiers: Tier[] = [
         blurb: 'Ingest → ABR → LL-HLS → chat · k8s',
         state: 'not-started',
         progress: 0,
+        href: '/projects/16',
       },
       {
         id: '17',
@@ -198,6 +213,7 @@ export const tiers: Tier[] = [
         blurb: 'Multi-region SFU federation',
         state: 'not-started',
         progress: 0,
+        href: '/projects/17',
       },
     ],
   },
@@ -213,6 +229,7 @@ export const tiers: Tier[] = [
         blurb: 'Double-entry, idempotency, webhooks',
         state: 'not-started',
         progress: 0,
+        href: '/projects/18',
       },
       {
         id: '19',
@@ -221,6 +238,7 @@ export const tiers: Tier[] = [
         blurb: 'Peer wire, DHT, rarest-first',
         state: 'not-started',
         progress: 0,
+        href: '/projects/19',
       },
       {
         id: '20',
@@ -229,6 +247,7 @@ export const tiers: Tier[] = [
         blurb: 'Inverted index, BM25, shards',
         state: 'not-started',
         progress: 0,
+        href: '/projects/20',
       },
       {
         id: '21',
@@ -237,6 +256,7 @@ export const tiers: Tier[] = [
         blurb: 'Event-sourced replay, durable timers',
         state: 'not-started',
         progress: 0,
+        href: '/projects/21',
       },
       {
         id: '22',
@@ -245,6 +265,7 @@ export const tiers: Tier[] = [
         blurb: 'WAL, SSTables, compaction, RESP',
         state: 'not-started',
         progress: 0,
+        href: '/projects/22',
       },
     ],
   },

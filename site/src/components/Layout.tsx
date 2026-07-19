@@ -5,8 +5,7 @@ import { REPO_URL } from '@/data/roadmap'
 const nav = [
   { to: '/', label: 'Home', end: true },
   { to: '/method', label: 'Method' },
-  { to: '/roadmap', label: 'Roadmap' },
-  { to: '/projects/01', label: 'Project 01' },
+  { to: '/roadmap', label: 'Projects' },
 ]
 
 export function Layout() {
