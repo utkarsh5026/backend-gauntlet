@@ -2177,6 +2177,7 @@ dependencies = [
  "anyhow",
  "async-compression",
  "axum",
+ "base64",
  "bytes",
  "chrono",
  "common-config",

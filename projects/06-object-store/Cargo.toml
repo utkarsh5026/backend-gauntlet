@@ -33,9 +33,11 @@ parking_lot.workspace = true
 
 # Content addressing (V1) names blobs by SHA-256; the S3 ETag (V2/V4) is MD5.
 # `hex` encodes the digests for both the on-disk name and the ETag.
+# `base64` decodes client Content-MD5 / x-amz-checksum-* values for verify.
 sha2.workspace = true
 md-5.workspace = true
 hex.workspace = true
+base64.workspace = true
 
 uuid.workspace = true
 
