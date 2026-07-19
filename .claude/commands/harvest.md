@@ -56,6 +56,8 @@ multi-node / vendor scale), never to keep the list short.
 `tools/status.py` counts every `- [ ]` / `- [x]` in SPEC.md toward the project's
 progress bars. This backlog must **not** be counted, so it uses different markers:
 **`- [~]` = open, `- [✔]` = adopted.** Never use `[ ]`/`[x]` in this section.
+Detail view (`make NN`) shows them under **FROM THE FIELD** as an ungraded
+meter — still excluded from progress bars.
 
 Append it as the **last `## ` section** of SPEC.md (never inside a `### Vn.`
 vertical span):
@@ -64,7 +66,8 @@ vertical span):
 ## 🔬 From the field
 
 <!-- Adoption backlog distilled from RESEARCH.md by /harvest. NOT graded:
-     [~] = open, [✔] = adopted — deliberately unmatched by tools/status.py.
+     [~] = open, [✔] = adopted — not counted toward graded progress;
+     shown under FROM THE FIELD in status detail.
      Tick a box when the idea has actually landed in this project. -->
 
 - [~] … *(→ RESEARCH.md §Part N)*
