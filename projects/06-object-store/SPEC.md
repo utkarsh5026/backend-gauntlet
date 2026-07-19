@@ -346,9 +346,10 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
 - [✔] Property-based tests attack every vertical's invariant with random inputs
   (naming safety, chunking-independent digests, listing/GC laws, the multipart
   ETag) — `tests/property.rs` *(→ RESEARCH.md §Recommendations 5)*
-- [~] Reference-model checking (the ShardStore method): the same random op
+- [✔] Reference-model checking (the ShardStore method): the same random op
   sequence drives the real store and a tiny in-memory model, and their
-  observable state never diverges *(→ RESEARCH.md §Part 2 & 8)*
+  observable state never diverges — `tests/reference_model.rs`
+  *(→ RESEARCH.md §Part 2 & 8)*
 - [~] Continuous scrubbing: a background auditor re-hashes stored blobs; a
   deliberately flipped byte on disk is detected, quarantined, and surfaced as a
   metric before any reader is served the corrupt bytes *(→ RESEARCH.md §Part 4)*

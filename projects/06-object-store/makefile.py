@@ -229,6 +229,32 @@ def web_build() -> None:
     runner.ok(f"built → {WEB_DIR / 'dist'}")
 
 
+@runner.task(
+    "bench-tier",
+    "📊",
+    "Bench",
+    "Hot vs cold tier GET microbench (release; writes bench/results/)",
+)
+def bench_tier() -> None:
+    runner.require("cargo", "Install Rust: https://rustup.rs")
+    runner.step("📊", "hot_vs_cold (release + bench-tools)…")
+    runner.run(
+        [
+            "cargo",
+            "run",
+            "--release",
+            "-p",
+            runner.crate,
+            "--features",
+            "bench-tools",
+            "--bin",
+            "hot_vs_cold",
+        ],
+        cwd=PROJECT_DIR,
+    )
+    runner.ok("see bench/results/ and docs/06-benchmarks.md")
+
+
 @runner.task("smoke", "🔥", "Run", "Hit /healthz on the backend (server must be running)")
 def smoke() -> None:
     runner.require("curl", "Install curl to use this target.")
