@@ -96,6 +96,31 @@
 
 ---
 
+## 🧠 Card 5 — FUSE veneer / Mountpoint *(From the field · optional)*
+
+**The problem.** Object stores speak HTTP (`PUT`/`GET`/`List` + `Range`). Half the tools you want to use — training loaders, `pandas.read_parquet`, random shell scripts — speak files (`open`/`pread`/`readdir`). Rewriting every consumer to sign S3 requests is a non-starter; pretending the bucket is Ext4 is a lie that breaks on rename, mid-file writes, and locking.
+
+**The idea.** Run a **FUSE** daemon: the kernel still receives syscalls on a mount point, but forwards them to userspace. The daemon translates `readdir` → list-with-delimiter, `stat` → HEAD/list metadata, `pread` → **ranged GET**. The bucket stays an object store; the OS only *sees* files. Industry reference: **Mountpoint for Amazon S3** (Rust + FUSE + CRT parallel ranged fetches). Deliberately not full POSIX — fail early rather than fake operations S3 cannot implement efficiently. This project's From-the-field cut is **read-only**: the read path is honest once `Range` works; writes are where object≠file gets dangerous.
+
+**In the wild:** Mountpoint, s3fs, JuiceFS, Alluxio — the "filesystem veneer over object storage" trend for ML/analytics. Same ranged-GET backbone as Parquet footer reads and project 11 VOD seeking.
+
+**You own it when you can explain:**
+- [ ] What FUSE actually moves (syscall handling into userspace) and what it does *not* move (durability still lives in the object store).
+- [ ] The translation table: `readdir` / `getattr` / `pread` → List / Head / ranged Get — and why `pwrite` mid-object has no honest mapping.
+- [ ] Why ranged GETs are load-bearing: without `Range`, every seek downloads the whole object.
+- [ ] Mountpoint's three tenets (efficient against S3 APIs; common view with object API; fail explicitly vs silent fake POSIX).
+- [ ] Why a learning veneer starts read-only even though real Mountpoint allows sequential creates.
+
+**Depth probes:**
+- Trace `os.pread(fd, 4096, 1<<30)` on a mounted 5 GB object all the way to `206` + `Content-Range` on this project's `get_object`.
+- Bucket has both key `blue` and `blue/cat.jpg` — what should `ls` show, and why can't the veneer invent a second answer?
+
+**Trap:** treating the mount as a shared POSIX disk (locks, chmod, multi-writer random updates). Last-writer-wins object semantics still rule; the veneer is a disguise, not a new consistency model.
+
+**Teach-yourself doc:** [`docs/03-how-fuse-mountpoint-works.md`](docs/03-how-fuse-mountpoint-works.md).
+
+---
+
 ## ⚡ Rapid-fire round
 
 - [ ] `Range` semantics: `206` + `Content-Range`, open-ended (`bytes=a-`) and suffix (`bytes=-n`) forms, `416` with `bytes */len` — and why video seeking depends on them.
@@ -108,5 +133,5 @@
 ## 🔗 Connects to
 
 - The temp→fsync→rename discipline returns in project 08 (segment files), project 21 (durable state), and project 22 (SSTables/WAL) — this is where you first earn it.
-- `Range` serving is the delivery backbone of project 11 (VOD streaming).
+- `Range` serving is the delivery backbone of project 11 (VOD streaming) — and of any Mountpoint-style FUSE veneer (Card 5).
 - Content-addressing logic (hash = identity) is project 19's infohash idea in filesystem form.

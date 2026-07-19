@@ -313,7 +313,8 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
 
 - [~] A Mountpoint-style FUSE veneer: the bucket mounts as a read-only
   filesystem whose reads are served by ranged GETs — file API on top, object
-  semantics underneath *(→ RESEARCH.md §Part 7)*
+  semantics underneath *(→ RESEARCH.md §Part 7; teach-yourself:
+  [`docs/03-how-fuse-mountpoint-works.md`](docs/03-how-fuse-mountpoint-works.md))*
 
 ### Storage-engine labs
 
