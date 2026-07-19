@@ -209,7 +209,7 @@ http = "1"
 # renders the registry for a `/metrics` scrape. `default-features = false` drops
 # its bundled HTTP listener — we serve `/metrics` from our own axum router.
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.17", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
 # --- config ---
 dotenvy = "0.15"
