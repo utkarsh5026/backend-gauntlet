@@ -1,14 +1,13 @@
 //! A single application error type that turns itself into an HTTP response.
 //!
 //! The variants mirror the S3 error vocabulary (`NoSuchKey`, `NoSuchBucket`, …)
-//! so the mapping to status codes is direct. Real S3 serialises errors as an XML
-//! `<Error><Code>…</Code></Error>` body — we emit JSON for now; switching to the
-//! S3 XML shape is part of the "wire format" horizontal item (see SPEC).
+//! so the mapping to status codes is direct. Responses are the S3 XML
+//! `<Error><Code>…</Code><Message>…</Message></Error>` envelope.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde_json::json;
+
+use crate::s3_xml::{error_body, error_code, xml_response};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -78,6 +77,7 @@ impl IntoResponse for AppError {
             self.to_string()
         };
 
-        (status, Json(json!({ "error": client_msg }))).into_response()
+        let code = error_code(&self);
+        xml_response(status, error_body(code, &client_msg))
     }
 }

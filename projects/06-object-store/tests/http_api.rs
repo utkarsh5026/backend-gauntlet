@@ -9,9 +9,9 @@
 //!
 //! Scope: V1 (content-addressed store), V2 (streaming PUT/GET + size cap), and
 //! V3 (bucket namespace, prefix/delimiter listing, pagination), plus the
-//! versioning surface (`?versionId=` on GET/HEAD/DELETE, `versionId` on list).
+//! versioning surface (`?versionId=` on GET/HEAD/DELETE).
 //! The V4 multipart verbs (`?uploads`, `?uploadId&partNumber`) are deliberately
-//! NOT exercised here — those belong to a `/quest`.
+//! NOT exercised here — those belong to a `/quest` / the Arrow interop harness.
 
 use axum::body::Body;
 use axum::http::header::{
@@ -22,8 +22,8 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use md5::Md5;
+use object_store::s3_xml::{parse_error, parse_list_bucket, ParsedListBucket};
 use object_store::{routes, AppState, DEFAULT_MAX_OBJECT_SIZE};
-use serde_json::Value;
 use sha2::Digest as _;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -44,9 +44,23 @@ struct Resp {
 }
 
 impl Resp {
-    /// Parse the body as JSON (list responses, error envelopes).
-    fn json(&self) -> Value {
-        serde_json::from_slice(&self.body).expect("response body should be valid JSON")
+    /// Parse a S3 `<Error>` XML body and return its `Message`.
+    fn error_message(&self) -> String {
+        parse_error(&self.body)
+            .expect("response body should be valid Error XML")
+            .message
+    }
+
+    /// Parse a S3 `<Error>` XML body and return its `Code`.
+    fn error_code(&self) -> String {
+        parse_error(&self.body)
+            .expect("response body should be valid Error XML")
+            .code
+    }
+
+    /// Parse a `ListBucketResult` XML body.
+    fn list(&self) -> ParsedListBucket {
+        parse_list_bucket(&self.body).expect("response body should be ListBucketResult XML")
     }
 
     fn header(&self, name: axum::http::HeaderName) -> Option<String> {
@@ -382,10 +396,7 @@ async fn range_get_past_end_of_object_is_400() {
     // end=100 is well past the last byte (offset 9) → open_blob_range rejects it.
     let get = app.get_object_range(bucket, key, "bytes=0-100").await;
     assert_eq!(get.status, StatusCode::BAD_REQUEST);
-    assert!(get.json()["error"]
-        .as_str()
-        .unwrap()
-        .contains("invalid range"));
+    assert!(get.error_message().contains("invalid range"));
 }
 
 #[tokio::test]
@@ -641,7 +652,8 @@ async fn put_if_match_with_stale_etag_is_412_and_keeps_bytes() {
         .put_object_if_match(bucket, key, "text/plain", b"lost update", Some(&etag))
         .await;
     assert_eq!(lost.status, StatusCode::PRECONDITION_FAILED);
-    assert_eq!(lost.json()["error"], "precondition failed");
+    assert_eq!(lost.error_code(), "PreconditionFailed");
+    assert_eq!(lost.error_message(), "precondition failed");
 
     let get = app.get_object(bucket, key).await;
     assert_eq!(
@@ -709,7 +721,8 @@ async fn get_unknown_version_id_is_404() {
 
     let get = app.get_object_at(bucket, key, Some(99)).await;
     assert_eq!(get.status, StatusCode::NOT_FOUND);
-    assert_eq!(get.json()["error"], "no such key");
+    assert_eq!(get.error_code(), "NoSuchKey");
+    assert_eq!(get.error_message(), "no such key");
 }
 
 #[tokio::test]
@@ -783,7 +796,8 @@ async fn delete_by_version_id_of_unknown_version_is_404() {
 
     let del = app.delete_object_at(bucket, key, Some(99)).await;
     assert_eq!(del.status, StatusCode::NOT_FOUND);
-    assert_eq!(del.json()["error"], "no such key");
+    assert_eq!(del.error_code(), "NoSuchKey");
+    assert_eq!(del.error_message(), "no such key");
 
     // The live object is untouched.
     assert_eq!(
@@ -794,7 +808,7 @@ async fn delete_by_version_id_of_unknown_version_is_404() {
 }
 
 #[tokio::test]
-async fn list_includes_latest_version_id() {
+async fn list_includes_latest_object_etag() {
     let app = TestApp::new();
     let bucket = "docs";
     let key = "readme";
@@ -805,18 +819,22 @@ async fn list_includes_latest_version_id() {
     let resp = app.list(bucket, "").await;
     assert_eq!(resp.status, StatusCode::OK);
 
-    let body = resp.json();
-    let objects = body["objects"].as_array().expect("objects is an array");
-    assert_eq!(objects.len(), 1);
-    assert_eq!(objects[0]["key"], key);
+    let listing = resp.list();
+    assert_eq!(listing.contents.len(), 1);
+    assert_eq!(listing.contents[0].key, key);
+    // S3 XML quotes ETags; strip for comparison with our hex form.
+    let listed_etag = listing.contents[0].etag.trim_matches('"');
     assert_eq!(
-        objects[0]["versionId"], 2,
-        "list must expose the current (latest) version id"
-    );
-    assert_eq!(
-        objects[0]["etag"],
+        listed_etag,
         expected_single_put_etag(b"v2"),
         "list etag must be the latest version's"
+    );
+    // Version id lives on GET/HEAD (`?versionId=`), not in the standard
+    // ListBucketResult Contents row.
+    assert_eq!(
+        &app.get_object_at(bucket, key, Some(2)).await.body[..],
+        b"v2",
+        "latest live version after two PUTs is version 2"
     );
 }
 
@@ -828,7 +846,8 @@ async fn get_missing_key_is_404() {
 
     let get = app.get_object(bucket, "does-not-exist.jpg").await;
     assert_eq!(get.status, StatusCode::NOT_FOUND);
-    assert_eq!(get.json()["error"], "no such key");
+    assert_eq!(get.error_code(), "NoSuchKey");
+    assert_eq!(get.error_message(), "no such key");
 }
 
 #[tokio::test]
@@ -839,7 +858,8 @@ async fn create_duplicate_bucket_is_409() {
 
     let again = app.create_bucket(bucket).await;
     assert_eq!(again.status, StatusCode::CONFLICT);
-    assert_eq!(again.json()["error"], "bucket already exists");
+    assert_eq!(again.error_code(), "BucketAlreadyExists");
+    assert_eq!(again.error_message(), "bucket already exists");
 }
 
 #[tokio::test]
@@ -849,10 +869,7 @@ async fn create_bucket_with_illegal_name_is_400() {
     let resp = app.create_bucket(bucket).await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST);
     assert!(
-        resp.json()["error"]
-            .as_str()
-            .unwrap()
-            .contains("bucket name"),
+        resp.error_message().contains("bucket name"),
         "the 400 body should explain the naming rule it broke"
     );
 }
@@ -879,10 +896,7 @@ async fn put_with_an_over_long_key_is_400_and_writes_no_blob() {
         .await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST);
     assert!(
-        resp.json()["error"]
-            .as_str()
-            .unwrap()
-            .contains("object key"),
+        resp.error_message().contains("object key"),
         "the 400 body should explain the key-length rule it broke"
     );
 
@@ -943,7 +957,8 @@ async fn oversize_put_is_rejected_413() {
         .put_object(bucket, key, "application/octet-stream", &too_big)
         .await;
     assert_eq!(resp.status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(resp.json()["error"], "entity too large");
+    assert_eq!(resp.error_code(), "EntityTooLarge");
+    assert_eq!(resp.error_message(), "entity too large");
 
     assert_eq!(
         app.committed_blob_count(),
@@ -1000,21 +1015,11 @@ async fn two_keys_with_identical_bytes_share_one_blob() {
 }
 
 fn object_keys(resp: &Resp) -> Vec<String> {
-    resp.json()["objects"]
-        .as_array()
-        .expect("objects is an array")
-        .iter()
-        .map(|o| o["key"].as_str().unwrap().to_string())
-        .collect()
+    resp.list().object_keys()
 }
 
 fn common_prefixes(resp: &Resp) -> Vec<String> {
-    resp.json()["commonPrefixes"]
-        .as_array()
-        .expect("commonPrefixes is an array")
-        .iter()
-        .map(|p| p.as_str().unwrap().to_string())
-        .collect()
+    resp.list().common_prefix_strings()
 }
 
 async fn seed(app: &TestApp, bucket: &str, keys: &[&str]) {
@@ -1083,14 +1088,11 @@ async fn list_paginates_with_max_keys_and_continuation_token() {
         assert!(page.len() <= 3, "no page may exceed max-keys");
         seen.extend(page);
 
-        match resp.json()["nextContinuationToken"].as_str() {
+        let listing = resp.list();
+        match listing.next_continuation_token.as_deref() {
             Some(t) => token = Some(t.to_string()),
             None => {
-                assert_eq!(
-                    resp.json()["isTruncated"],
-                    false,
-                    "last page is not truncated"
-                );
+                assert!(!listing.is_truncated, "last page is not truncated");
                 break;
             }
         }
@@ -1116,7 +1118,7 @@ async fn list_empty_bucket_returns_no_objects() {
         object_keys(&resp).is_empty(),
         "a fresh bucket lists no objects"
     );
-    assert_eq!(resp.json()["isTruncated"], false);
+    assert!(!resp.list().is_truncated);
 }
 
 #[tokio::test]

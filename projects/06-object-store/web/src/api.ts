@@ -7,7 +7,7 @@
 //
 // The endpoints map 1:1 onto src/routes.rs:
 //   PUT    /{bucket}                                   create bucket
-//   GET    /{bucket}?prefix&delimiter&max-keys&…       ListObjectsV2 (JSON)
+//   GET    /{bucket}?prefix&delimiter&max-keys&…       ListObjectsV2 (XML)
 //   PUT    /{bucket}/{key}                             single-shot object PUT (V2)
 //   GET    /{bucket}/{key}                             download
 //   DELETE /{bucket}/{key}                             delete
@@ -73,6 +73,18 @@ export function objectUrl(bucket: string, key: string): string {
   return `${BASE}/${encodeURIComponent(bucket)}/${encodeKey(key)}`
 }
 
+function textOf(doc: Document, tag: string, parent: Element | Document = doc): string {
+  return parent.getElementsByTagName(tag)[0]?.textContent ?? ''
+}
+
+function parseXml(text: string): Document {
+  return new DOMParser().parseFromString(text, 'application/xml')
+}
+
+function unquoteEtag(etag: string): string {
+  return etag.replace(/^"|"$/g, '')
+}
+
 async function expectOk(res: Response): Promise<Response> {
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -120,7 +132,25 @@ export async function listObjects(
   if (opts.maxKeys) q.set('max-keys', String(opts.maxKeys))
   const qs = q.toString()
   const res = await fetchOk('GET', `${BASE}/${encodeURIComponent(bucket)}${qs ? `?${qs}` : ''}`)
-  return res.json()
+  const doc = parseXml(await res.text())
+  const objects: S3Object[] = Array.from(doc.getElementsByTagName('Contents')).map((el) => ({
+    key: textOf(doc, 'Key', el),
+    size: Number(textOf(doc, 'Size', el) || '0'),
+    etag: unquoteEtag(textOf(doc, 'ETag', el)),
+    lastModified: textOf(doc, 'LastModified', el),
+  }))
+  const commonPrefixes = Array.from(doc.getElementsByTagName('CommonPrefixes')).map((el) =>
+    textOf(doc, 'Prefix', el),
+  )
+  const next = textOf(doc, 'NextContinuationToken')
+  return {
+    name: textOf(doc, 'Name') || bucket,
+    prefix: textOf(doc, 'Prefix'),
+    objects,
+    commonPrefixes,
+    isTruncated: textOf(doc, 'IsTruncated') === 'true',
+    nextContinuationToken: next || null,
+  }
 }
 
 export async function deleteObject(bucket: string, key: string): Promise<void> {
@@ -182,7 +212,12 @@ export async function initiateMultipart(
   const res = await fetchOk('POST', `${objectUrl(bucket, key)}?uploads`, {
     headers: { 'Content-Type': contentType },
   })
-  return res.json()
+  const doc = parseXml(await res.text())
+  return {
+    bucket: textOf(doc, 'Bucket') || bucket,
+    key: textOf(doc, 'Key') || key,
+    uploadId: textOf(doc, 'UploadId'),
+  }
 }
 
 export function uploadPart(
@@ -203,14 +238,18 @@ export async function completeMultipart(
   uploadId: string,
   parts: CompletedPart[],
 ): Promise<{ bucket?: string; key?: string; etag?: string }> {
-  // Send the ordered part list as JSON. The backend's route currently ignores
-  // the body (placeholder), but this is the shape the CompleteMultipartUpload
-  // handler is meant to parse once V4/protocol is wired.
+  // Playground sends JSON; the server accepts application/json as a fallback
+  // beside the real S3 CompleteMultipartUpload XML body.
   const res = await fetchOk('POST', `${objectUrl(bucket, key)}?uploadId=${encodeURIComponent(uploadId)}`, {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ parts }),
   })
-  return res.json()
+  const doc = parseXml(await res.text())
+  return {
+    bucket: textOf(doc, 'Bucket') || bucket,
+    key: textOf(doc, 'Key') || key,
+    etag: unquoteEtag(textOf(doc, 'ETag')),
+  }
 }
 
 export async function abortMultipart(bucket: string, key: string, uploadId: string): Promise<void> {

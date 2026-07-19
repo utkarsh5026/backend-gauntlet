@@ -19,7 +19,6 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Deserialize;
-use serde_json::json;
 use tower_http::trace::TraceLayer;
 
 use crate::bucket::BucketMetadata;
@@ -28,6 +27,10 @@ use crate::index::Index;
 use crate::lifecycle::LifecyclePolicy;
 use crate::naming::validate_key;
 use crate::object::{ETag, ObjectRef, ResolvedObject};
+use crate::s3_xml::{
+    complete_multipart_result, initiate_multipart_result, list_bucket_result,
+    parse_complete_multipart_body, xml_response, ListBucketParams, ListContent,
+};
 use crate::streaming::ChecksumSpec;
 use crate::{streaming, AppState};
 
@@ -134,8 +137,7 @@ async fn get_bucket_lifecycle(state: &AppState, bucket: &str) -> Result<Response
 
 /// `GET /{bucket}` — list objects (V3 `ListObjectsV2`).
 ///
-/// TODO(protocol): S3 returns a `<ListBucketResult>` XML body; we emit JSON as a
-/// placeholder. Switch to XML for real `aws s3` / SDK compatibility.
+/// Returns a S3 `<ListBucketResult>` XML body (`Content-Type: application/xml`).
 async fn list_objects(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
@@ -144,35 +146,44 @@ async fn list_objects(
     if q.lifecycle.is_some() {
         return get_bucket_lifecycle(&state, &bucket).await;
     }
+    let prefix = q.prefix.as_deref().unwrap_or("");
+    let max_keys = q.max_keys.unwrap_or(1000);
     let listing = state
         .index
         .list(
             &bucket,
-            q.prefix.as_deref().unwrap_or(""),
+            prefix,
             q.delimiter.as_deref(),
             q.continuation_token.as_deref(),
-            q.max_keys.unwrap_or(1000),
+            max_keys,
         )
         .await?;
 
-    let body = json!({
-        "name": bucket,
-        "prefix": q.prefix.unwrap_or_default(),
-        "objects": listing.objects.iter().filter_map(|o| {
+    let contents: Vec<ListContent> = listing
+        .objects
+        .iter()
+        .filter_map(|o| {
             let live = o.latest_live()?;
-            Some(json!({
-                "key": o.key,
-                "size": live.size,
-                "etag": live.etag.0,
-                "lastModified": live.last_modified,
-                "versionId": live.version_id,
-            }))
-        }).collect::<Vec<_>>(),
-        "commonPrefixes": listing.common_prefixes,
-        "isTruncated": listing.next_continuation_token.is_some(),
-        "nextContinuationToken": listing.next_continuation_token,
+            Some(ListContent {
+                key: o.key.clone(),
+                last_modified: live.last_modified,
+                etag: live.etag.0,
+                size: live.size,
+            })
+        })
+        .collect();
+
+    let body = list_bucket_result(&ListBucketParams {
+        name: &bucket,
+        prefix,
+        delimiter: q.delimiter.as_deref(),
+        max_keys,
+        is_truncated: listing.next_continuation_token.is_some(),
+        next_continuation_token: listing.next_continuation_token.as_deref(),
+        contents: &contents,
+        common_prefixes: &listing.common_prefixes,
     });
-    Ok(Json(body).into_response())
+    Ok(xml_response(StatusCode::OK, body))
 }
 
 /// `PUT /{bucket}/{key}` — store an object, OR upload a multipart part when
@@ -500,30 +511,23 @@ async fn post_object(
             .multipart
             .initiate(&bucket, &key, content_type)
             .await?;
-        let response = json!({
-            BUCKET_KEY: bucket,
-            KEY: key,
-            "uploadId": upload_id,
-        });
-        return Ok(Json(response).into_response());
+        let body = initiate_multipart_result(&bucket, &key, &upload_id);
+        return Ok(xml_response(StatusCode::OK, body));
     }
 
     // CompleteMultipartUpload: POST .../{key}?uploadId=…  (body lists the parts)
     if let Some(upload_id) = q.upload_id.as_deref() {
-        // TODO(V4 / protocol): parse the CompleteMultipartUpload body into the
-        // ordered (part_number, etag) list the client is committing, and pass it
-        // to `complete`. The empty list below is a placeholder so this compiles.
-        let _ = &body;
-        let parts = Vec::new();
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .map_err(|e| AppError::InvalidRequest(format!("failed to read body: {e}")))?;
+        let ct = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+        let parts = parse_complete_multipart_body(ct, &bytes)?;
         let meta = state.multipart.complete(upload_id, parts).await?;
         let live = meta.latest_live().ok_or(AppError::NoSuchKey)?;
-        return Ok(Json(json!({
-            BUCKET_KEY: meta.bucket,
-            KEY: meta.key,
-            "etag": live.etag.0,
-            "versionId": live.version_id,
-        }))
-        .into_response());
+        let body = complete_multipart_result(&meta.bucket, &meta.key, live.etag.as_str());
+        return Ok(xml_response(StatusCode::OK, body));
     }
 
     Err(AppError::InvalidRequest(
@@ -628,6 +632,9 @@ struct ListQuery {
     continuation_token: Option<String>,
     #[serde(rename = "max-keys")]
     max_keys: Option<usize>,
+    /// S3 clients send `list-type=2` for ListObjectsV2; we accept and ignore it.
+    #[serde(rename = "list-type")]
+    _list_type: Option<String>,
     lifecycle: Option<String>,
 }
 

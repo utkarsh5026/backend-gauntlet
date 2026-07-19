@@ -19,6 +19,7 @@ pub mod multipart;
 pub mod naming;
 pub mod object;
 pub mod routes;
+pub mod s3_xml;
 pub mod store;
 pub mod streaming;
 

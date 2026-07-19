@@ -165,9 +165,11 @@ as a concrete, testable definition of protocol compatibility.
   (this is what makes the store usable for video seek / resumable download).
 - [x] **Conditional requests:** `If-None-Match` on the ETag → `304 Not Modified`;
   return `ETag`, `Content-Length`, `Content-Type`, `Last-Modified` on GET/HEAD.
-- [ ] **S3 XML wire format** for `ListBucketResult` and the multipart
+- [x] **S3 XML wire format** for `ListBucketResult` and the multipart
   init/complete bodies (the scaffold returns JSON as a placeholder — switch
   to XML for real `aws s3` / SDK compatibility). Note where it's faked.
+  (Lifecycle config stays JSON; CompleteMultipartUpload also accepts a JSON
+  body from the playground when `Content-Type: application/json`.)
 - [x] **Disable axum's default body limit** (objects stream; the 2 MB default
   would truncate every real upload) and enforce your *own* `MAX_OBJECT_SIZE`
   in the stream loop instead. Graceful shutdown that lets in-flight streams
@@ -307,9 +309,9 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   after a configured age, and a GET of a tiered object still round-trips
   transparently *(→ RESEARCH.md §Part 5)*
 
-- [~] Interop beyond the AWS CLI: the Rust `object_store` crate (Arrow's)
+- [✔] Interop beyond the AWS CLI: the Rust `object_store` crate (Arrow's)
   performs put/get/list/multipart against your endpoint unpatched
-  *(→ RESEARCH.md §Part 6, Recommendations 4)*
+  *(→ RESEARCH.md §Part 6, Recommendations 4; proof: `tests/object_store_interop.rs`)*
 
 - [~] A Mountpoint-style FUSE veneer: the bucket mounts as a read-only
   filesystem whose reads are served by ranged GETs — file API on top, object
