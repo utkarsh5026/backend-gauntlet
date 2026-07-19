@@ -48,7 +48,7 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 # Project 01 uses this for a *taste* of rate limiting; project 02 builds the
 # limiter from scratch. 0.6+ tracks axum 0.8 (matches our axum pin).
-tower_governor = "0.6"
+tower_governor = "0.8"
 hyper = "1"
 # Project 10 (API gateway) is a reverse proxy. `hyper-util`'s `legacy::Client` is the
 # pooled upstream client that reuses keep-alive connections (V1), plus the Tokio
