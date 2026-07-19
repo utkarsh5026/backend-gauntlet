@@ -1,0 +1,51 @@
+# cargo-deny config — CI runs `cargo deny check`.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+]
+
+[advisories]
+version = 2
+# Tracked debt: clear these by bumping workspace pins / migrating call sites.
+# Prefer fixing over growing this list.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; transitive via polonius-the-crab, no drop-in replacement" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; api-gateway still loads PEM via it until rustls-pki-types migration" },
+    { id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch <0.9.20 pulled by rayon/metrics-exporter-prometheus; clear on next lockfile refresh" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41 (workspace pin 0.37 + arrow-object-store); bump pin in a dedicated deps PR" },
+    { id = "RUSTSEC-2026-0195", reason = "same quick-xml <0.41 issue as RUSTSEC-2026-0194" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "Unlicense",
+    "NCSA",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

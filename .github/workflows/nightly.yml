@@ -1,0 +1,126 @@
+name: Nightly
+
+# Full workspace + every frontend. Catches drift that path-filtered PR CI misses.
+
+on:
+  schedule:
+    # 06:17 UTC — avoid the top-of-hour stampede on GitHub-hosted runners.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  SQLX_OFFLINE: "true"
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  rust:
+    name: full workspace
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shortener
+          POSTGRES_PASSWORD: shortener
+          POSTGRES_DB: shortener
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shortener"
+          --health-interval 5s --health-timeout 3s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 5
+    env:
+      DATABASE_URL: postgres://shortener:shortener@localhost:5432/shortener
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gauntlet-nightly
+          cache-all-crates: true
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets
+      - name: install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hakari,nextest
+      - name: workspace-hack up to date
+        run: |
+          cargo hakari generate --diff --quiet
+          cargo hakari manage-deps --dry-run --quiet
+      - name: nextest
+        run: cargo nextest run --workspace --all-targets
+      - name: doc tests
+        # nextest skips doctests; run them on the weekly full suite.
+        run: cargo test --workspace --doc
+
+  supply-chain:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  frontend:
+    name: all bun frontends
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Resolve all frontend dirs
+        id: fe
+        env:
+          CI_FORCE_ALL: "true"
+        run: python3 tools/ci_resolve_packages.py
+      - name: bun install + build
+        env:
+          FRONTEND_DIRS: ${{ steps.fe.outputs.frontend_dirs }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "::group::frontend $dir"
+            if [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; then
+              bun install --frozen-lockfile --cwd "$dir"
+            else
+              bun install --cwd "$dir"
+            fi
+            bun run --cwd "$dir" build
+            echo "::endgroup::"
+          done <<< "$FRONTEND_DIRS"
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -4,18 +4,183 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Force full workspace + all frontends"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # sqlx macros compile from per-project `.sqlx/` caches (.cargo/config.toml).
+  SQLX_OFFLINE: "true"
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust_all: ${{ steps.resolve.outputs.rust_all }}
+      rust_any: ${{ steps.resolve.outputs.rust_any }}
+      packages: ${{ steps.resolve.outputs.packages }}
+      frontend_any: ${{ steps.resolve.outputs.frontend_any }}
+      frontend_dirs: ${{ steps.resolve.outputs.frontend_dirs }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Negations keep dashboard/web-only edits out of the Rust package list.
+          filters: |
+            rust_workspace:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'crates/**'
+              - 'deny.toml'
+              - '.config/hakari.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/nightly.yml'
+              - 'tools/ci_resolve_packages.py'
+            url_shortener:
+              - 'projects/01-url-shortener/**'
+              - '!projects/01-url-shortener/dashboard/**'
+            rate_limiter:
+              - 'projects/02-rate-limiter/**'
+            realtime_pubsub:
+              - 'projects/03-realtime-pubsub/**'
+              - '!projects/03-realtime-pubsub/web/**'
+            job_queue:
+              - 'projects/04-job-queue/**'
+              - '!projects/04-job-queue/web/**'
+            metrics_pipeline:
+              - 'projects/05-metrics-pipeline/**'
+            object_store:
+              - 'projects/06-object-store/**'
+              - '!projects/06-object-store/web/**'
+            distributed_cache:
+              - 'projects/07-distributed-cache/**'
+            message_broker:
+              - 'projects/08-message-broker/**'
+            raft_kv:
+              - 'projects/09-raft-kv/**'
+            api_gateway:
+              - 'projects/10-api-gateway/**'
+            vod_streaming:
+              - 'projects/11-vod-streaming/**'
+              - '!projects/11-vod-streaming/web/**'
+            transcode_pipeline:
+              - 'projects/12-transcode-pipeline/**'
+            live_ingest:
+              - 'projects/13-live-ingest/**'
+              - '!projects/13-live-ingest/web/**'
+            media_transport:
+              - 'projects/14-media-transport/**'
+            webrtc_sfu:
+              - 'projects/15-webrtc-sfu/**'
+              - '!projects/15-webrtc-sfu/web/**'
+            live_platform:
+              - 'projects/16-live-platform/**'
+              - '!projects/16-live-platform/web/**'
+            global_conferencing:
+              - 'projects/17-global-conferencing/**'
+              - '!projects/17-global-conferencing/web/**'
+            ledger_payments:
+              - 'projects/18-ledger-payments-core/**'
+            bittorrent:
+              - 'projects/19-bittorrent/**'
+            full_text_search:
+              - 'projects/20-full-text-search/**'
+              - '!projects/20-full-text-search/web/**'
+            workflow_engine:
+              - 'projects/21-workflow-engine/**'
+            lsm_redis:
+              - 'projects/22-lsm-redis/**'
+            fe_01:
+              - 'projects/01-url-shortener/dashboard/**'
+            fe_03:
+              - 'projects/03-realtime-pubsub/web/**'
+            fe_04:
+              - 'projects/04-job-queue/web/**'
+            fe_06:
+              - 'projects/06-object-store/web/**'
+            fe_11:
+              - 'projects/11-vod-streaming/web/**'
+            fe_13:
+              - 'projects/13-live-ingest/web/**'
+            fe_15:
+              - 'projects/15-webrtc-sfu/web/**'
+            fe_16:
+              - 'projects/16-live-platform/web/**'
+            fe_17:
+              - 'projects/17-global-conferencing/web/**'
+            fe_20:
+              - 'projects/20-full-text-search/web/**'
+      - name: Resolve package / frontend scope
+        id: resolve
+        env:
+          # boolean inputs arrive as strings on workflow_dispatch; empty on PR/push.
+          CI_FORCE_ALL: ${{ github.event.inputs.full == 'true' }}
+          FILTER_rust_workspace: ${{ steps.filter.outputs.rust_workspace }}
+          FILTER_url_shortener: ${{ steps.filter.outputs.url_shortener }}
+          FILTER_rate_limiter: ${{ steps.filter.outputs.rate_limiter }}
+          FILTER_realtime_pubsub: ${{ steps.filter.outputs.realtime_pubsub }}
+          FILTER_job_queue: ${{ steps.filter.outputs.job_queue }}
+          FILTER_metrics_pipeline: ${{ steps.filter.outputs.metrics_pipeline }}
+          FILTER_object_store: ${{ steps.filter.outputs.object_store }}
+          FILTER_distributed_cache: ${{ steps.filter.outputs.distributed_cache }}
+          FILTER_message_broker: ${{ steps.filter.outputs.message_broker }}
+          FILTER_raft_kv: ${{ steps.filter.outputs.raft_kv }}
+          FILTER_api_gateway: ${{ steps.filter.outputs.api_gateway }}
+          FILTER_vod_streaming: ${{ steps.filter.outputs.vod_streaming }}
+          FILTER_transcode_pipeline: ${{ steps.filter.outputs.transcode_pipeline }}
+          FILTER_live_ingest: ${{ steps.filter.outputs.live_ingest }}
+          FILTER_media_transport: ${{ steps.filter.outputs.media_transport }}
+          FILTER_webrtc_sfu: ${{ steps.filter.outputs.webrtc_sfu }}
+          FILTER_live_platform: ${{ steps.filter.outputs.live_platform }}
+          FILTER_global_conferencing: ${{ steps.filter.outputs.global_conferencing }}
+          FILTER_ledger_payments: ${{ steps.filter.outputs.ledger_payments }}
+          FILTER_bittorrent: ${{ steps.filter.outputs.bittorrent }}
+          FILTER_full_text_search: ${{ steps.filter.outputs.full_text_search }}
+          FILTER_workflow_engine: ${{ steps.filter.outputs.workflow_engine }}
+          FILTER_lsm_redis: ${{ steps.filter.outputs.lsm_redis }}
+          FILTER_fe_01: ${{ steps.filter.outputs.fe_01 }}
+          FILTER_fe_03: ${{ steps.filter.outputs.fe_03 }}
+          FILTER_fe_04: ${{ steps.filter.outputs.fe_04 }}
+          FILTER_fe_06: ${{ steps.filter.outputs.fe_06 }}
+          FILTER_fe_11: ${{ steps.filter.outputs.fe_11 }}
+          FILTER_fe_13: ${{ steps.filter.outputs.fe_13 }}
+          FILTER_fe_15: ${{ steps.filter.outputs.fe_15 }}
+          FILTER_fe_16: ${{ steps.filter.outputs.fe_16 }}
+          FILTER_fe_17: ${{ steps.filter.outputs.fe_17 }}
+          FILTER_fe_20: ${{ steps.filter.outputs.fe_20 }}
+        run: python3 tools/ci_resolve_packages.py
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   lint:
-    name: fmt + clippy
+    name: fmt + clippy + hakari
+    needs: changes
+    if: needs.changes.outputs.rust_any == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -23,27 +188,45 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gauntlet
+          cache-all-crates: true
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy
-        # NOTE: not using `-D warnings` yet — the scaffold has intentional
-        # dead-code warnings from unimplemented `todo!()`s. Flip this to
-        # `-- -D warnings` once a project's SPEC is implemented.
-        run: cargo clippy --workspace --all-targets
+        # NOTE: not using `-D warnings` yet — scaffolds have intentional
+        # dead-code warnings from unimplemented `todo!()`s.
+        env:
+          RUST_ALL: ${{ needs.changes.outputs.rust_all }}
+          PACKAGES: ${{ needs.changes.outputs.packages }}
+        run: |
+          if [ "$RUST_ALL" = "true" ]; then
+            cargo clippy --workspace --all-targets
+          else
+            # shellcheck disable=SC2086
+            set -- $PACKAGES
+            args=()
+            for p in "$@"; do args+=(-p "$p"); done
+            cargo clippy "${args[@]}" --all-targets
+          fi
       - name: install cargo-hakari
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-hakari
       - name: workspace-hack up to date
-        # Fails when a dependency change wasn't followed by `cargo hakari generate`,
-        # or a new crate is missing its workspace-hack dep (`cargo hakari manage-deps`).
+        # Always on any Rust change — hakari is workspace-global.
         run: |
           cargo hakari generate --diff --quiet
           cargo hakari manage-deps --dry-run --quiet
 
   test:
-    name: check + test
+    name: nextest
+    needs: changes
+    if: needs.changes.outputs.rust_any == 'true'
     runs-on: ubuntu-latest
+    # Shared Postgres/Redis for sqlx::test / integration tests. Host ports are
+    # the container defaults (not the project-scoped 54NN/63NN used locally).
+    # POSTGRES_USER can create DBs, so any crate's #[sqlx::test] works.
     services:
       postgres:
         image: postgres:16-alpine
@@ -70,12 +253,93 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # sqlx `query!` macros compile from each project's committed per-project
-      # cache (`projects/NN-*/.sqlx/`) with SQLX_OFFLINE=true (set in
-      # .cargo/config.toml) — no DB needed to *build*. Regenerate a project's cache
-      # with `make prepare` (cargo sqlx prepare -- --all-targets) and commit it; the
-      # lint job has no database, so a missing/stale cache fails there.
-      - name: check
-        run: cargo check --workspace --all-targets
+        with:
+          shared-key: gauntlet
+          cache-all-crates: true
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: test
-        run: cargo test --workspace
+        # nextest typechecks as it builds tests — no separate `cargo check`.
+        env:
+          RUST_ALL: ${{ needs.changes.outputs.rust_all }}
+          PACKAGES: ${{ needs.changes.outputs.packages }}
+        run: |
+          if [ "$RUST_ALL" = "true" ]; then
+            cargo nextest run --workspace --all-targets
+          else
+            # shellcheck disable=SC2086
+            set -- $PACKAGES
+            args=()
+            for p in "$@"; do args+=(-p "$p"); done
+            cargo nextest run "${args[@]}" --all-targets
+          fi
+
+  frontend:
+    name: bun frontends
+    needs: changes
+    if: needs.changes.outputs.frontend_any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: bun install + build
+        env:
+          FRONTEND_DIRS: ${{ needs.changes.outputs.frontend_dirs }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "::group::frontend $dir"
+            # Prefer frozen lockfile when bun.lock exists; fall back otherwise
+            # (e.g. 01-url-shortener/dashboard ships package-lock.json only).
+            if [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; then
+              bun install --frozen-lockfile --cwd "$dir"
+            else
+              bun install --cwd "$dir"
+            fi
+            bun run --cwd "$dir" build
+            echo "::endgroup::"
+          done <<< "$FRONTEND_DIRS"
+
+  supply-chain:
+    name: cargo deny
+    needs: changes
+    if: needs.changes.outputs.rust_any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  # Single required-check target: skipped jobs count as OK.
+  ci-ok:
+    name: CI ok
+    if: always()
+    needs: [changes, secrets, lint, test, frontend, supply-chain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate job results
+        env:
+          SECRETS: ${{ needs.secrets.result }}
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          DENY: ${{ needs.supply-chain.result }}
+          CHANGES: ${{ needs.changes.result }}
+        run: |
+          set -euo pipefail
+          ok() { [ "$1" = "success" ] || [ "$1" = "skipped" ]; }
+          echo "changes=$CHANGES secrets=$SECRETS lint=$LINT test=$TEST frontend=$FRONTEND deny=$DENY"
+          [ "$CHANGES" = "success" ]
+          [ "$SECRETS" = "success" ]
+          ok "$LINT"
+          ok "$TEST"
+          ok "$FRONTEND"
+          ok "$DENY"
+          echo "All CI gates passed"
