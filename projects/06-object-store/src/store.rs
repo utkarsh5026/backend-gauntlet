@@ -222,22 +222,14 @@ impl Store {
     ///
     /// Panics if the path produced by [`Self::blob_path`] has no parent.
     pub async fn commit_temp(&self, temp: &Path, digest: &Digest) -> Result<(), AppError> {
-        use tokio::fs as tfs;
         if self.contains(digest).await {
-            tfs::remove_file(temp).await?;
+            tokio::fs::remove_file(temp).await?;
             metrics::counter!(crate::metrics::DEDUP_HITS_TOTAL).increment(1);
             return Ok(());
         }
-        let size = tfs::metadata(temp).await?.len();
-        tfs::File::open(temp).await?.sync_all().await?;
+        let size = tokio::fs::metadata(temp).await?.len();
         let blob_path = self.blob_path(digest);
-        let parent = blob_path
-            .parent()
-            .expect("blob path has a parent directory");
-
-        tfs::create_dir_all(parent).await?;
-        tfs::rename(temp, &blob_path).await?;
-        tfs::File::open(parent).await?.sync_all().await?;
+        crate::durable::publish_temp(temp, &blob_path).await?;
         metrics::gauge!(crate::metrics::BLOB_COUNT).increment(1.0);
         metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).increment(size as f64);
         Ok(())
@@ -319,9 +311,26 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
     use sha2::{Digest as _, Sha256};
     use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
+
+    /// Run one async case on a fresh current-thread runtime (`proptest` bodies are sync).
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime")
+            .block_on(fut)
+    }
+
+    /// Turn any `Debug` error into a `proptest` failure (a shrunk counterexample
+    /// beats a bare `unwrap` panic).
+    fn fail<E: std::fmt::Debug>(e: E) -> TestCaseError {
+        TestCaseError::fail(format!("{e:?}"))
+    }
 
     /// A store rooted in a fresh temp dir, wiped when the `TempDir` drops.
     fn fresh_store() -> (TempDir, Arc<Store>) {
@@ -594,5 +603,174 @@ mod tests {
         store.remove(&digest).await.expect("remove 1");
         store.remove(&digest).await.expect("remove 2");
         assert!(!store.contains(&digest).await);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(40))]
+
+        /// For any bytes: stage → commit_temp makes the blob visible under its
+        /// digest, reads back byte-for-byte, and consumes the temp.
+        #[test]
+        fn prop_commit_temp_round_trips_any_bytes(
+            bytes in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            block_on(async {
+                let (_root, store) = fresh_store();
+                let digest = digest_of(&bytes);
+                let temp = stage_temp(&store, "prop-commit", &bytes).await;
+
+                store.commit_temp(&temp, &digest).await.map_err(fail)?;
+
+                prop_assert!(store.contains(&digest).await, "blob must be visible after commit");
+                let mut file = store.open_blob(&digest).await.map_err(fail)?;
+                let mut read_back = Vec::new();
+                file.read_to_end(&mut read_back).await.map_err(fail)?;
+                prop_assert_eq!(read_back, bytes, "blob must read back byte-for-byte");
+                prop_assert!(
+                    !tokio::fs::try_exists(&temp).await.map_err(fail)?,
+                    "commit must consume the temp file"
+                );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+
+        /// Identical bytes committed twice (different temps) share one on-disk
+        /// blob; the duplicate temp is cleaned up.
+        #[test]
+        fn prop_identical_bytes_dedup_via_commit_temp(
+            bytes in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            block_on(async {
+                let (_root, store) = fresh_store();
+                let digest = digest_of(&bytes);
+
+                let first = stage_temp(&store, "prop-dedup-a", &bytes).await;
+                store.commit_temp(&first, &digest).await.map_err(fail)?;
+                let second = stage_temp(&store, "prop-dedup-b", &bytes).await;
+                store.commit_temp(&second, &digest).await.map_err(fail)?;
+
+                prop_assert!(
+                    !tokio::fs::try_exists(&second).await.map_err(fail)?,
+                    "duplicate temp must be removed on dedup"
+                );
+                prop_assert!(
+                    tokio::fs::try_exists(store.blob_path(&digest))
+                        .await
+                        .map_err(fail)?,
+                    "exactly one blob must remain at the content address"
+                );
+                let stored = tokio::fs::read(store.blob_path(&digest))
+                    .await
+                    .map_err(fail)?;
+                prop_assert_eq!(stored, bytes, "original blob bytes must be untouched");
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+
+        /// A staged-but-uncommitted temp must never appear under the final name
+        /// (crash between write and rename).
+        #[test]
+        fn prop_uncommitted_temp_never_visible(
+            bytes in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            block_on(async {
+                let (_root, store) = fresh_store();
+                let digest = digest_of(&bytes);
+                let temp = stage_temp(&store, "prop-crash", &bytes).await;
+
+                prop_assert!(!store.contains(&digest).await, "uncommitted temp must not be visible");
+                prop_assert!(
+                    matches!(store.open_blob(&digest).await, Err(AppError::NoSuchKey)),
+                    "open_blob must be NoSuchKey before rename"
+                );
+                prop_assert!(
+                    tokio::fs::try_exists(&temp).await.map_err(fail)?,
+                    "the staged temp itself must still exist"
+                );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+
+        /// Inclusive range [start, end] returns exactly bytes[start..=end].
+        #[test]
+        fn prop_open_blob_range_matches_inclusive_slice(
+            bytes in prop::collection::vec(any::<u8>(), 1..256),
+            start_idx in any::<prop::sample::Index>(),
+            end_idx in any::<prop::sample::Index>(),
+        ) {
+            block_on(async {
+                let (_root, store) = fresh_store();
+                let digest = commit_bytes(&store, &bytes).await;
+                let len = bytes.len();
+                let mut start = start_idx.index(len);
+                let mut end = end_idx.index(len);
+                if start > end {
+                    std::mem::swap(&mut start, &mut end);
+                }
+
+                let slice = store
+                    .open_blob_range(&digest, start as u64, end as u64)
+                    .await
+                    .map_err(fail)?;
+                prop_assert_eq!(
+                    read_all(slice).await,
+                    bytes[start..=end].to_vec(),
+                    "range must equal the inclusive slice"
+                );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+
+        /// Invalid bounds (start > end, or end past EOF) are always InvalidRequest.
+        #[test]
+        fn prop_open_blob_range_rejects_invalid_bounds(
+            bytes in prop::collection::vec(any::<u8>(), 1..256),
+            start in 0u64..512,
+            end in 0u64..512,
+        ) {
+            block_on(async {
+                let (_root, store) = fresh_store();
+                let digest = commit_bytes(&store, &bytes).await;
+                let len = bytes.len() as u64;
+
+                // Only assert when the pair is actually invalid for this blob.
+                prop_assume!(start > end || end >= len);
+
+                prop_assert!(
+                    matches!(
+                        store.open_blob_range(&digest, start, end).await,
+                        Err(AppError::InvalidRequest(_))
+                    ),
+                    "invalid bounds must be InvalidRequest (start={start}, end={end}, len={len})"
+                );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+
+        /// remove is idempotent: twice after commit, and once for a never-stored digest.
+        #[test]
+        fn prop_remove_is_idempotent_for_any_blob(
+            bytes in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            block_on(async {
+                let (_root, store) = fresh_store();
+                let digest = digest_of(&bytes);
+                let temp = stage_temp(&store, "prop-remove", &bytes).await;
+                store.commit_temp(&temp, &digest).await.map_err(fail)?;
+
+                store.remove(&digest).await.map_err(fail)?;
+                store.remove(&digest).await.map_err(fail)?;
+
+                prop_assert!(!store.contains(&digest).await, "blob must be gone after remove");
+                prop_assert!(
+                    matches!(store.open_blob(&digest).await, Err(AppError::NoSuchKey)),
+                    "open_blob must be NoSuchKey after remove"
+                );
+
+                let never = digest_of(b"prop-never-stored-sentinel");
+                store.remove(&never).await.map_err(fail)?;
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
     }
 }

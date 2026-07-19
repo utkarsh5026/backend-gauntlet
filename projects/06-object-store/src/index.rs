@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::stream::{self, StreamExt, TryStreamExt};
-use tokio::io::AsyncWriteExt;
 
 use crate::error::AppError;
 use crate::naming::{encode_key, validate_bucket_name, validate_key};
@@ -156,24 +155,17 @@ impl Index {
         Ok(meta)
     }
 
-    /// Persist a fully-built [`ObjectMeta`] (temp→rename). Used by GC tests that
-    /// plant an in-flight `tmp/` entry, and by delete paths that rewrite history.
+    /// Persist a fully-built [`ObjectMeta`] via the durable publish dance.
+    ///
+    /// Stages under the bucket's `tmp/` (so GC's in-flight scan can see the
+    /// digests), then [`crate::durable::atomic_write_json`] writes + publishes.
+    /// Used by GC tests that plant an in-flight `tmp/` entry, and by delete
+    /// paths that rewrite history.
     async fn write_meta(&self, meta: &ObjectMeta) -> Result<(), AppError> {
-        use tokio::fs as tfs;
-
         let path = self.index_path(&meta.bucket, &meta.key)?;
-        let temp_path = self.temp_entry_path(&meta.bucket, &meta.key);
-        let mut temp_guard = TempEntry::new(temp_path.clone());
-
-        tfs::create_dir_all(self.objects_dir(&meta.bucket)).await?;
-        tfs::create_dir_all(self.tmp_dir(&meta.bucket)).await?;
-
-        let bytes = serde_json::to_vec(meta)?;
-        let mut file = tfs::File::create(&temp_path).await?;
-        file.write_all(&bytes).await?;
-        file.sync_all().await?;
-        tfs::rename(&temp_path, &path).await?;
-        temp_guard.disarm();
+        let mut temp = TempEntry::new(self.temp_entry_path(&meta.bucket, &meta.key));
+        crate::durable::atomic_write_json(temp.path(), &path, meta).await?;
+        temp.disarm();
         Ok(())
     }
 
