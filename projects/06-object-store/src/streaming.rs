@@ -6,6 +6,7 @@
 //! memory. Collecting the body into a `Vec<u8>` is the single bug this whole
 //! vertical exists to prevent.
 
+use crate::durable::TempEntry;
 use crate::error::AppError;
 use crate::object::{Digest, ETag};
 use crate::store::Store;
@@ -184,7 +185,7 @@ pub struct Stored {
 /// (content digest) and MD5 (`ETag`) hashers, so memory stays O(1) regardless of
 /// object size — never collect the body into a `Vec<u8>`. Awaiting each file
 /// write is also the backpressure: a fast producer is throttled to disk speed.
-/// The staged temp file is owned by a [`TempEntry`](crate::store::TempEntry)
+/// The staged temp file is owned by a [`TempEntry`](crate::durable::TempEntry)
 /// guard, so any early return below unlinks the half-written file on drop; it is
 /// disarmed only after [`Store::commit_temp`] has durably published the blob.
 ///
@@ -233,7 +234,7 @@ pub async fn stream_to_store<S>(
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Unpin,
 {
-    let mut temp = store.tmp_file("stream");
+    let mut temp = TempEntry::unique_in(store.tmp_dir(), "stream");
     let mut temp_file = tokio::fs::File::create(temp.path()).await?;
     let mut sha_hasher = Sha256::new();
     let mut md5_hasher = md5::Md5::new();

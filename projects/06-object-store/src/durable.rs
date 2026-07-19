@@ -7,6 +7,8 @@
 //! failure. So it lives here once instead of being re-derived per call site.
 //!
 //! Entry points, depending on where the bytes are and who owns the temp:
+//!   - [`TempEntry`] — RAII guard that unlinks a staged temp on drop unless
+//!     [`disarm`](TempEntry::disarm)ed after a successful publish.
 //!   - [`publish_temp`] — the temp file already exists (a blob streamed in, or a
 //!     cold blob just compressed). Publish it under `dest`.
 //!   - [`atomic_write`] / [`atomic_write_json`] — bytes are in memory; the caller
@@ -20,14 +22,79 @@
 //! on the same filesystem as `dest` (the per-bucket `tmp/` dirs already are;
 //! [`atomic_write_sibling`] guarantees it by construction).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::AppError;
-use crate::store::TempEntry;
+
+/// Delete a staged temporary file on drop unless ownership is disarmed.
+///
+/// The pattern is "stage → hash/write → atomically publish". A writer creates
+/// the guard, streams bytes into [`path`](Self::path), and leaves cleanup to
+/// `Drop`: any early `?`-return (oversize, I/O error, validation failure) or a
+/// dropped future unlinks the half-written temp automatically — so no error arm
+/// has to remember to delete it. Once the bytes are durably published (renamed
+/// into their final location) the writer [`disarm`](Self::disarm)s the guard so
+/// the now-durable file survives.
+pub struct TempEntry(Option<PathBuf>);
+
+impl TempEntry {
+    /// Wrap a path in a cleanup guard.
+    ///
+    /// The file it names is removed on drop until
+    /// [`disarm`](Self::disarm) is called — use this for any staging area
+    /// (store `tmp/`, index per-bucket `tmp/`, multipart parts, …).
+    pub fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    /// Create a guarded unique path under `dir` for staging an in-flight write.
+    ///
+    /// `prefix` labels the caller (e.g. `"stream"`, `"multipart"`); uniqueness
+    /// comes from the trailing epoch nanos hex. Callers typically pass
+    /// [`Store::tmp_dir`](crate::store::Store::tmp_dir) so the temp lands on the
+    /// same filesystem as the blob tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the system clock is earlier than the Unix epoch.
+    pub fn unique_in(dir: impl AsRef<Path>, prefix: &str) -> Self {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX epoch")
+            .as_nanos();
+        Self::new(dir.as_ref().join(format!("{prefix}-{id:x}")))
+    }
+
+    /// Return the path where in-flight bytes should be staged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::disarm`] was already called.
+    pub fn path(&self) -> &Path {
+        self.0.as_ref().expect("temp path is not None")
+    }
+
+    /// Give up ownership of the temporary path so [`Drop`] will not delete it.
+    ///
+    /// Called once the file has been durably published (renamed into its
+    /// committed location, or promoted into a staging area) — it is no longer
+    /// garbage, so the guard must not reap it.
+    pub fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TempEntry {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
 
 /// Durably publish an already-written temp file at `dest`.
 ///
@@ -40,8 +107,8 @@ use crate::store::TempEntry;
 ///      durable, so a crash can't rewind `dest` to its old contents.
 ///
 /// Cleanup of `temp` on the error path is the **caller's** job (wrap it in a
-/// [`TempEntry`](crate::store::TempEntry) guard), since only the caller knows
-/// which staging area it came from.
+/// [`TempEntry`] guard), since only the caller knows which staging area it came
+/// from.
 ///
 /// # Panics
 ///
@@ -82,15 +149,11 @@ pub async fn atomic_write(temp: &Path, dest: &Path, bytes: &[u8]) -> Result<(), 
 /// a [`TempEntry`] so any early return unlinks the half-written file.
 pub async fn atomic_write_sibling(dest: &Path, bytes: &[u8]) -> Result<(), AppError> {
     let parent = dest.parent().expect("dest has a parent directory");
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before UNIX epoch")
-        .as_nanos();
     let file_name = dest
         .file_name()
         .expect("dest has a file name")
         .to_string_lossy();
-    let mut temp = TempEntry::new(parent.join(format!("{file_name}.tmp-{nonce:x}")));
+    let mut temp = TempEntry::unique_in(parent, &format!("{file_name}.tmp"));
 
     atomic_write(temp.path(), dest, bytes).await?;
     temp.disarm();

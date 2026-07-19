@@ -11,11 +11,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::durable::TempEntry;
 use crate::error::AppError;
 use crate::index::Index;
 use crate::naming::validate_bucket_name;
 use crate::object::{Digest, ETag, ObjectMeta};
-use crate::store::{Store, TempEntry};
+use crate::store::Store;
 use futures_util::StreamExt;
 use md5::Md5;
 use serde::{Deserialize, Serialize};
@@ -286,7 +287,7 @@ impl Multipart {
 
         let part_count = parts.len();
 
-        let mut temp = self.store.tmp_file("multipart");
+        let mut temp = TempEntry::unique_in(self.store.tmp_dir(), "multipart");
         let mut tmp_file = tfs::File::create(temp.path()).await?;
         let mut sha_hasher = sha2::Sha256::new();
         let mut total_size = 0u64;

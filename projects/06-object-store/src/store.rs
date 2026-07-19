@@ -13,63 +13,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::error::AppError;
 use crate::object::Digest;
-
-/// Delete a staged temporary file on drop unless ownership is disarmed.
-///
-/// The pattern is "stage → hash/write → atomically publish". A writer creates
-/// the guard, streams bytes into [`path`](Self::path), and leaves cleanup to
-/// `Drop`: any early `?`-return (oversize, I/O error, validation failure) or a
-/// dropped future unlinks the half-written temp automatically — so no error arm
-/// has to remember to delete it. Once the bytes are durably published (renamed
-/// into the blob tree by [`commit_temp`](Store::commit_temp), or promoted into a
-/// staging area) the writer [`disarm`](Self::disarm)s the guard so the
-/// now-durable file survives.
-///
-/// [`disarm`]: Self::disarm
-pub struct TempEntry(Option<PathBuf>);
-
-impl TempEntry {
-    /// Wrap a path in a cleanup guard.
-    ///
-    /// The file it names is removed on drop until
-    /// [`disarm`](Self::disarm) is called — use this to guard temps outside the
-    /// store's own `tmp/` (e.g. a multipart part file in its staging area).
-    pub fn new(path: PathBuf) -> Self {
-        Self(Some(path))
-    }
-
-    /// Return the path where in-flight bytes should be staged.
-    ///
-    /// # Panics
-    ///
-    /// Panics if [`Self::disarm`] was already called.
-    pub fn path(&self) -> &Path {
-        self.0.as_ref().expect("temp path is not None")
-    }
-
-    /// Give up ownership of the temporary path so [`Drop`] will not delete it.
-    ///
-    /// Called once the file has been durably published (renamed into its
-    /// committed location, or promoted into a staging area) — it is no longer
-    /// garbage, so the guard must not reap it.
-    pub fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for TempEntry {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
 
 /// Store committed blobs and in-flight writes in separate on-disk trees.
 ///
@@ -132,26 +80,10 @@ impl Store {
     ///
     /// A temp file here
     /// is renamed onto its final `blob_path` only once fully written + fsync'd.
+    /// Pair with [`TempEntry::unique_in`](crate::durable::TempEntry::unique_in)
+    /// to stage a guarded path in this tree.
     pub fn tmp_dir(&self) -> &Path {
         &self.tmp
-    }
-
-    /// Create a guarded unique path for staging an in-flight blob write.
-    ///
-    /// `prefix` labels the caller (e.g. `"stream"`, `"multipart"`); uniqueness
-    /// comes from the trailing epoch nanos hex.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the system clock is earlier than the Unix epoch.
-    pub fn tmp_file(&self, prefix: &str) -> TempEntry {
-        let id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before UNIX epoch")
-            .as_nanos();
-
-        let path = self.tmp.join(format!("{prefix}-{id:x}"));
-        TempEntry::new(path)
     }
 
     /// Map a digest to its sharded on-disk blob path.
