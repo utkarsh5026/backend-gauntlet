@@ -262,6 +262,8 @@ impl ObjectMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::collections::HashSet;
 
     fn live_meta() -> ObjectMeta {
         ObjectMeta::new_live(
@@ -271,6 +273,17 @@ mod tests {
             ETag("etag-a".into()),
             10,
             "image/jpeg".into(),
+        )
+    }
+
+    /// A live payload for `append_live` / `new_live`, keyed by a small seed so
+    /// digests stay distinct across a sequence of overwrites.
+    fn sample_live(seed: u64) -> (Digest, ETag, u64, String) {
+        (
+            Digest(format!("digest-{seed}")),
+            ETag(format!("etag-{seed}")),
+            seed,
+            format!("type/{seed}"),
         )
     }
 
@@ -378,5 +391,278 @@ mod tests {
     fn object_ref_from_query() {
         assert_eq!(ObjectRef::from_query(None), ObjectRef::Latest);
         assert_eq!(ObjectRef::from_query(Some(7)), ObjectRef::Version(7));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// `from_query(None)` is always Latest; any concrete id pins that version.
+        #[test]
+        fn prop_object_ref_from_query(version_id in prop::option::of(any::<VersionId>())) {
+            match version_id {
+                None => prop_assert_eq!(ObjectRef::from_query(None), ObjectRef::Latest),
+                Some(id) => {
+                    prop_assert_eq!(ObjectRef::from_query(Some(id)), ObjectRef::Version(id))
+                }
+            }
+        }
+
+        /// `new_live` seeds a one-version history: id 1 is latest, `next_id` is 2,
+        /// and resolve_live returns the exact payload.
+        #[test]
+        fn prop_new_live_seeds_version_one(
+            bucket in "[a-z0-9-]{3,20}",
+            key in "[a-zA-Z0-9/._-]{1,30}",
+            seed in 0u64..10_000,
+        ) {
+            let (digest, etag, size, content_type) = sample_live(seed);
+            let meta = ObjectMeta::new_live(
+                bucket.clone(),
+                key.clone(),
+                digest.clone(),
+                etag.clone(),
+                size,
+                content_type.clone(),
+            );
+
+            prop_assert_eq!(&meta.bucket, &bucket);
+            prop_assert_eq!(&meta.key, &key);
+            prop_assert_eq!(meta.latest, 1);
+            prop_assert_eq!(meta.next_id, 2);
+            prop_assert_eq!(meta.versions.len(), 1);
+
+            let got = meta.resolve_live(ObjectRef::Latest).expect("latest must be live");
+            prop_assert_eq!(got.version_id, 1);
+            prop_assert_eq!(got.digest, digest);
+            prop_assert_eq!(got.etag, etag);
+            prop_assert_eq!(got.size, size);
+            prop_assert_eq!(got.content_type, content_type);
+        }
+
+        /// Every append flips `latest` to the new id, keeps prior history, and
+        /// never reuses an id — even when some versions were removed mid-sequence.
+        #[test]
+        fn prop_append_ids_are_unique_and_never_reused(
+            appends in 1usize..12,
+            // Which append indices (0-based among the appends after new_live) to
+            // delete before the next append — exercises the next_id monotonicity law.
+            delete_mask in any::<u16>(),
+        ) {
+            let mut meta = ObjectMeta::new_live(
+                "photos".into(),
+                "k".into(),
+                Digest("d0".into()),
+                ETag("e0".into()),
+                0,
+                "application/octet-stream".into(),
+            );
+            let mut seen: HashSet<VersionId> = HashSet::from([1]);
+            let mut issued: Vec<VersionId> = vec![1];
+
+            for i in 0..appends {
+                // Optionally drop an earlier version before appending — the freed
+                // id must never come back.
+                if delete_mask & (1u16 << (i % 16)) != 0 {
+                    if let Some(&victim) = issued.first() {
+                        if meta.versions.len() > 1 {
+                            meta.remove_version(victim);
+                            issued.retain(|&id| id != victim);
+                        }
+                    }
+                }
+
+                let (digest, etag, size, ct) = sample_live((i as u64) + 1);
+                let id = meta.append_live(digest.clone(), etag, size, ct);
+                prop_assert!(
+                    seen.insert(id),
+                    "version id {id} was reused after being issued"
+                );
+                issued.push(id);
+                prop_assert_eq!(meta.latest, id, "append must flip latest to the new id");
+                prop_assert!(
+                    meta.next_id > id,
+                    "next_id must climb past every issued id"
+                );
+
+                let got = meta
+                    .resolve_live(ObjectRef::Version(id))
+                    .expect("just-appended version must resolve live");
+                prop_assert_eq!(got.digest, digest);
+                prop_assert_eq!(got.version_id, id);
+            }
+
+            // Every surviving version id is unique and present exactly once.
+            let ids: Vec<_> = meta.versions.iter().map(|v| v.id).collect();
+            let unique: HashSet<_> = ids.iter().copied().collect();
+            prop_assert_eq!(ids.len(), unique.len(), "history must never contain duplicate ids");
+        }
+
+        /// `resolve(Version(id))` finds that entry when present; missing ids and
+        /// delete markers both make `resolve_live` return NoSuchKey.
+        #[test]
+        fn prop_resolve_live_rejects_missing_and_delete_markers(
+            seed in 0u64..1_000,
+            ghost in 100u64..1_000,
+        ) {
+            let (digest, etag, size, ct) = sample_live(seed);
+            let mut meta = ObjectMeta::new_live(
+                "b".into(),
+                "k".into(),
+                digest,
+                etag,
+                size,
+                ct,
+            );
+
+            // Pin a historical live version, then overwrite so Latest ≠ Version(1).
+            meta.append_live(
+                Digest("d2".into()),
+                ETag("e2".into()),
+                2,
+                "text/plain".into(),
+            );
+            prop_assert!(meta.resolve_live(ObjectRef::Version(1)).is_ok());
+            prop_assert!(
+                matches!(
+                    meta.resolve_live(ObjectRef::Version(ghost)),
+                    Err(AppError::NoSuchKey)
+                ),
+                "a never-issued id must be NoSuchKey"
+            );
+
+            // Replace the latest live entry with a delete marker in-place.
+            let latest_id = meta.latest;
+            if let Some(entry) = meta.versions.iter_mut().find(|v| v.id == latest_id) {
+                entry.kind = VersionKind::DeleteMarker;
+            }
+            prop_assert!(
+                matches!(
+                    meta.resolve_live(ObjectRef::Latest),
+                    Err(AppError::NoSuchKey)
+                ),
+                "a delete marker must not resolve as a live object"
+            );
+            prop_assert!(
+                meta.resolve(ObjectRef::Latest).is_some(),
+                "resolve still finds the delete-marker entry by id"
+            );
+        }
+
+        /// Removing the current latest retargets to the newest surviving id;
+        /// removing a non-latest id leaves `latest` alone.
+        #[test]
+        fn prop_remove_version_retargets_latest(
+            extra in 1usize..8,
+            remove_latest in any::<bool>(),
+        ) {
+            let mut meta = ObjectMeta::new_live(
+                "b".into(),
+                "k".into(),
+                Digest("d0".into()),
+                ETag("e0".into()),
+                0,
+                "application/octet-stream".into(),
+            );
+            for i in 0..extra {
+                let (d, e, s, ct) = sample_live((i as u64) + 1);
+                meta.append_live(d, e, s, ct);
+            }
+
+            let victim = if remove_latest {
+                meta.latest
+            } else {
+                // Prefer an older survivor when history has more than one entry.
+                meta.versions
+                    .iter()
+                    .map(|v| v.id)
+                    .find(|&id| id != meta.latest)
+                    .unwrap_or(meta.latest)
+            };
+            let previous_latest = meta.latest;
+            prop_assert!(meta.remove_version(victim));
+
+            if victim == previous_latest {
+                let expected = meta.versions.iter().map(|v| v.id).max().unwrap_or(0);
+                prop_assert_eq!(
+                    meta.latest, expected,
+                    "removing latest must retarget to the newest survivor"
+                );
+            } else {
+                prop_assert_eq!(
+                    meta.latest, previous_latest,
+                    "removing a non-latest version must leave latest unchanged"
+                );
+            }
+            prop_assert!(
+                meta.versions.iter().all(|v| v.id != victim),
+                "removed id must be gone from history"
+            );
+            // Removing again is a no-op.
+            prop_assert!(!meta.remove_version(victim));
+        }
+
+        /// `digests()` yields exactly the digests of Live versions — never a
+        /// delete marker — and matches a manual filter over `versions`.
+        #[test]
+        fn prop_digests_skips_delete_markers(live_count in 1usize..8, marker_at in any::<prop::sample::Index>()) {
+            let mut meta = ObjectMeta::new_live(
+                "b".into(),
+                "k".into(),
+                Digest("d0".into()),
+                ETag("e0".into()),
+                0,
+                "application/octet-stream".into(),
+            );
+            for i in 1..live_count {
+                let (d, e, s, ct) = sample_live(i as u64);
+                meta.append_live(d, e, s, ct);
+            }
+            // Flip one entry into a delete marker.
+            let at = marker_at.index(meta.versions.len());
+            meta.versions[at].kind = VersionKind::DeleteMarker;
+
+            let expected: Vec<&Digest> = meta
+                .versions
+                .iter()
+                .filter_map(|v| match &v.kind {
+                    VersionKind::Live { digest, .. } => Some(digest),
+                    VersionKind::DeleteMarker => None,
+                })
+                .collect();
+            let got: Vec<&Digest> = meta.digests().collect();
+            prop_assert_eq!(got, expected);
+        }
+
+        /// ObjectMeta survives a JSON round-trip with the same identity fields,
+        /// version ids, and digests (timestamps may keep chrono's precision).
+        #[test]
+        fn prop_object_meta_json_round_trip(seed in 0u64..1_000, overwrites in 0usize..6) {
+            let (digest, etag, size, ct) = sample_live(seed);
+            let mut meta = ObjectMeta::new_live(
+                "photos".into(),
+                format!("obj-{seed}"),
+                digest,
+                etag,
+                size,
+                ct,
+            );
+            for i in 0..overwrites {
+                let (d, e, s, c) = sample_live(seed + 1 + i as u64);
+                meta.append_live(d, e, s, c);
+            }
+
+            let json = serde_json::to_string(&meta).expect("serialize");
+            let back: ObjectMeta = serde_json::from_str(&json).expect("deserialize");
+
+            prop_assert_eq!(&back.bucket, &meta.bucket);
+            prop_assert_eq!(&back.key, &meta.key);
+            prop_assert_eq!(back.latest, meta.latest);
+            prop_assert_eq!(back.next_id, meta.next_id);
+            prop_assert_eq!(back.versions.len(), meta.versions.len());
+            for (a, b) in meta.versions.iter().zip(back.versions.iter()) {
+                prop_assert_eq!(a.id, b.id);
+                prop_assert_eq!(&a.kind, &b.kind);
+            }
+        }
     }
 }

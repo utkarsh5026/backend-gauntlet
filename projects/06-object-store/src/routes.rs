@@ -594,9 +594,7 @@ mod tests {
     }
 
     async fn put_bytes(router: &Router, bucket: &str, key: &str, body: &[u8]) -> StatusCode {
-        put_bytes_if_match(router, bucket, key, body, None)
-            .await
-            .0
+        put_bytes_if_match(router, bucket, key, body, None).await.0
     }
 
     async fn put_bytes_if_match(
@@ -937,8 +935,7 @@ mod tests {
             .expect("PUT returns ETag")
             .to_string();
 
-        let (status, _, _) =
-            put_bytes_if_match(&router, "docs", "k", b"v2", Some(&etag)).await;
+        let (status, _, _) = put_bytes_if_match(&router, "docs", "k", b"v2", Some(&etag)).await;
         assert_eq!(status, StatusCode::OK);
 
         let (status, _, body) = send(

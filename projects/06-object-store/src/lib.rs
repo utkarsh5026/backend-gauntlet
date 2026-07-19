@@ -9,8 +9,10 @@
 //! this compiles and serves. `GET /healthz` works; the first real PUT/GET/list
 //! hits a `todo!()` and panics — that panic message is your worklist.
 
+pub mod durable;
 pub mod error;
 pub mod index;
+pub mod lifecycle;
 pub mod metrics;
 pub mod multipart;
 pub mod naming;
