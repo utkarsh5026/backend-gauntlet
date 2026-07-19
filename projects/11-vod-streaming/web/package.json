@@ -23,7 +23,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.0.0",
     "tw-animate-css": "^1.0.0",
