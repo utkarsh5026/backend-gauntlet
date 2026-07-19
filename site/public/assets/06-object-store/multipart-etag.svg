@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" role="img" aria-label="Multipart upload flow and the S3 ETag formula">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="560" fill="#0e1311"/>
+
+  <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">How a 5 GB upload survives a flaky network</text>
+  <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">Parts upload in parallel, in any order — retry only what failed.</text>
+
+  <!-- client -->
+  <rect x="48" y="96" width="248" height="200" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="126" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#d3ddd6">the client splits the file</text>
+
+  <rect x="68" y="146" width="96" height="30" rx="8" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="116" y="165" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">part 1</text>
+  <rect x="180" y="146" width="96" height="30" rx="8" fill="#0e1311" stroke="#ceac63" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="228" y="165" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#ceac63" text-anchor="middle">part 2 ↻</text>
+  <rect x="68" y="190" width="96" height="30" rx="8" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="116" y="209" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">part 3</text>
+  <rect x="180" y="190" width="96" height="30" rx="8" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="228" y="209" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">part 4</text>
+
+  <text x="68" y="252" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">part 2's connection dropped —</text>
+  <text x="68" y="268" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">re-send only part 2, not 5 GB</text>
+
+  <line x1="304" y1="196" x2="368" y2="196" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="336" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">parallel,</text>
+  <text x="336" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">any order</text>
+
+  <!-- staging -->
+  <rect x="372" y="96" width="248" height="200" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="392" y="126" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700" fill="#d3ddd6">uploads/&lt;upload-id&gt;/</text>
+
+  <text x="392" y="156" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">session.json <tspan fill="#7f8d84">· bucket, key</tspan></text>
+  <text x="392" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">part-00001 <tspan fill="#7f8d84">· md5 e0a1…</tspan></text>
+  <text x="392" y="200" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">part-00002 <tspan fill="#7f8d84">· md5 4c77…</tspan></text>
+  <text x="392" y="222" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">part-00003 <tspan fill="#7f8d84">· md5 b912…</tspan></text>
+  <text x="392" y="244" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">part-00004 <tspan fill="#7f8d84">· md5 09fd…</tspan></text>
+
+  <text x="392" y="272" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">Abort deletes this folder — nothing</text>
+  <text x="392" y="288" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">is durable until Complete</text>
+
+  <line x1="628" y1="196" x2="684" y2="196" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="656" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">Complete</text>
+
+  <!-- assemble -->
+  <rect x="688" y="96" width="224" height="200" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="708" y="126" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#5fb8a1">assemble</text>
+  <text x="708" y="158" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84"><tspan fill="#5fb8a1">1</tspan>  verify parts vs receipts</text>
+  <text x="708" y="186" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84"><tspan fill="#5fb8a1">2</tspan>  concat in order + SHA-256</text>
+  <text x="708" y="214" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84"><tspan fill="#5fb8a1">3</tspan>  commit via the atomic CAS</text>
+  <text x="708" y="242" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84"><tspan fill="#5fb8a1">4</tspan>  point the key at the blob</text>
+
+  <!-- ETag callout -->
+  <rect x="48" y="336" width="864" height="184" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="72" y="366" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#5fb8a1">the ETag — S3's compatibility handshake</text>
+
+  <text x="72" y="400" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#7f8d84">single PUT</text>
+  <text x="200" y="400" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#d3ddd6">ETag = md5(object bytes)</text>
+  <text x="72" y="430" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#7f8d84">multipart</text>
+  <text x="200" y="430" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#d3ddd6">ETag = md5( md5(P1) + md5(P2) + md5(P3) + md5(P4) )<tspan fill="#5fb8a1" font-weight="700">-4</tspan></text>
+
+  <text x="72" y="464" font-family="system-ui, sans-serif" font-size="11.5" fill="#d3ddd6">“-4” = assembled from 4 parts — don't re-MD5 the whole object to verify it.</text>
+  <text x="72" y="492" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">Match this exact formula and the real aws CLI accepts the store as S3.</text>
+</svg>

@@ -1,0 +1,101 @@
+{
+  "project": "06-object-store",
+  "updatedAt": "2026-07-20",
+  "assets": [
+    {
+      "id": "system-overview",
+      "file": "system-overview.svg",
+      "kind": "architecture",
+      "title": "One process serves S3, one remembers names — the disk holds the truth",
+      "summary": "The web console, the S3 API server, the optional index service — and the plain directory that is the whole database.",
+      "description": "Every moving part of the store: any S3 client (even the real aws CLI) talks to one Rust server, which asks a small index service which blob a key points at, and reads or writes plain files on disk. There is deliberately no database — the lesson of this project is that an object store is a layout discipline over a directory, not a service you call. Two background workers ride along: one ages objects out or compresses cold ones, the other re-hashes stored blobs to catch silent disk corruption before a reader does.",
+      "depicts": [
+        "docker-compose.yml",
+        "src/main.rs",
+        "src/lib.rs",
+        "src/store.rs",
+        "src/index.rs",
+        "src/multipart.rs",
+        "src/lifecycle.rs",
+        "src/bin/object_store_index.rs"
+      ],
+      "spec": [],
+      "sourceCommit": "8c64a52",
+      "updatedAt": "2026-07-20"
+    },
+    {
+      "id": "put-request-flow",
+      "file": "put-request-flow.svg",
+      "kind": "request-flow",
+      "title": "Uploading a file: six steps from first byte to durable object",
+      "summary": "The PUT hot path — streamed chunk by chunk, hashed twice on the fly, committed with an atomic rename.",
+      "description": "What happens between a client sending a file and the store answering 200 OK. The body is never held in memory — each chunk is written to a temp file and fed to two hashes as it passes, so a 5 GB upload costs the same RAM as a 10 KB one. The object only appears in the final atomic rename, which is what makes a half-finished upload invisible instead of a corrupt file.",
+      "depicts": [
+        "src/routes.rs",
+        "src/streaming.rs",
+        "src/durable.rs",
+        "src/store.rs",
+        "src/index.rs"
+      ],
+      "spec": [
+        "V1",
+        "V2"
+      ],
+      "sourceCommit": "8c64a52",
+      "updatedAt": "2026-07-20"
+    },
+    {
+      "id": "crash-safety",
+      "file": "crash-safety.svg",
+      "kind": "internals",
+      "title": "Kill the power at any moment — what does a reader see afterwards?",
+      "summary": "The four write phases and their crash outcomes: the whole object or a 404, never a truncated file.",
+      "description": "The core durability lesson of the project. A write moves through four phases — stream to a temp file, fsync, atomic rename, index entry — and the diagram shows exactly what a crash inside each phase leaves behind. Because the bytes become durable before any name points at them, the worst a crash can do is strand cheap-to-clean garbage; it can never create a key that serves half a file.",
+      "depicts": [
+        "src/durable.rs",
+        "src/store.rs",
+        "src/index.rs"
+      ],
+      "spec": [
+        "V1",
+        "V3"
+      ],
+      "sourceCommit": "8c64a52",
+      "updatedAt": "2026-07-20"
+    },
+    {
+      "id": "flat-namespace",
+      "file": "flat-namespace.svg",
+      "kind": "internals",
+      "title": "No folders, no copies — a key is only a pointer",
+      "summary": "The flat keyspace: listings fake the folders, identical content is stored once, delete just drops a pointer.",
+      "description": "S3's keyspace is flat — photos/2024/beach.jpg is one opaque string, and the folder view is computed on the fly by collapsing keys that share a prefix. Because blobs are named by the hash of their content, two keys with identical bytes share one blob on disk. That is why delete only removes the pointer: the bytes must survive until nothing references them, and a background garbage collector reclaims them later.",
+      "depicts": [
+        "src/index.rs",
+        "src/object.rs",
+        "src/naming.rs"
+      ],
+      "spec": [
+        "V3"
+      ],
+      "sourceCommit": "8c64a52",
+      "updatedAt": "2026-07-20"
+    },
+    {
+      "id": "multipart-etag",
+      "file": "multipart-etag.svg",
+      "kind": "internals",
+      "title": "How a 5 GB upload survives a flaky network",
+      "summary": "Multipart: parallel, out-of-order, retryable parts — and the deliberately weird ETag that proves S3 compatibility.",
+      "description": "Big uploads are split into parts that arrive in parallel, in any order, and can be retried individually — a dropped connection costs one part, not the whole file. Completion validates every part against the client's MD5 receipts, stitches them together in order, and commits through the same atomic path as a normal upload. The resulting ETag follows S3's odd hash-of-hashes-plus-part-count formula — matching it exactly is what makes real AWS tools accept this store as S3.",
+      "depicts": [
+        "src/multipart.rs"
+      ],
+      "spec": [
+        "V4"
+      ],
+      "sourceCommit": "8c64a52",
+      "updatedAt": "2026-07-20"
+    }
+  ]
+}

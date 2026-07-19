@@ -10,6 +10,7 @@ Scaffolded SPECs, interesting logic left as `todo!()`. No todo apps.
 <br>
 
 [![CI](https://github.com/utkarsh5026/backend-gauntlet/actions/workflows/ci.yml/badge.svg)](https://github.com/utkarsh5026/backend-gauntlet/actions/workflows/ci.yml)
+[![Site](https://img.shields.io/badge/site-GitHub%20Pages-d4783a)](https://utkarsh5026.github.io/backend-gauntlet/)
 ![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)
 ![Tokio](https://img.shields.io/badge/runtime-Tokio-1a1a2e)
 ![Axum](https://img.shields.io/badge/web-Axum-0a7e8c)

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 630" role="img" aria-label="System overview of the object store">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#5fb8a1"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="630" fill="#0e1311"/>
+
+  <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">One process serves S3, one remembers names — the disk holds the truth</text>
+  <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">There is no database — the filesystem, used with discipline, is the store.</text>
+
+  <!-- clients -->
+  <rect x="48" y="92" width="290" height="76" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="122" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="700" fill="#d3ddd6">web console</text>
+  <text x="68" y="146" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#7f8d84">browser UI · localhost:5106</text>
+
+  <rect x="386" y="92" width="300" height="76" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="406" y="122" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="700" fill="#d3ddd6">any S3 client</text>
+  <text x="406" y="146" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#7f8d84">aws CLI · SDKs · Arrow object_store</text>
+
+  <line x1="193" y1="168" x2="193" y2="210" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="536" y1="168" x2="536" y2="210" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="364" y="194" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#7f8d84" text-anchor="middle">S3 HTTP API</text>
+
+  <!-- server -->
+  <rect x="48" y="214" width="560" height="178" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="72" y="246" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" fill="#5fb8a1">object-store — the S3 API server</text>
+  <text x="72" y="268" font-family="system-ui, sans-serif" font-size="11.5" fill="#7f8d84">Rust · axum · :9006 — streams uploads chunk-by-chunk, O(1) memory</text>
+
+  <rect x="72" y="296" width="240" height="64" rx="8" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="88" y="320" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#d3ddd6">lifecycle sweeper</text>
+  <text x="88" y="340" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">ages out / compresses cold blobs</text>
+
+  <rect x="336" y="296" width="248" height="64" rx="8" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="352" y="320" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#d3ddd6">scrubber</text>
+  <text x="352" y="340" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">re-hashes blobs; quarantines rot</text>
+
+  <!-- index -->
+  <rect x="676" y="214" width="236" height="178" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="696" y="246" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#d3ddd6">index service</text>
+  <text x="696" y="268" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#7f8d84">object-store-index · :9106</text>
+  <text x="696" y="298" font-family="system-ui, sans-serif" font-size="12" fill="#d3ddd6">the name book:</text>
+  <text x="696" y="316" font-family="system-ui, sans-serif" font-size="12" fill="#d3ddd6">(bucket, key) → blob</text>
+  <text x="696" y="352" font-family="system-ui, sans-serif" font-size="10.5" font-style="italic" fill="#7f8d84">runs in-process unless</text>
+  <text x="696" y="368" font-family="system-ui, sans-serif" font-size="10.5" font-style="italic" fill="#7f8d84">INDEX_URL splits it out</text>
+
+  <line x1="608" y1="300" x2="672" y2="300" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="602" y="278" width="80" height="14" fill="#0e1311"/>
+  <text x="642" y="289" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">key → blob?</text>
+
+  <!-- down to disk -->
+  <line x1="328" y1="392" x2="328" y2="434" stroke="#5fb8a1" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+  <text x="342" y="418" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84">blob bytes</text>
+  <line x1="794" y1="392" x2="794" y2="434" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="808" y="418" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84">key files</text>
+
+  <!-- data directory -->
+  <rect x="48" y="438" width="864" height="152" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="72" y="468" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#d3ddd6">the data directory <tspan fill="#7f8d84" font-weight="400">— a plain folder, used with discipline</tspan></text>
+
+  <text x="72" y="500" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#5fb8a1">objects/ab/cd/&lt;sha256&gt;</text>
+  <text x="262" y="500" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">blobs, stored once</text>
+  <text x="72" y="528" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">index/&lt;bucket&gt;/&lt;key&gt;.json</text>
+  <text x="262" y="528" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">key → blob pointers</text>
+  <text x="72" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">uploads/&lt;upload-id&gt;/</text>
+  <text x="262" y="556" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">multipart staging</text>
+
+  <text x="500" y="500" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">tmp/</text>
+  <text x="648" y="500" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">in-flight writes</text>
+  <text x="500" y="528" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">cold/&lt;sha256&gt;.zst</text>
+  <text x="648" y="528" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">compressed cold tier</text>
+  <text x="500" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">quarantine/</text>
+  <text x="648" y="556" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">corrupt blobs, benched</text>
+</svg>
