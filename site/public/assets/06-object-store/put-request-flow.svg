@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-label="The six steps of a streaming PUT">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="540" fill="#0e1311"/>
+
+  <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">Uploading a file: six steps from first byte to durable object</text>
+  <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">PUT /{bucket}/{key} — the same path for 10 KB or 5 GB.</text>
+
+  <!-- row 1 -->
+  <rect x="48" y="96" width="264" height="104" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <circle cx="76" cy="126" r="13" fill="#5fb8a1"/>
+  <text x="76" y="130.5" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#0e1311" text-anchor="middle">1</text>
+  <text x="98" y="131" font-family="system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#d3ddd6">The client streams</text>
+  <text x="72" y="162" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">One chunk at a time — the</text>
+  <text x="72" y="180" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">whole file is never in RAM.</text>
+
+  <rect x="348" y="96" width="264" height="104" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <circle cx="376" cy="126" r="13" fill="#5fb8a1"/>
+  <text x="376" y="130.5" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#0e1311" text-anchor="middle">2</text>
+  <text x="398" y="131" font-family="system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#d3ddd6">Hash twice, write once</text>
+  <text x="372" y="162" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">SHA-256 (the name) + MD5 (the</text>
+  <text x="372" y="180" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">ETag), straight into a temp file.</text>
+
+  <rect x="648" y="96" width="264" height="104" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <circle cx="676" cy="126" r="13" fill="#5fb8a1"/>
+  <text x="676" y="130.5" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#0e1311" text-anchor="middle">3</text>
+  <text x="698" y="131" font-family="system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#d3ddd6">Seal the bytes</text>
+  <text x="672" y="162" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">fsync — the bytes are forced</text>
+  <text x="672" y="180" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">onto the physical disk.</text>
+
+  <line x1="312" y1="148" x2="344" y2="148" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="612" y1="148" x2="644" y2="148" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- snake 3 -> 4 -->
+  <path d="M 780 200 L 780 244 L 180 244 L 180 284" fill="none" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- row 2 -->
+  <rect x="48" y="288" width="264" height="104" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <circle cx="76" cy="318" r="13" fill="#5fb8a1"/>
+  <text x="76" y="322.5" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#0e1311" text-anchor="middle">4</text>
+  <text x="98" y="323" font-family="system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#5fb8a1">The atomic rename</text>
+  <text x="72" y="354" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">objects/ab/cd/&lt;sha256&gt; appears</text>
+  <text x="72" y="372" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">all-or-nothing. Never half-written.</text>
+
+  <rect x="348" y="288" width="264" height="104" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <circle cx="376" cy="318" r="13" fill="#5fb8a1"/>
+  <text x="376" y="322.5" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#0e1311" text-anchor="middle">5</text>
+  <text x="398" y="323" font-family="system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#d3ddd6">Point the key at it</text>
+  <text x="372" y="354" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">The index writes key → blob.</text>
+  <text x="372" y="372" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">Same bytes twice? Stored once.</text>
+
+  <rect x="648" y="288" width="264" height="104" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <circle cx="676" cy="318" r="13" fill="#5fb8a1"/>
+  <text x="676" y="322.5" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#0e1311" text-anchor="middle">6</text>
+  <text x="698" y="323" font-family="system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#d3ddd6">Reply: 200 + ETag</text>
+  <text x="672" y="354" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">No reader ever saw a</text>
+  <text x="672" y="372" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">half-written object.</text>
+
+  <line x1="312" y1="340" x2="344" y2="340" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="612" y1="340" x2="644" y2="340" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- footer -->
+  <rect x="48" y="436" width="864" height="56" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="72" y="470" font-family="system-ui, sans-serif" font-size="12" fill="#d3ddd6">Only one chunk is ever in RAM — and any failure deletes the temp file, so nothing half-written survives.</text>
+</svg>

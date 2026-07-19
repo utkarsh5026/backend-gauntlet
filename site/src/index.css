@@ -1,0 +1,205 @@
+@import "tailwindcss";
+
+/*
+ * JetBrains Mono (body/UI) + Martian Mono (display), subsetted to the glyphs
+ * this site uses (ASCII, box drawing, blocks, arrows, geometric markers) —
+ * tens of KB instead of MBs. Regenerate with fontTools.subset; see src/fonts/.
+ */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Martian Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/martian-mono-700.woff2") format("woff2");
+}
+
+/*
+ * Design tokens — "ink & instrument".
+ * The site reads like the repo's own tooling (make status, Rich tables):
+ * one monospace face at several weights, square bordered panels, and a small
+ * ANSI-style semantic set. Color means something: teal = interactive,
+ * green = done/progress, amber = warning, red = blocked, gray = paused.
+ */
+:root {
+  --bg: #0e1311;
+  --panel: #141a17;
+  --line: #26302b;
+  --fg: #d3ddd6;
+  --fg-muted: #7f8d84;
+  --accent: #5fb8a1;
+  --accent-dim: #3e7f70;
+  --ok: #79b878;
+  --warn: #ceac63;
+  --err: #c97f6f;
+  --paused: #8a94a0;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "Martian Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-paused: var(--paused);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--fg);
+  background-color: var(--bg);
+  font-variant-numeric: tabular-nums;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+a:hover {
+  color: #7fd4bd;
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgb(95 184 161 / 30%);
+  color: var(--fg);
+}
+
+/*
+ * Panel: a TUI frame. The title sits on the top border like
+ * `┌─ title ─────┐`; the chip's background matches the page ground so it
+ * visually interrupts the border line.
+ */
+.panel {
+  position: relative;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.panel-title {
+  position: absolute;
+  top: 0;
+  left: 0.9rem;
+  transform: translateY(-55%);
+  background: var(--bg);
+  padding: 0 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+/* Section rule: `── label ──────` */
+.rule-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.rule-title::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+/* Block-cell progress bar: discrete cells like `█████░░░░░` */
+.cells {
+  position: relative;
+  height: 0.55rem;
+  background: var(--line);
+}
+
+.cells > div {
+  height: 100%;
+  background: var(--ok);
+}
+
+.cells::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent 7px,
+    var(--bg) 7px,
+    var(--bg) 9px
+  );
+}
+
+/* The one flourish: a block cursor after the prompt line. */
+.cursor::after {
+  content: "▮";
+  margin-left: 0.15em;
+  color: var(--accent);
+  animation: blink 1.2s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor::after {
+    animation: none;
+  }
+}
