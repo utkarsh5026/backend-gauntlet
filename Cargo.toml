@@ -123,9 +123,12 @@ url = "2"
 # --- hashing (project 06 — object store) ---
 # Content addressing names a blob by SHA-256 of its bytes (V1); the S3 ETag is
 # MD5 (single PUT) or md5-of-part-md5s (multipart, V4). `hex` encodes digests.
+# `base64` decodes client-supplied Content-MD5 / x-amz-checksum-* headers (raw
+# digest bytes on the wire, not the hex Digest/ETag we store).
 sha2 = "0.10"
 md-5 = "0.10"
 hex = "0.4"
+base64 = "0.22"
 # S3 XML wire format (ListBucketResult, multipart init/complete, Error).
 quick-xml = { version = "0.37", features = ["serialize"] }
 # Arrow's S3 client — aliased in project 06 as `arrow-object-store` so it does

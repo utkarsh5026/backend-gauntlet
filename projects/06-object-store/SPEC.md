@@ -292,9 +292,10 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   `If-Match: <etag>` is compare-and-swap — the primitive that lets the store
   double as a lock service / commit pointer *(→ RESEARCH.md §Part 7)*
 
-- [~] Checksum-validated uploads: a PUT that declares a checksum (`Content-MD5`
+- [✔] Checksum-validated uploads: a PUT that declares a checksum (`Content-MD5`
   / `x-amz-checksum-*`) not matching the streamed bytes is rejected and leaves
-  nothing durable *(→ RESEARCH.md §Part 4)*
+  nothing durable *(→ RESEARCH.md §Part 4; proof: `src/streaming.rs`
+  `CheckSumAlgorithm::verify` + streaming checksum tests)*
 
 - [~] Object versioning: an overwrite is a new immutable version behind an
   atomic pointer flip — the previous version stays retrievable by version id,

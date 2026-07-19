@@ -44,21 +44,32 @@ impl CheckSumAlgorithm {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::InvalidRequest`] when the computed digest doesn't match
-    /// what the client sent (S3 calls this `BadDigest`, a 400).
+    /// Returns [`AppError::InvalidRequest`] when the header isn't valid base64,
+    /// or when the computed digest doesn't match what the client sent (S3 calls
+    /// this `BadDigest`, a 400).
     fn verify(&self, sha256: &[u8], md5: &[u8]) -> Result<(), AppError> {
+        use base64::Engine as _;
+
         // Pick the raw digest for the algorithm the client asked about — the
         // whole point of reusing the two body hashers instead of a third.
         let computed = match self {
             CheckSumAlgorithm::Sha256(_) => sha256,
             CheckSumAlgorithm::Md5(_) => md5,
         };
-        let _ = computed;
-        // TODO(V-checksum): decode `self.checksum()` and compare it against
-        // `computed`. Mind the encoding — S3 sends the header as base64 of the
-        // raw digest, so decode it rather than comparing against the hex
-        // `Digest`/`ETag`; return AppError::InvalidRequest on mismatch.
-        todo!("compare the client checksum against the matching computed digest")
+        // S3 puts the *raw* digest on the wire as base64 — not the hex we store
+        // as Digest/ETag. Decode first, then byte-compare.
+        let expected = base64::engine::general_purpose::STANDARD
+            .decode(self.checksum())
+            .map_err(|_| {
+                AppError::InvalidRequest(format!("invalid base64 {} checksum", self.suffix()))
+            })?;
+        if expected.as_slice() != computed {
+            return Err(AppError::InvalidRequest(format!(
+                "BadDigest: {} checksum does not match streamed body",
+                self.suffix()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -399,9 +410,38 @@ mod tests {
 
 #[cfg(test)]
 mod checksum_tests {
-    use super::{CheckSumAlgorithm, ChecksumSpec};
+    use super::{stream_to_store, CheckSumAlgorithm, ChecksumSpec};
     use crate::error::AppError;
+    use crate::store::Store;
     use axum::http::{HeaderMap, HeaderValue};
+    use base64::Engine as _;
+    use bytes::Bytes;
+    use futures_util::stream;
+    use sha2::{Digest as _, Sha256};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn fresh() -> (TempDir, Arc<Store>) {
+        let root = TempDir::new().expect("temp root");
+        let store = Store::open(root.path()).expect("open store");
+        (root, store)
+    }
+
+    fn body(
+        chunks: Vec<Result<Bytes, axum::Error>>,
+    ) -> impl futures_util::Stream<Item = Result<Bytes, axum::Error>> + Unpin {
+        stream::iter(chunks)
+    }
+
+    fn temp_count(store: &Store) -> usize {
+        std::fs::read_dir(store.tmp_dir())
+            .expect("read tmp dir")
+            .count()
+    }
+
+    fn b64(raw: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(raw)
+    }
 
     /// Parse headers and unwrap both layers: "parsed fine" and "found one".
     fn extracted(headers: &HeaderMap) -> CheckSumAlgorithm {
@@ -496,5 +536,89 @@ mod checksum_tests {
             HeaderValue::from_bytes(&[0xFF]).expect("0xFF is a legal opaque header byte"),
         );
         assert!(rejected(&headers), "non-ASCII header value must be a 400");
+    }
+
+    #[test]
+    fn verify_accepts_matching_base64_md5() {
+        let bytes = b"hello checksum";
+        let md5 = md5::Md5::digest(bytes);
+        let algo = CheckSumAlgorithm::Md5(b64(&md5));
+        assert!(algo.verify(&[], &md5).is_ok());
+    }
+
+    #[test]
+    fn verify_rejects_mismatched_digest() {
+        let algo = CheckSumAlgorithm::Md5(b64(b"not-a-real-md5!!"));
+        let outcome = algo.verify(&[], &[0u8; 16]);
+        assert!(
+            matches!(outcome, Err(AppError::InvalidRequest(ref msg)) if msg.contains("BadDigest")),
+            "mismatch must be BadDigest / InvalidRequest"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_non_base64_header() {
+        let algo = CheckSumAlgorithm::Sha256("!!!not-base64!!!".into());
+        let outcome = algo.verify(&[0u8; 32], &[]);
+        assert!(
+            matches!(outcome, Err(AppError::InvalidRequest(ref msg)) if msg.contains("base64")),
+            "garbage encoding must be InvalidRequest"
+        );
+    }
+
+    /// Matching Content-MD5 commits; a wrong one rejects and leaves no temp /
+    /// no durable blob — the whole point of verifying before `commit_temp`.
+    #[tokio::test]
+    async fn matching_md5_checksum_commits() {
+        let (_root, store) = fresh();
+        let payload = b"streamed body";
+        let md5 = md5::Md5::digest(payload);
+        let algo = CheckSumAlgorithm::Md5(b64(&md5));
+
+        let stored = stream_to_store(
+            &store,
+            body(vec![Ok(Bytes::from_static(payload))]),
+            1024,
+            Some(algo),
+        )
+        .await
+        .expect("matching checksum should commit");
+
+        assert_eq!(stored.size, payload.len() as u64);
+        assert!(store.contains(&stored.digest).await);
+        assert_eq!(temp_count(&store), 0);
+    }
+
+    #[tokio::test]
+    async fn mismatched_sha256_checksum_leaves_nothing_durable() {
+        let (_root, store) = fresh();
+        let payload = b"streamed body";
+        // Correct length, wrong bytes — decode succeeds, compare fails.
+        let wrong = b64(&[0u8; 32]);
+        let algo = CheckSumAlgorithm::Sha256(wrong);
+
+        let outcome = stream_to_store(
+            &store,
+            body(vec![Ok(Bytes::from_static(payload))]),
+            1024,
+            Some(algo),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(AppError::InvalidRequest(ref msg)) if msg.contains("BadDigest")),
+            "mismatch must reject before commit"
+        );
+        assert_eq!(
+            temp_count(&store),
+            0,
+            "rejected upload must not leak a temp"
+        );
+        // Digest of the payload must not have been published.
+        let digest = crate::object::Digest(hex::encode(Sha256::digest(payload)));
+        assert!(
+            !store.contains(&digest).await,
+            "a BadDigest reject must leave no durable blob"
+        );
     }
 }
