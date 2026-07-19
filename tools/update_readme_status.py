@@ -109,17 +109,20 @@ def render_svg(ansi: str, dest: Path) -> None:
 
     # Wide enough for `verticals` / `checklist` headers; file=StringIO keeps
     # the render quiet (record=True still captures what would have been printed).
+    # soft_wrap=True is load-bearing: Rich's default word-wrap breaks at the
+    # padding spaces before the checklist column, shoving `N/M` onto the next
+    # row even when the line is well under `width`.
     console = Console(
         record=True,
         width=120,
         force_terminal=True,
         color_system="truecolor",
         highlight=False,
-        soft_wrap=False,
+        soft_wrap=True,
         file=io.StringIO(),
     )
     for line in AnsiDecoder().decode(ansi):
-        console.print(line)
+        console.print(line, overflow="ignore", crop=False)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     theme = CATPPUCCIN_MOCHA or MONOKAI
