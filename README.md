@@ -77,43 +77,14 @@ bolted on at the end:
 
 ## 📊 Where am I
 
-Live progress across every project — the same dashboard as `make status`.
-CI refreshes this block on every push to `master`.
+Live progress across every project — a colored screenshot of `make status`
+(so the greens / yellows / reds survive GitHub's markdown). CI refreshes the
+image on every push to `master`.
 
 <!-- status-dashboard:start -->
-```text
-  🦀 backend-gauntlet  ·  progress across all projects
-
-  overall  ██░░░░░░░░░░░░░░░░░░  10%    verticals 13/93  ·  checklist 29/340
-  ──────────────────────────────────────────────────────────
-  ##  project              state          progress         vert  chk  
-
-  01  url-shortener        [active]       ████▊░░░░░  48%  3/3   8/20 
-  02  rate-limiter         [paused]       ░░░░░░░░░░   0%  0/3   0/14 
-  03  realtime-pubsub      [active]       █▊░░░░░░░░  17%  3/4   0/14 
-  04  job-queue            [active]       ███████▌░░  75%  4/4   8/12 
-  05  metrics-pipeline     [not-started]  ░░░░░░░░░░   0%  0/4   0/13 
-  06  object-store         [active]       ████████▉░  89%  3/4   13/14
-  07  distributed-cache    [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
-  08  message-broker       [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
-  09  raft-kv              [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
-  10  api-gateway          [not-started]  ░░░░░░░░░░   0%  0/4   0/15 
-  11  vod-streaming        [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
-  12  transcode-pipeline   [not-started]  ░░░░░░░░░░   0%  0/4   0/16 
-  13  live-ingest          [not-started]  ░░░░░░░░░░   0%  0/4   0/16 
-  14  media-transport      [not-started]  ░░░░░░░░░░   0%  0/4   0/16 
-  15  webrtc-sfu           [not-started]  ░░░░░░░░░░   0%  0/4   0/14 
-  16  live-platform        [not-started]  ░░░░░░░░░░   0%  0/4   0/22 
-  17  global-conferencing  [not-started]  ░░░░░░░░░░   0%  0/4   0/16 
-  18  ledger-payments-core [not-started]  ░░░░░░░░░░   0%  0/4   0/19 
-  19  bittorrent           [not-started]  ░░░░░░░░░░   0%  0/6   0/17 
-  20  full-text-search     [not-started]  ░░░░░░░░░░   0%  0/5   0/18 
-  21  workflow-engine      [not-started]  ░░░░░░░░░░   0%  0/5   0/18 
-  22  lsm-redis            [not-started]  ░░░░░░░░░░   0%  0/7   0/18 
-  ──────────────────────────────────────────────────────────
-  vert verticals done/total   chk checklist done/total   green=done yellow=in progress
-  drill into a project → make <name> or make NN (e.g. make url-shortener · make 01) · make projects lists them
-```
+<p align="center">
+  <img src="assets/status-dashboard.svg?h=81883f779bb1" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
+</p>
 <!-- status-dashboard:end -->
 
 <details>
@@ -121,11 +92,12 @@ CI refreshes this block on every push to `master`.
 
 ```bash
 make status          # local terminal dashboard (colors)
-make status-readme   # regenerate the block above into README.md
+make status-readme   # render assets/status-dashboard.svg + splice into README.md
+# needs: pip install -r tools/requirements.txt  (rich)
 ```
 
 On push to `master`, [`.github/workflows/update-status.yml`](.github/workflows/update-status.yml)
-runs `make status-readme` and commits the result when anything moved.
+runs `make status-readme` and commits the SVG + README markers when anything moved.
 
 </details>
 

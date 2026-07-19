@@ -1,2 +1,4 @@
 rich>=13.0
 questionary>=2.0
+# rich is also used by tools/update_readme_status.py to render the colored
+# `make status` dashboard into assets/status-dashboard.svg for the README.

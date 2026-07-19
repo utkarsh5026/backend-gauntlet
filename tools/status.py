@@ -45,11 +45,17 @@ PROJECTS = ROOT / "projects"
 
 
 # Color depth, best→worst: truecolor (24-bit) if the terminal advertises it,
-# else 256-color (modern xterm/tmux), else legacy 16-color. NO_COLOR / non-tty
-# silences everything. Palette is Catppuccin-Mocha-ish so it reads well on dark.
-_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+# else 256-color (modern xterm/tmux), else legacy 16-color. NO_COLOR silences
+# everything. Non-tty is usually silent too, unless FORCE_COLOR is set (used by
+# `update_readme_status.py` to capture a colored screenshot for the README).
+# Palette is Catppuccin-Mocha-ish so it reads well on dark.
+_FORCE = os.environ.get("FORCE_COLOR", "").strip() not in ("", "0")
+_COLOR = (sys.stdout.isatty() or _FORCE) and os.environ.get("NO_COLOR") is None
 _TRUE = os.environ.get("COLORTERM", "") in ("truecolor", "24bit")
 _256 = _TRUE or "256color" in os.environ.get("TERM", "")
+# README screenshot mode: fuller headers, airier rows, no footer chrome.
+# Set by tools/update_readme_status.py — leaves interactive `make status` alone.
+_README = os.environ.get("STATUS_README", "").strip() not in ("", "0")
 
 
 def _fg(rgb: tuple[int, int, int], idx: int, base: str) -> str:
@@ -470,8 +476,8 @@ def bar(pct: int, width: int = 20) -> str:
     return f"{_bar_color(pct)}{head}{C.DIM}{tail}{C.RESET}"
 
 
-def rule(width: int = RULE) -> str:
-    return f"  {C.DIM}{'─' * width}{C.RESET}"
+def rule(width: int = RULE, indent: str = "  ") -> str:
+    return f"{indent}{C.DIM}{'─' * width}{C.RESET}"
 
 
 def state_badge(state: str, pad: int = 0) -> str:
@@ -535,29 +541,58 @@ def dashboard(projects: list[Project]) -> None:
     ctot = sum(p.checks[1] for p in projects)
     overall = round(100 * (vdone + cdone) / (vtot + ctot)) if (vtot + ctot) else 0
 
+    # README screenshot: full column titles + airier rows, no footer chrome.
+    # Interactive `make status` keeps the short headers + legend.
+    vert_h = "verticals" if _README else "vert"
+    chk_h = "checklist" if _README else "chk"
+    pad = "   " if _README else "  "  # gutter between columns
+    indent = "   " if _README else "  "
+
     print()
     print(
-        f"  {C.BOLD}{C.MAGENTA}🦀 backend-gauntlet{C.RESET}"
+        f"{indent}{C.BOLD}{C.MAGENTA}🦀 backend-gauntlet{C.RESET}"
         f"  {C.DIM}·  progress across all projects{C.RESET}\n"
     )
     print(
-        f"  {C.BOLD}overall{C.RESET}  {bar(overall)} {C.BOLD}{overall:>3}%{C.RESET}"
+        f"{indent}{C.BOLD}overall{C.RESET}  {bar(overall)} {C.BOLD}{overall:>3}%{C.RESET}"
         f"    {C.DIM}verticals{C.RESET} {C.BOLD}{vdone}/{vtot}{C.RESET}"
         f"  {C.DIM}·  checklist{C.RESET} {C.BOLD}{cdone}/{ctot}{C.RESET}"
     )
-    print(rule())
-
     # --- one aligned row per project --------------------------------------
     # Column widths flex to the data so nothing ever truncates or misaligns.
     name_w = max((len(p.name) for p in projects), default=len("project"))
     name_w = max(name_w, len("project"))
-    vert_w = max([len(f"{p.v_done}/{len(p.verticals)}") for p in projects] + [len("vert")])
-    chk_w = max([len(f"{p.checks[0]}/{p.checks[1]}") for p in projects] + [len("chk")])
+    vert_w = max(
+        [len(f"{p.v_done}/{len(p.verticals)}") for p in projects] + [len(vert_h)]
+    )
+    chk_w = max(
+        [len(f"{p.checks[0]}/{p.checks[1]}") for p in projects] + [len(chk_h)]
+    )
     prog_w = 10 + 1 + 4  # bar(10) + space + "100%"
+    # "##" + gutters + each column — keeps the rule as wide as the table.
+    row_w = (
+        2
+        + len(pad)
+        + name_w
+        + len(pad)
+        + BADGE_W
+        + len(pad)
+        + prog_w
+        + len(pad)
+        + vert_w
+        + len(pad)
+        + chk_w
+    )
+
+    print()
+    print(rule(max(RULE, row_w), indent=indent))
+    print()
 
     print(
-        f"  {C.DIM}{'##':<2}  {_pad('project', name_w)} {_pad('state', BADGE_W)}  "
-        f"{_pad('progress', prog_w)}  {_pad('vert', vert_w)}  {_pad('chk', chk_w)}{C.RESET}"
+        f"{indent}{C.DIM}{'##':<2}{pad}{_pad('project', name_w)}{pad}"
+        f"{_pad('state', BADGE_W)}{pad}"
+        f"{_pad('progress', prog_w)}{pad}"
+        f"{_pad(vert_h, vert_w)}{pad}{_pad(chk_h, chk_w)}{C.RESET}"
     )
     print()
 
@@ -575,9 +610,19 @@ def dashboard(projects: list[Project]) -> None:
         chk = f"{_count_color(pcd, pct)}{pcd}/{pct}{C.RESET}"
 
         print(
-            f"  {_pad(num, 2)}  {_pad(name, name_w)} {_pad(badge, BADGE_W)}  "
-            f"{_pad(prog, prog_w)}  {_pad(vert, vert_w)}  {_pad(chk, chk_w)}"
+            f"{indent}{_pad(num, 2)}{pad}{_pad(name, name_w)}{pad}"
+            f"{_pad(badge, BADGE_W)}{pad}"
+            f"{_pad(prog, prog_w)}{pad}"
+            f"{_pad(vert, vert_w)}{pad}{_pad(chk, chk_w)}"
         )
+        if _README:
+            # Extra blank row so the README screenshot isn't a dense brick.
+            print()
+
+    if _README:
+        # Clean cut — no legend / drill-into chrome under the table.
+        print()
+        return
 
     print(rule())
     print(
