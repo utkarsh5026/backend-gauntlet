@@ -7,7 +7,7 @@
 //!   - the write order is a contract: **blob durable (V2) → THEN index entry**,
 //!     so a crash in between leaves a GC-able orphan blob, never a dangling key.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,11 +21,35 @@ use crate::naming::{encode_key, validate_bucket_name, validate_key};
 use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject};
 use crate::store::Store;
 
+/// The payload of a new live version — everything [`Index::put`] records about
+/// the stored bytes, besides the `(bucket, key)` address and the precondition.
+/// Bundled so `put`'s signature stays small.
+pub struct NewVersion {
+    pub digest: Digest,
+    pub etag: ETag,
+    pub size: u64,
+    pub content_type: String,
+}
+
+/// The precondition a conditional write must satisfy, evaluated *inside* the
+/// per-key lock so the check and the pointer-flip are one atomic step.
+pub enum Precondition {
+    /// Plain overwrite / create — no condition. (What `put` does today.)
+    None,
+    /// `If-Match: <etag>` — only overwrite if the live version's ETag equals
+    /// this. Compare-and-swap. Mismatch (or key absent) → `PreconditionFailed`.
+    IfMatch(ETag),
+    /// `If-None-Match: *` — only create if the key does not already exist.
+    /// Present → `PreconditionFailed`.
+    IfNoneMatchStar,
+}
+
 /// Maps `(bucket, key)` → the blob (and metadata) backing it, and owns the
 /// consistency + reclamation rules over the V1 store.
 pub struct Index {
     root: PathBuf,
     store: Arc<Store>,
+    key_locks: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// One page of a `ListObjectsV2` response.
@@ -83,7 +107,11 @@ impl Index {
 
         let root = root.as_ref().join("index");
         create_dir_all(&root)?;
-        Ok(Arc::new(Self { root, store }))
+        Ok(Arc::new(Self {
+            root,
+            store,
+            key_locks: parking_lot::Mutex::new(HashMap::new()),
+        }))
     }
 
     /// Create a new, empty bucket directory under the index root.
@@ -126,26 +154,74 @@ impl Index {
         Ok(self.root.join(bucket))
     }
 
-    /// Append a new live version for `(bucket, key)` and flip `latest` to it.
+    /// The per-key lock guarding `(bucket, key)`'s pointer, created on first use.
     ///
-    /// Creates the key if absent. Overwrite = new immutable version + pointer
-    /// flip; prior versions stay retrievable via [`ObjectRef::Version`].
+    /// The outer `key_locks` map is guarded by a *sync* mutex held only long
+    /// enough to clone out the `Arc` (never across an `.await`). The returned
+    /// `tokio::sync::Mutex` is the lock a writer then holds across its
+    /// read→check→write critical section. Distinct keys get distinct locks, so
+    /// writers to unrelated keys never wait on each other.
+    fn key_lock(&self, bucket: &str, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let map_key = format!("{bucket}/{key}");
+        self.key_locks.lock().entry(map_key).or_default().clone()
+    }
+
+    /// Publish a new live version for `(bucket, key)` iff `pre` holds, atomically
+    /// with respect to other writers to the same key.
+    ///
+    /// Holds the key's lock across read-current → check-precondition →
+    /// write-pointer, so two concurrent writers can't interleave: the classic
+    /// lost-update (both read the same base, both append, last write wins) is
+    /// impossible, and `If-Match`'s compare-and-swap can't tear. The blob is
+    /// already durable in the CAS before this is called, so the lock only spans
+    /// the tiny pointer flip — not the upload.
+    ///
+    /// Overwrite = new immutable version + pointer flip; prior versions stay
+    /// retrievable via [`ObjectRef::Version`]. Pass [`Precondition::None`] for an
+    /// unconditional write.
     ///
     /// # Errors
     ///
-    /// [`AppError::InvalidRequest`] for a bad bucket/key name, or an I/O error
-    /// writing the index entry.
+    /// [`AppError::PreconditionFailed`] if `pre` does not hold; otherwise an I/O
+    /// error writing the index entry.
     pub async fn put(
         &self,
         bucket: &str,
         key: &str,
-        digest: Digest,
-        etag: ETag,
-        size: u64,
-        content_type: impl Into<String>,
+        version: NewVersion,
+        pre: Precondition,
     ) -> Result<ObjectMeta, AppError> {
-        let content_type = content_type.into();
-        let meta = match self.get(bucket, key).await? {
+        let NewVersion {
+            digest,
+            etag,
+            size,
+            content_type,
+        } = version;
+
+        let lock = self.key_lock(bucket, key);
+        let _guard = lock.lock().await;
+
+        let current = self.get(bucket, key).await?;
+
+        match &pre {
+            Precondition::None => {}
+            Precondition::IfMatch(expected) => {
+                let live = current
+                    .as_ref()
+                    .and_then(ObjectMeta::latest_live)
+                    .ok_or(AppError::PreconditionFailed)?;
+                if &live.etag != expected {
+                    return Err(AppError::PreconditionFailed);
+                }
+            }
+            Precondition::IfNoneMatchStar => {
+                if current.as_ref().and_then(ObjectMeta::latest_live).is_some() {
+                    return Err(AppError::PreconditionFailed);
+                }
+            }
+        }
+
+        let meta = match current {
             Some(mut existing) => {
                 existing.append_live(digest, etag, size, content_type);
                 existing
@@ -177,7 +253,7 @@ impl Index {
     /// paths that rewrite history.
     async fn write_meta(&self, meta: &ObjectMeta) -> Result<(), AppError> {
         let path = self.index_path(&meta.bucket, &meta.key)?;
-        let mut temp = TempEntry::new(self.temp_entry_path(&meta.bucket, &meta.key));
+        let mut temp = TempEntry::unique_in(self.tmp_dir(&meta.bucket), &encode_key(&meta.key));
         crate::durable::atomic_write_json(temp.path(), &path, meta).await?;
         temp.disarm();
         Ok(())
@@ -460,15 +536,6 @@ impl Index {
         Ok(())
     }
 
-    fn temp_entry_path(&self, bucket: &str, key: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before UNIX epoch")
-            .as_nanos();
-        let key = encode_key(key);
-        self.tmp_dir(bucket).join(format!("{}-{nanos:x}.json", key))
-    }
-
     async fn read_index_entries(paths: Vec<PathBuf>) -> Result<Vec<ObjectMeta>, AppError> {
         stream::iter(paths)
             .map(|path| async move { read_json(&path).await })
@@ -553,10 +620,13 @@ mod tests {
             .put(
                 bucket,
                 key,
-                stored.digest.clone(),
-                stored.etag.clone(),
-                stored.size,
-                "image/jpeg",
+                NewVersion {
+                    digest: stored.digest.clone(),
+                    etag: stored.etag.clone(),
+                    size: stored.size,
+                    content_type: "image/jpeg".into(),
+                },
+                Precondition::None,
             )
             .await
             .expect("put stored object");
@@ -661,10 +731,13 @@ mod tests {
             .put(
                 bucket,
                 key,
-                Digest(digest.into()),
-                ETag(format!("etag-{digest}")),
-                1024,
-                "application/octet-stream",
+                NewVersion {
+                    digest: Digest(digest.into()),
+                    etag: ETag(format!("etag-{digest}")),
+                    size: 1024,
+                    content_type: "application/octet-stream".into(),
+                },
+                Precondition::None,
             )
             .await
             .expect("put should succeed")

@@ -23,7 +23,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::bucket::BucketMetadata;
 use crate::error::AppError;
-use crate::index::Index;
+use crate::index::{Index, Precondition};
 use crate::lifecycle::LifecyclePolicy;
 use crate::naming::validate_key;
 use crate::object::{ETag, ObjectRef, ResolvedObject};
@@ -221,17 +221,7 @@ async fn put_object(
     let content_type = content_type_of(&headers);
     let stream = body.into_data_stream();
 
-    if let Some(if_match) = headers.get(header::IF_MATCH) {
-        let index = state.index.get(&bucket, &key).await?;
-        if let Some(index) = index {
-            let live = index.latest_live().ok_or(AppError::PreconditionFailed)?;
-            if live.etag.as_str() != if_match.to_str().unwrap() {
-                return Err(AppError::PreconditionFailed);
-            }
-        } else {
-            return Err(AppError::PreconditionFailed);
-        }
-    }
+    let pre = parse_write_precondition(&headers)?;
 
     if let (Some(upload_id), Some(part_number)) = (q.upload_id.as_deref(), q.part_number) {
         let part = state
@@ -249,10 +239,48 @@ async fn put_object(
 
     state
         .index
-        .put(&bucket, &key, digest, etag.clone(), size, content_type)
+        .put(
+            &bucket,
+            &key,
+            crate::index::NewVersion {
+                digest,
+                etag: etag.clone(),
+                size,
+                content_type,
+            },
+            pre,
+        )
         .await?;
     span.record(SIZE_KEY, size);
     Ok((StatusCode::OK, [(header::ETAG, etag.0)]).into_response())
+}
+
+/// Parse a write's conditional headers into a [`Precondition`] for `index.put`
+/// to enforce atomically. Only the S3-meaningful cases on a PUT are honoured:
+///
+/// - `If-None-Match: *` → create-once ([`Precondition::IfNoneMatchStar`]).
+/// - `If-Match: <etag>` → compare-and-swap ([`Precondition::IfMatch`]).
+/// - neither → [`Precondition::None`].
+///
+/// `If-None-Match: *` wins if both are present. A non-`*` `If-None-Match` on a
+/// PUT isn't a compatibility case we support, so it's ignored (not an error).
+/// A header that isn't valid ASCII is a `400`, never a panic.
+fn parse_write_precondition(headers: &HeaderMap) -> Result<Precondition, AppError> {
+    if let Some(inm) = headers.get(header::IF_NONE_MATCH) {
+        let inm = inm
+            .to_str()
+            .map_err(|_| AppError::InvalidRequest("invalid If-None-Match header".into()))?;
+        if inm.trim() == "*" {
+            return Ok(Precondition::IfNoneMatchStar);
+        }
+    }
+    if let Some(im) = headers.get(header::IF_MATCH) {
+        let im = im
+            .to_str()
+            .map_err(|_| AppError::InvalidRequest("invalid If-Match header".into()))?;
+        return Ok(Precondition::IfMatch(ETag(im.to_string())));
+    }
+    Ok(Precondition::None)
 }
 
 /// `GET /{bucket}/{key}` — stream an object back (V2). Fully wired: it looks up

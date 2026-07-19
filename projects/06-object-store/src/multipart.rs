@@ -362,10 +362,13 @@ impl Multipart {
             .put(
                 &session.bucket,
                 &session.key,
-                digest,
-                etag,
-                total_size,
-                session.content_type,
+                crate::index::NewVersion {
+                    digest,
+                    etag,
+                    size: total_size,
+                    content_type: session.content_type,
+                },
+                crate::index::Precondition::None,
             )
             .await?;
         tfs::remove_dir_all(&staging_dir).await?;

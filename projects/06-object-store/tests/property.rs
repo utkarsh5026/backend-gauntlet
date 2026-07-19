@@ -26,7 +26,7 @@ use bytes::Bytes;
 use futures_util::stream;
 use md5::Md5;
 use object_store::error::AppError;
-use object_store::index::Index;
+use object_store::index::{Index, NewVersion, Precondition};
 use object_store::multipart::{Multipart, PartETag};
 use object_store::naming::{encode_key, validate_bucket_name};
 use object_store::object::{Digest, ETag, ObjectRef};
@@ -210,10 +210,13 @@ async fn put_stored(
         .put(
             bucket,
             key,
-            stored.digest.clone(),
-            stored.etag.clone(),
-            stored.size,
-            "application/octet-stream",
+            NewVersion {
+                digest: stored.digest.clone(),
+                etag: stored.etag.clone(),
+                size: stored.size,
+                content_type: "application/octet-stream".into(),
+            },
+            Precondition::None,
         )
         .await?;
     Ok(())
@@ -226,10 +229,13 @@ async fn put_sample(index: &Index, bucket: &str, key: &str, seed: usize) -> Resu
         .put(
             bucket,
             key,
-            Digest(format!("{seed:064x}")),
-            ETag(format!("etag-{seed}")),
-            seed as u64,
-            "application/octet-stream",
+            NewVersion {
+                digest: Digest(format!("{seed:064x}")),
+                etag: ETag(format!("etag-{seed}")),
+                size: seed as u64,
+                content_type: "application/octet-stream".into(),
+            },
+            Precondition::None,
         )
         .await?;
     Ok(())
