@@ -11,6 +11,8 @@
 //! `Latest` for the hot path, `Version(id)` to pin a historical one. Each entry is
 //! either a live object ([`VersionKind::Live`]) or a delete marker.
 
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +38,14 @@ pub struct Digest(pub String);
 impl Digest {
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl FromStr for Digest {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
     }
 }
 

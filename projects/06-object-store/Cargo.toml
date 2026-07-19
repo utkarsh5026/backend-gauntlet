@@ -27,6 +27,8 @@ futures-util.workspace = true
 bytes.workspace = true
 tokio-util.workspace = true
 async-compression.workspace = true
+# Per-key mutex map in the index (sync outer map + tokio inner lock).
+parking_lot.workspace = true
 
 # Content addressing (V1) names blobs by SHA-256; the S3 ETag (V2/V4) is MD5.
 # `hex` encodes the digests for both the on-disk name and the ETag.

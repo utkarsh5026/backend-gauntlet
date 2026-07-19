@@ -30,7 +30,8 @@
 //!   streaming throughput (bytes/sec).
 //!
 //! Store/index metrics cover successful object operations, physical blob
-//! occupancy, deduplication, garbage collection, ranges, and transfer rates.
+//! occupancy, deduplication, garbage collection, ranges, transfer rates, and
+//! continuous scrubbing (re-hash auditor).
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -101,6 +102,24 @@ pub const MULTIPART_PART_BYTES: &str = "object_store_multipart_part_bytes";
 /// Per-part upload throughput, in bytes per second (part size / stream time).
 pub const MULTIPART_PART_THROUGHPUT: &str =
     "object_store_multipart_part_throughput_bytes_per_second";
+
+/// Completed background scrub passes over the committed blob tree.
+pub const SCRUB_PASSES_TOTAL: &str = "object_store_scrub_passes_total";
+
+/// Blobs whose on-disk bytes still match their content address.
+pub const SCRUB_BLOBS_VERIFIED_TOTAL: &str = "object_store_scrub_blobs_verified_total";
+
+/// Blobs whose bytes no longer match their content address (quarantined).
+pub const SCRUB_CORRUPTIONS_TOTAL: &str = "object_store_scrub_corruptions_total";
+
+/// Bytes read by the scrubber while re-hashing committed blobs.
+pub const SCRUB_BYTES_SCANNED_TOTAL: &str = "object_store_scrub_bytes_scanned_total";
+
+/// Times the scrubber parked on Notify because the blob tree was empty.
+pub const SCRUB_IDLE_WAITS_TOTAL: &str = "object_store_scrub_idle_waits_total";
+
+/// Wall time of one full scrub pass, in seconds.
+pub const SCRUB_PASS_DURATION: &str = "object_store_scrub_pass_duration_seconds";
 
 /// Install the process-global Prometheus recorder and return a handle used to
 /// render the registry for `/metrics`. Call once, from `main`, after telemetry
@@ -175,6 +194,30 @@ fn register_descriptions() {
     metrics::describe_histogram!(
         MULTIPART_PART_THROUGHPUT,
         "Per-part upload throughput in bytes per second"
+    );
+    metrics::describe_counter!(
+        SCRUB_PASSES_TOTAL,
+        "Completed background scrub passes over committed blobs"
+    );
+    metrics::describe_counter!(
+        SCRUB_BLOBS_VERIFIED_TOTAL,
+        "Blobs whose bytes still match their content address"
+    );
+    metrics::describe_counter!(
+        SCRUB_CORRUPTIONS_TOTAL,
+        "Blobs quarantined because bytes no longer match their content address"
+    );
+    metrics::describe_counter!(
+        SCRUB_BYTES_SCANNED_TOTAL,
+        "Bytes read while re-hashing committed blobs"
+    );
+    metrics::describe_counter!(
+        SCRUB_IDLE_WAITS_TOTAL,
+        "Times the scrubber waited on Notify because no blobs were present"
+    );
+    metrics::describe_histogram!(
+        SCRUB_PASS_DURATION,
+        "Wall time of one full scrub pass in seconds"
     );
 }
 

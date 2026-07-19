@@ -17,6 +17,7 @@ const DEFAULT_DATA_DIR: &str = "./data";
 
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
 const DEFAULT_LIFECYCLE_SCAN_INTERVAL_SECS: u64 = 60;
+const DEFAULT_SCRUB_RESCAN_INTERVAL_SECS: u64 = 300;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,6 +49,13 @@ async fn main() -> anyhow::Result<()> {
     // process lifetime — dropping it aborts the sweeper.
     let _lifecycle = state.lifecycle.clone().spawn(lifecycle_scan_interval);
     info!(?lifecycle_scan_interval, "lifecycle sweeper started");
+
+    let scrub_rescan_interval = Duration::from_secs(common_config::parse_or(
+        "SCRUB_RESCAN_INTERVAL_SECS",
+        DEFAULT_SCRUB_RESCAN_INTERVAL_SECS,
+    ));
+    let _scrubber = state.store.clone().spawn_scrubber(scrub_rescan_interval);
+    info!(?scrub_rescan_interval, "blob scrubber started");
 
     let app = routes::router(state).merge(routes::metrics_router(metrics_handle));
 

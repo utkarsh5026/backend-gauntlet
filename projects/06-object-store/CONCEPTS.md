@@ -25,6 +25,8 @@
 
 **Trap:** testing crash-safety by killing your process. `kill -9` doesn't drop the OS page cache — the real test is power loss semantics, which is *why* the fsyncs are there even though every test passes without them.
 
+**Teach-yourself doc:** [`docs/04-how-continuous-scrubbing-works.md`](docs/04-how-continuous-scrubbing-works.md) — how the CAS invariant becomes a continuous at-rest auditor (detect → quarantine → never serve).
+
 ---
 
 ## 🧠 Card 2 — Streaming I/O & free backpressure *(V2 · `src/streaming.rs`)*
