@@ -545,19 +545,10 @@ def dashboard(projects: list[Project]) -> None:
         f"    {C.DIM}verticals{C.RESET} {C.BOLD}{vdone}/{vtot}{C.RESET}"
         f"  {C.DIM}·  checklist{C.RESET} {C.BOLD}{cdone}/{ctot}{C.RESET}"
     )
-    tr = trophies(projects)
-    won = [t for t in tr if t[3]]
-    icons = " ".join(t[0] for t in won) if won else f"{C.DIM}(none yet){C.RESET}"
-    print(
-        f"  {C.BOLD}🏆 case{C.RESET}   {icons}"
-        f"  {C.DIM}{len(won)}/{len(tr)} · python3 tools/status.py trophies{C.RESET}"
-    )
     print(rule())
 
     # --- one aligned row per project --------------------------------------
     # Column widths flex to the data so nothing ever truncates or misaligns.
-    # Only ASCII lives in the aligned columns; emoji/variable text stays in the
-    # trailing `next` column, so plain len() padding stays correct.
     name_w = max((len(p.name) for p in projects), default=len("project"))
     name_w = max(name_w, len("project"))
     vert_w = max([len(f"{p.v_done}/{len(p.verticals)}") for p in projects] + [len("vert")])
@@ -566,7 +557,7 @@ def dashboard(projects: list[Project]) -> None:
 
     print(
         f"  {C.DIM}{'##':<2}  {_pad('project', name_w)} {_pad('state', BADGE_W)}  "
-        f"{_pad('progress', prog_w)}  {_pad('vert', vert_w)}  {_pad('chk', chk_w)}  next{C.RESET}"
+        f"{_pad('progress', prog_w)}  {_pad('vert', vert_w)}  {_pad('chk', chk_w)}{C.RESET}"
     )
     print()
 
@@ -583,23 +574,9 @@ def dashboard(projects: list[Project]) -> None:
         pcd, pct = p.checks
         chk = f"{_count_color(pcd, pct)}{pcd}/{pct}{C.RESET}"
 
-        blocked = p.front.get("blocked-on", "~")
-        cur = p.current
-        if blocked and blocked != "~":
-            nxt = f"{C.RED}⛔ {_trunc(blocked, 44)}{C.RESET}"
-        elif cur is not None:
-            todos = cur.todos
-            tail = f" {C.DIM}({todos} todo!()){C.RESET}" if todos else ""
-            mod = f" {C.DIM}· {cur.module}{C.RESET}" if cur.module else ""
-            nxt = f"{C.YELLOW}{cur.vid}{C.RESET} {_trunc(cur.title, 34)}{mod}{tail}"
-        elif pct and pcd < pct:
-            nxt = f"{C.DIM}{pct - pcd} checklist item(s) left{C.RESET}"
-        else:
-            nxt = f"{C.GREEN}✓ complete{C.RESET}"
-
         print(
             f"  {_pad(num, 2)}  {_pad(name, name_w)} {_pad(badge, BADGE_W)}  "
-            f"{_pad(prog, prog_w)}  {_pad(vert, vert_w)}  {_pad(chk, chk_w)}  {nxt}"
+            f"{_pad(prog, prog_w)}  {_pad(vert, vert_w)}  {_pad(chk, chk_w)}"
         )
 
     print(rule())
