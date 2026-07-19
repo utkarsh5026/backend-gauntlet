@@ -1,0 +1,27 @@
+# The LSM engine keeps its own state (WAL + SSTables under DATA_DIR) — the filesystem
+# IS the database, so there is no datastore dependency here. What compose provides is a
+# **reference redis**: a spec-compliant server to A/B your RESP semantics against, and
+# the source of the `redis-cli` / `redis-benchmark` binaries you drive your own server
+# with (the boss fight's load generator).
+#
+# Host ports follow the project-scoped rule (NN=22): redis's conventional 6379 becomes
+# 6322 on the host, so the reference server never collides with YOUR server on 6379.
+# Container-internal ports stay canonical.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6322:6379"        # reference redis on the host (redis-cli -p 6322)
+    # `redis-benchmark` runs inside this container; point it at your server on the host:
+    #   docker compose exec redis \
+    #     redis-benchmark -h host.docker.internal -p 6379 -t set,get -n 100000 -P 16
+    # (host.docker.internal resolves to the host from inside the container on Docker
+    #  Desktop; on plain Linux add `--add-host=host.docker.internal:host-gateway` or use
+    #  the host's LAN IP.)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

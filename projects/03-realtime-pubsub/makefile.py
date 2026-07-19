@@ -32,6 +32,7 @@ from makefile_runner import (  # noqa: E402
     register_compose_lifecycle,
     register_dev_stack,
     register_help,
+    register_md,
     register_redis,
     register_run,
     register_setup,
@@ -107,6 +108,7 @@ def obs_down() -> None:
 # Auto-detects compose + server + web/ → mprocs (also registers frontend / web-install).
 register_dev_stack(runner)
 
+register_md(runner)
 register_help(runner)
 
 if __name__ == "__main__":

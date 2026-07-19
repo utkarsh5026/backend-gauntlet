@@ -1,0 +1,53 @@
+[package]
+name = "api-gateway"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+# `tower` is the headline crate here: the boring composition (timeout,
+# concurrency-limit, load-shed) is a middleware stack; the *interesting* parts —
+# routing, balancing, circuit breaking — you build by hand (that's the point).
+tower.workspace = true
+tower-http.workspace = true
+
+# The proxy engine. `hyper` is the HTTP core; `hyper-util`'s `legacy::Client` is the
+# pooled upstream client that reuses keep-alive connections (V1), plus the Tokio
+# executor/IO glue hyper 1.x factored out. `http-body-util` supplies the body
+# combinators used to relay a streamed request/response without buffering it.
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+
+# Routing config (JSON): the route → upstream table the router/balancer consume.
+serde.workspace = true
+serde_json.workspace = true
+
+# --- TLS / mTLS (security horizontal, src/tls.rs) ---
+# Pure-Rust TLS (ring provider, so the workspace builds with no C toolchain).
+# Declared here so the mTLS scaffold compiles; the config-building bodies are TODO.
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+# `/metrics` scrape endpoint. `metrics` is the facade the handlers will write to
+# once you add counters/histograms; `metrics-exporter-prometheus` renders them.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test the router's longest-prefix precedence (V2) and the balancer's
+# fair-spread invariant (V3).
+proptest.workspace = true

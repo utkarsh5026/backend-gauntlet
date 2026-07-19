@@ -311,3 +311,78 @@ curl -X POST localhost:8080/jobs \
 # RUN_WORKERS=true against the SAME database and watch the two pools share work.
 ```
 
+## 🔬 From the field
+
+<!-- Adoption backlog distilled from RESEARCH.md by /harvest. NOT graded:
+     [~] = open, [✔] = adopted — not counted toward graded progress;
+     shown under FROM THE FIELD in status detail.
+     Tick a box when the idea has actually landed in this project. -->
+
+### Queue-semantics extras
+
+- [~] Idempotency keys with stored results: enqueueing twice with the same key
+  returns the original job instead of creating a second execution — a unique
+  constraint in the same transaction as the side effect *(→ RESEARCH.md §Part 2)*
+  
+- [~] Transactional enqueue (River's headline feature): an in-process caller
+  enqueues inside its own DB transaction — roll back and the job never existed;
+  the dual-write problem disappears *(→ RESEARCH.md §Part 2)*
+- [~] The transactional outbox, end to end: business row + outbox row commit in
+  one transaction, a relay publishes at-least-once, and an idempotent consumer
+  collapses it to effectively-once *(→ RESEARCH.md §Part 2)*
+- [~] Per-key ordering (SQS `MessageGroupId` analog): jobs sharing an ordering
+  key run strictly in order while different keys run in parallel — and a stuck
+  key blocks only itself *(→ RESEARCH.md §Part 2)*
+- [~] Priority without starvation: higher-priority jobs run first, but waiting
+  low-priority jobs age upward so sustained high-priority load can never starve
+  them forever *(→ RESEARCH.md §Part 2)*
+- [~] Lease heartbeat: a long job extends `locked_until` while its worker is
+  alive, so the lease length no longer caps job duration — and a stalled worker
+  is still reaped *(→ RESEARCH.md §Part 2)*
+- [~] Job dependencies / fan-out: a job becomes ready only when all its parent
+  jobs complete, so a workflow-shaped graph runs in dependency order
+  *(→ RESEARCH.md §Part 1)*
+- [~] Per-queue rate limiting (Cloud Tasks model): a queue configured with max
+  dispatches/sec and max concurrent never exceeds either, no matter the backlog
+  *(→ RESEARCH.md §Part 3)*
+- [~] Enqueue backpressure: past a configured depth bound, `POST /jobs` rejects
+  (429) instead of letting the backlog grow without bound
+  *(→ RESEARCH.md §Part 2)*
+- [~] Batch enqueue: N jobs land in one round trip (`COPY`-style), measured
+  against N single inserts *(→ RESEARCH.md §Part 3)*
+- [~] A retry budget: a system-wide cap on retry volume, so a mass failure
+  backs off collectively instead of thundering-herding the recovering
+  downstream *(→ RESEARCH.md §Part 2)*
+
+### Postgres-at-scale labs
+
+- [~] Reproduce the queue death spiral: a bench holds a long transaction open
+  (pinning xmin) during heavy churn and shows dead tuples accumulating and
+  throughput collapsing — with the dead-tuple ratio on the dashboard climbing
+  *before* throughput falls *(→ RESEARCH.md §Part 3)*
+- [~] TRUNCATE-rotation experiment (Skype PgQ lineage): a rotation-based design
+  produces zero dead tuples by construction; its bloat compared against the
+  DELETE-based table under the same load *(→ RESEARCH.md §Part 3)*
+- [~] UNLOGGED-table experiment: the measured throughput gain of skipping the
+  WAL, and a demonstration of the price — the queue table is truncated on crash
+  *(→ RESEARCH.md §Part 2 & 3)*
+- [~] Autoscaling on the golden signals (KEDA analog): the worker pool grows
+  and shrinks driven by queue depth and oldest-ready-job age
+  *(→ RESEARCH.md §Part 2)*
+
+### Alternative-substrate labs
+
+- [~] A Redis Streams backend: consumer groups (`XREADGROUP`, the PEL, `XACK`,
+  `XAUTOCLAIM`) pass the same acceptance suite as the Postgres backend — same
+  semantics, different substrate *(→ RESEARCH.md §Part 3)*
+- [~] A hierarchical timing wheel: O(1) insert/expire scheduling for delayed
+  jobs (the Kafka-purgatory structure), compared against the timestamp-scan
+  approach *(→ RESEARCH.md §Part 2)*
+
+### Correctness practice
+
+- [~] A measured duplicate rate: the chaos bench kills workers in a loop and
+  reports duplicate executions per N jobs; the design doc states the threshold
+  at which broker-side dedup would become worth building
+  *(→ RESEARCH.md §Recommendations 1)*
+

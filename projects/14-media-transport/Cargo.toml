@@ -1,0 +1,47 @@
+[package]
+name = "media-transport"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+# UdpSocket + timers + select + signal. RTP/RTCP ride raw UDP datagrams, so the
+# transport is `tokio::net::UdpSocket`, not axum.
+tokio.workspace = true
+# A tiny admin/observability HTTP surface (readiness probe + /metrics scrape) — the
+# media plane is UDP; this is only the control/health side.
+axum.workspace = true
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# RTP and RTCP are fixed-layout big-endian wire formats (12-byte RTP header, RTCP
+# report blocks, RFC 4585 NACK FCI). `bytes`' `Buf`/`BufMut` read/write u16/u32 BE and
+# `Bytes` is the cheap-to-clone buffer a packetized frame / retransmit-cached packet is
+# held as (clone = refcount bump — what the fan-out to retransmit + jitter buffer needs).
+bytes.workspace = true
+# RFC 3550 wants a *random* SSRC and randomized initial sequence number / timestamp per
+# stream (so mixers/relays can't assume 0); also drives the loss/jitter link simulator.
+rand.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# Observability: counters/gauges for packets, loss, NACKs, jitter, buffer depth and the
+# congestion-control target bitrate, rendered at `/metrics` (same wiring as project 01).
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test that the RTP header codec round-trips, that the jitter buffer's 16-bit
+# sequence unwrap survives wraparound, and that the RTCP/NACK parsers never panic on
+# truncated or adversarial datagrams.
+proptest.workspace = true

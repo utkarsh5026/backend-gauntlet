@@ -1,0 +1,62 @@
+[package]
+name = "live-platform"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Project 16 is a **capstone**: no new primitive, it wires the pieces you built in
+# 03 (chat fan-out), 11 (HLS packaging), 12 (transcode) and 13 (RTMP ingest) into
+# one glass-to-glass pipeline and runs it on k8s. So its deps are the union of what
+# those pieces need — nothing exotic, all already pinned in the workspace.
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+# `ws` for the chat WebSocket (V4); the ingest webhook + playback + admin are plain HTTP.
+axum = { workspace = true, features = ["ws"] }
+tower-http.workspace = true
+# Chat fan-out drives the split halves of a WebSocket (Stream/Sink combinators).
+futures-util.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# Control plane state (which stream is live, on which ingest node, its ABR ladder,
+# HLS output location) is durable in Postgres — a restart must not lose live streams.
+sqlx.workspace = true
+# Chat fan-out + presence ride Redis pub/sub across nodes (as in project 03), and
+# the edge coordinates cache fills through it too.
+redis.workspace = true
+# The transcode job queue between ingest and the autoscaled worker pool is NATS
+# JetStream (the durable log from project 05) — a claimed job survives a worker eviction.
+async-nats.workspace = true
+
+# Playback serves HLS segments/partials as streamed byte-ranges; `Bytes` is the
+# cheap-to-clone buffer the edge fans out to many viewers, `tokio-util`'s ReaderStream
+# turns a segment file into a response body without buffering it in RAM.
+bytes.workspace = true
+tokio-util.workspace = true
+# The edge pulls segments/playlists from the packager origin over HTTP on a miss.
+reqwest.workspace = true
+
+chrono.workspace = true
+uuid.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# Observability: per-stream gauges + glass-to-glass latency, the transcode queue
+# depth that drives the autoscaler, edge hit ratio and chat fan-out — rendered at
+# `/metrics` (same wiring as project 01 / 15).
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Black-box acceptance tests (written during a /quest) drive the public HTTP/WS
+# surface; property tests fuzz the control-plane state machine + edge coalescing key.
+proptest.workspace = true

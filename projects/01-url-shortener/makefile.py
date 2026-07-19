@@ -28,6 +28,7 @@ from makefile_runner import (  # noqa: E402
     register_cargo_checks,
     register_compose_lifecycle,
     register_help,
+    register_md,
     register_postgres,
     register_redis,
     register_run,
@@ -130,6 +131,7 @@ def bench_load() -> None:
     runner.run(["node", "bench/run.js"], cwd=runner.project_dir, env=runner.load_dotenv())
 
 
+register_md(runner)
 register_help(runner)
 
 if __name__ == "__main__":

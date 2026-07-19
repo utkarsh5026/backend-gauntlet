@@ -18,7 +18,7 @@ RUNNER := $(PY) $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/makefile.py)
 TASKS := help setup web-install up deps down ps logs wait-redis \
          obs-up obs-down \
          check clippy fmt fmt-check test verify clean \
-         run dev frontend smoke
+         run dev frontend smoke md
 
 .DEFAULT_GOAL := help
 .PHONY: $(TASKS)

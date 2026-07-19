@@ -1,0 +1,35 @@
+[package]
+name = "vod-streaming"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+# CORS (browser players fetch cross-origin) + request tracing.
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# ISO-BMFF is a tree of big-endian, length-prefixed boxes; `bytes`' `Buf`/`BufMut`
+# read/write u32/u64 big-endian, which is exactly the box wire format — so the
+# demuxer (V1) and the fMP4 muxer (V2) need no separate byte-order crate. `Bytes`
+# is also the cheap-to-clone buffer a built segment is handed back to the router as.
+bytes.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test that the box parser (V1) never panics on truncated/fuzzed input,
+# and round-trip the sample-table geometry.
+proptest.workspace = true

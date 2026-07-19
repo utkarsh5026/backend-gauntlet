@@ -1,0 +1,45 @@
+[package]
+name = "bittorrent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+# A thin HTTP control plane (add torrents, inspect progress, /metrics, /healthz) —
+# the engine is the product; axum is just how you drive and observe it.
+axum.workspace = true
+tower-http.workspace = true
+
+# HTTP tracker announce (V3). The UDP tracker + the raw-TCP peer wire use tokio's own
+# net types, not a client library — that's the point of the exercise.
+reqwest.workspace = true
+
+# SHA-1: the infohash = SHA-1 of the bencoded info dict (V2), and every downloaded
+# piece is verified against its SHA-1 before it's written (V5).
+sha1.workspace = true
+# Hex for infohash display / the control-plane JSON and URL params.
+hex.workspace = true
+# Randomness: the peer_id (client.rs) and the seeder's optimistic-unchoke pick (V6).
+rand.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# /metrics: bytes down/up, pieces verified (ok|failed), peers connected/unchoked,
+# tracker announces. The unchoked-peers gauge is what proves the V6 slot cap.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property tests for the bencode codec round-trip (V1) and piece selection (V5).
+proptest.workspace = true

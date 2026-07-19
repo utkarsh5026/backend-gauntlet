@@ -1,0 +1,51 @@
+[package]
+name = "lsm-redis"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+# The RESP server is a raw-TCP protocol server (V1) — real `redis-cli` connects to a
+# `tokio::net::TcpListener`, not to an HTTP framework. axum + tower-http here are only
+# the thin sidecar that serves `/healthz`, `/metrics`, `/stats` — the engine is the
+# product; HTTP is just how you observe it (same split as project 19's control plane).
+axum.workspace = true
+tower-http.workspace = true
+
+# RESP frames and stored keys/values flow through the parse → memtable → SSTable →
+# reply path. `Bytes`/`BytesMut` are the cheap-to-clone, ref-counted byte buffers so a
+# value can be shared between the read path and a wire reply without copying, and the
+# connection read buffer can be split frame-by-frame during pipelining (V1).
+bytes.workspace = true
+
+# Every WAL frame (V2) and every SSTable block (V4) carries a CRC so a torn tail after
+# a crash — or a bit-rotted block on disk — is *detected* on read, not silently served.
+# Declared here so it's ready when you build the framing; unused until then.
+crc32fast.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# /metrics: ops/sec by command, a command-latency histogram (for p99), memtable bytes,
+# SSTable count per level, compactions + bytes compacted, block-cache hit ratio, WAL
+# fsync latency, connected clients. Wiring the call sites is the observability item.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property tests for the pieces whose correctness is an invariant, not a vibe:
+# the RESP codec round-trip (V1: encode∘parse == identity), the WAL frame round-trip
+# and torn-tail detection (V2), memtable ordering + tombstone semantics (V3), the
+# SSTable key lookup (V4), and the bloom filter's no-false-negatives guarantee (V5).
+proptest.workspace = true

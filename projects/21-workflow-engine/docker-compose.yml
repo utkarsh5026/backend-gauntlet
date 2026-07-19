@@ -1,0 +1,28 @@
+services:
+  # Postgres is the engine's single durable source of truth. THREE things live here,
+  # and every one of them must survive a crash for "durable execution" to mean
+  # anything:
+  #   • history_events — the append-only event log; folding it rebuilds any execution.
+  #   • task_queue     — the workflow/activity tasks the dispatcher hands to workers.
+  #   • timers         — durable timers, so a `sleep(3 days)` outlives every process.
+  # There is deliberately no Redis: the sticky-state cache (V5) is worker-LOCAL memory,
+  # an optimization over replay — never a second source of truth.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: workflow
+      POSTGRES_PASSWORD: workflow
+      POSTGRES_DB: workflow
+    # Host port = 54NN with NN=21 (project-scoped); container port stays 5432.
+    ports:
+      - "5421:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

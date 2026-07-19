@@ -1,0 +1,54 @@
+# The gateway in front of a pool of 3 echo backends.
+#
+#   docker compose up --build
+#   curl localhost:8080/            # traefik/whoami — the backend name changes (LB, V3)
+#   docker compose stop whoami-b    # kill one backend...
+#   curl localhost:8080/            # ...still 200 from a healthy one (fail-fast, V4)
+#   curl localhost:8080/admin/routes
+#
+# The backends are `traefik/whoami`: each response reports which container served it,
+# so you can *see* the load balancer spread requests and reroute around a dead node.
+# They run no compose healthcheck on purpose — whoami is a scratch image with no
+# shell, and detecting backend health is exactly what the gateway does itself (V4).
+
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: projects/10-api-gateway/Dockerfile
+    environment:
+      PORT: "8080"
+      # Built-in catch-all route over this pool (no config file needed).
+      UPSTREAM_BACKENDS: "whoami-a:80,whoami-b:80,whoami-c:80"
+      LB_POLICY: "round_robin"
+      UPSTREAM_CONNECT_TIMEOUT_MS: "2000"
+      REQUEST_TIMEOUT_MS: "10000"
+      HEALTH_PROBE_MS: "2000"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    depends_on:
+      - whoami-a
+      - whoami-b
+      - whoami-c
+
+  whoami-a:
+    image: traefik/whoami:latest
+    command: ["--name", "whoami-a"]
+    restart: unless-stopped
+
+  whoami-b:
+    image: traefik/whoami:latest
+    command: ["--name", "whoami-b"]
+    restart: unless-stopped
+
+  whoami-c:
+    image: traefik/whoami:latest
+    command: ["--name", "whoami-c"]
+    restart: unless-stopped

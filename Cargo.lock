@@ -2188,6 +2188,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "object_store",
+ "parking_lot",
  "proptest",
  "quick-xml 0.37.5",
  "reqwest",
@@ -2201,6 +2202,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "uuid",
  "workspace-hack",
 ]

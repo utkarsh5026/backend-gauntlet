@@ -1,0 +1,23 @@
+services:
+  # Postgres is the coordinator's durable memory: the job DAG (jobs + tasks +
+  # dependency edges + status/leases) lives in rows, so a crashed worker's task
+  # becomes claimable again and the pipeline survives a restart. The chunk/output
+  # *artifacts* live on the filesystem under WORK_DIR — not in the DB.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: transcode
+      POSTGRES_PASSWORD: transcode
+      POSTGRES_DB: transcode
+    ports:
+      - "5412:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transcode"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

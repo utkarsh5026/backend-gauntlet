@@ -12,6 +12,7 @@ mod id_gen;
 mod ingest;
 mod metrics;
 mod ratelimit;
+mod resolve;
 mod routes;
 mod shutdown;
 mod url_validate;

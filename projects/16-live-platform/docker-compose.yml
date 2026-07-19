@@ -1,0 +1,52 @@
+services:
+  # Control plane store: durable stream sessions (which stream is live, on which
+  # ingest node, its ABR ladder, HLS output). Source of truth — a control-plane
+  # restart reconciles live streams from here (V1) rather than losing them.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: live
+      POSTGRES_PASSWORD: live
+      POSTGRES_DB: live
+    ports:
+      - "5416:5432" # host port = 54NN (project 16); container port stays canonical
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Chat bus: cross-node pub/sub so a message published on one pod reaches
+  # subscribers on the others (V4, as in project 03). Also coordinates edge fills.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6316:6379" # host port = 63NN
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Transcode queue: NATS with JetStream is the durable log between ingest and the
+  # autoscaled worker pool (V2). A claimed job survives a worker pod eviction.
+  nats:
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
+    ports:
+      - "4216:4222" # client connections (host port = 42NN)
+      - "8216:8222" # monitoring / health
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  natsdata:

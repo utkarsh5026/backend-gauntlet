@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+package workflow.v1;
+
+// A minimal durable-workflow engine — the core of Temporal, rebuilt from scratch.
+//
+// Two kinds of client talk to this service:
+//   • starters — kick off and query executions (StartWorkflow, GetWorkflowResult);
+//   • workers  — long-poll for tasks, run the workflow function / activities, and
+//     report the outcome (PollWorkflowTask / RespondWorkflowTaskCompleted, plus the
+//     activity pair).
+//
+// The server owns the durable truth (each execution's event history) and hands
+// workers just enough of it to make progress. Workers hold NO durable state — kill
+// one mid-task and another picks the execution up by replaying its history. That is
+// the whole promise of the engine: durable execution across crashes.
+service WorkflowService {
+  // Start a new execution: append WORKFLOW_STARTED to a fresh history and enqueue its
+  // first workflow task. Returns the run id that names this execution attempt.
+  rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse);
+
+  // Long-poll for the next workflow task on `task_queue`. The response carries the
+  // history the worker must replay to rebuild state (V2) — or, on a sticky cache hit
+  // (V5), only the events appended since this worker last ran the execution.
+  rpc PollWorkflowTask(PollWorkflowTaskRequest) returns (PollWorkflowTaskResponse);
+
+  // Report the commands the workflow produced this task (schedule an activity, start
+  // a timer, complete/fail the workflow). The server validates them against history
+  // for determinism (V2) and turns each into one or more events.
+  rpc RespondWorkflowTaskCompleted(RespondWorkflowTaskCompletedRequest)
+      returns (RespondWorkflowTaskCompletedResponse);
+
+  // Long-poll for the next activity task on `task_queue`.
+  rpc PollActivityTask(PollActivityTaskRequest) returns (PollActivityTaskResponse);
+
+  // Report an activity's result; the server appends ACTIVITY_COMPLETED and schedules
+  // a workflow task so the workflow can react to it.
+  rpc RespondActivityTaskCompleted(RespondActivityTaskCompletedRequest)
+      returns (RespondActivityTaskCompletedResponse);
+
+  // Report an activity failure; the server appends ACTIVITY_FAILED (the workflow may
+  // retry it or handle the error on its next task).
+  rpc RespondActivityTaskFailed(RespondActivityTaskFailedRequest)
+      returns (RespondActivityTaskFailedResponse);
+
+  // Return the execution's current state — terminal result when done, or "running".
+  // Starters and tests use it to read the final answer.
+  rpc GetWorkflowResult(GetWorkflowResultRequest) returns (GetWorkflowResultResponse);
+}
+
+// ---- history ----
+
+// The kind of a history event. A history is an append-only log of these; folding it
+// left-to-right reconstructs the execution's state (V1/V2).
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  WORKFLOW_STARTED = 1;
+  WORKFLOW_TASK_SCHEDULED = 2;
+  WORKFLOW_TASK_STARTED = 3;
+  WORKFLOW_TASK_COMPLETED = 4;
+  ACTIVITY_SCHEDULED = 5;
+  ACTIVITY_STARTED = 6;
+  ACTIVITY_COMPLETED = 7;
+  ACTIVITY_FAILED = 8;
+  TIMER_STARTED = 9;
+  TIMER_FIRED = 10;
+  WORKFLOW_COMPLETED = 11;
+  WORKFLOW_FAILED = 12;
+}
+
+// One entry in an execution's history. `event_id` is monotonic per run and defines
+// the replay order; `attributes` is the event-type-specific payload (JSON bytes).
+message HistoryEvent {
+  int64 event_id = 1;
+  EventType event_type = 2;
+  int64 timestamp_ms = 3;
+  bytes attributes = 4;
+}
+
+// ---- commands ----
+
+enum CommandType {
+  COMMAND_TYPE_UNSPECIFIED = 0;
+  SCHEDULE_ACTIVITY = 1;
+  START_TIMER = 2;
+  COMPLETE_WORKFLOW = 3;
+  FAIL_WORKFLOW = 4;
+}
+
+// A decision the workflow made on its most recent task. The server validates the
+// command stream against the replayed history (determinism, V2) and turns each into
+// events + the side effects they imply (an activity task, a durable timer, …).
+message Command {
+  CommandType command_type = 1;
+  // SCHEDULE_ACTIVITY
+  string activity_type = 2;
+  bytes activity_input = 3;
+  // START_TIMER
+  string timer_id = 4;
+  int64 timer_delay_ms = 5;
+  // COMPLETE_WORKFLOW / FAIL_WORKFLOW
+  bytes result = 6;
+  string failure = 7;
+}
+
+// ---- rpc messages ----
+
+message StartWorkflowRequest {
+  string workflow_type = 1;
+  // Caller-chosen id for the logical workflow; the reuse policy (reject a duplicate?
+  // start a new run?) is yours to define.
+  string workflow_id = 2;
+  string task_queue = 3;
+  bytes input = 4;
+}
+message StartWorkflowResponse {
+  string run_id = 1;
+}
+
+message PollWorkflowTaskRequest {
+  string task_queue = 1;
+  // Worker identity — the key sticky routing (V5) uses to send an execution back to
+  // the worker that still has its state cached.
+  string identity = 2;
+}
+message PollWorkflowTaskResponse {
+  // Opaque token that authorizes exactly one RespondWorkflowTaskCompleted. An EMPTY
+  // token means the long-poll timed out with no work — the worker should poll again.
+  bytes task_token = 1;
+  string workflow_id = 2;
+  string run_id = 3;
+  // The history to replay. On a sticky hit this is only the events appended since the
+  // worker last ran this execution (V5); otherwise it is the full history (V2).
+  repeated HistoryEvent history = 4;
+  bool sticky_cache_hit = 5;
+}
+
+message RespondWorkflowTaskCompletedRequest {
+  bytes task_token = 1;
+  repeated Command commands = 2;
+}
+message RespondWorkflowTaskCompletedResponse {}
+
+message PollActivityTaskRequest {
+  string task_queue = 1;
+  string identity = 2;
+}
+message PollActivityTaskResponse {
+  // Empty token = long-poll timed out with no work.
+  bytes task_token = 1;
+  string activity_type = 2;
+  bytes input = 3;
+  string workflow_id = 4;
+  string run_id = 5;
+}
+
+message RespondActivityTaskCompletedRequest {
+  bytes task_token = 1;
+  bytes result = 2;
+}
+message RespondActivityTaskCompletedResponse {}
+
+message RespondActivityTaskFailedRequest {
+  bytes task_token = 1;
+  string failure = 2;
+}
+message RespondActivityTaskFailedResponse {}
+
+message GetWorkflowResultRequest {
+  string workflow_id = 1;
+  string run_id = 2;
+}
+message GetWorkflowResultResponse {
+  // Terminal outcome. `running` true means the execution has not finished yet.
+  bool running = 1;
+  bool completed = 2;
+  bytes result = 3;
+  string failure = 4;
+}

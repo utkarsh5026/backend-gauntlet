@@ -1,0 +1,65 @@
+# A 3-node cache cluster you can watch gossip and rebalance.
+#
+#   docker compose up --build
+#   curl -XPUT localhost:8071/cache/hello -d 'world'
+#   curl       localhost:8072/cache/hello      # any node serves any key
+#   curl       localhost:8073/cluster          # views converge across nodes
+#
+# All three build the same image; cache-a is the seed the others join through.
+# Gossip travels over the internal network on UDP 7070 (service name = advertised
+# host); only the HTTP API is published to the host, on 8071/8072/8073.
+
+x-cache-node: &cache-node
+  build:
+    context: ../..
+    dockerfile: projects/07-distributed-cache/Dockerfile
+  environment: &cache-env
+    PORT: "8070"
+    GOSSIP_PORT: "7070"
+    CACHE_CAPACITY: "100000"
+    REPLICATION_FACTOR: "2"
+    VNODES_PER_NODE: "128"
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8070/healthz"]
+    interval: 5s
+    timeout: 3s
+    retries: 5
+    start_period: 5s
+  restart: unless-stopped
+
+services:
+  cache-a:
+    <<: *cache-node
+    environment:
+      <<: *cache-env
+      NODE_ID: cache-a
+      ADVERTISE_HOST: cache-a
+      SEEDS: "" # the seed itself joins no one
+    ports:
+      - "8071:8070"
+
+  cache-b:
+    <<: *cache-node
+    environment:
+      <<: *cache-env
+      NODE_ID: cache-b
+      ADVERTISE_HOST: cache-b
+      SEEDS: "cache-a:7070"
+    ports:
+      - "8072:8070"
+    depends_on:
+      cache-a:
+        condition: service_healthy
+
+  cache-c:
+    <<: *cache-node
+    environment:
+      <<: *cache-env
+      NODE_ID: cache-c
+      ADVERTISE_HOST: cache-c
+      SEEDS: "cache-a:7070"
+    ports:
+      - "8073:8070"
+    depends_on:
+      cache-a:
+        condition: service_healthy

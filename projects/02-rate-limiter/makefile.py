@@ -27,6 +27,7 @@ from makefile_runner import (  # noqa: E402
     register_cargo_checks,
     register_compose_lifecycle,
     register_help,
+    register_md,
     register_redis,
     register_run,
     register_setup,
@@ -100,6 +101,7 @@ def smoke() -> None:
         sys.exit(1)
 
 
+register_md(runner)
 register_help(runner)
 
 if __name__ == "__main__":

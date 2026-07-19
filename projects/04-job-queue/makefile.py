@@ -27,6 +27,7 @@ from makefile_runner import (  # noqa: E402
     register_cargo_checks,
     register_compose_lifecycle,
     register_help,
+    register_md,
     register_postgres,
     register_run,
     register_setup,
@@ -103,6 +104,7 @@ def dev_container() -> None:
     runner.ok("job-queue is up → http://localhost:8080 (make logs to follow it)")
 
 
+register_md(runner)
 register_help(runner)
 
 if __name__ == "__main__":

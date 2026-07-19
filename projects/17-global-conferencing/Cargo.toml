@@ -1,0 +1,61 @@
+[package]
+name = "global-conferencing"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Project 17 is a **capstone**: no new media primitive. It composes the region-local SFU
+# (project 15 — ICE/STUN, per-subscriber RTP rewrite, simulcast selection, BWE) and the
+# reliable RTP transport under it (project 14) into a *global* cascade, and leans on the
+# Raft ideas from project 09 for room placement. So its deps are the union of what those
+# pieces need — nothing exotic, all already pinned in the workspace.
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+# Signaling (publish/subscribe) + inter-SFU cluster control RPC + admin all share one HTTP
+# server. No WebSocket here — signaling is JSON request/response (as in project 15).
+axum.workspace = true
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# The media planes are UDP: a participant-facing muxed socket (STUN/RTP/RTCP, as in p15)
+# and a backbone cascade socket that relays media between SFUs (V2). `Bytes` is the
+# cheap-to-clone buffer a relayed packet is fanned out from.
+bytes.workspace = true
+tokio-util.workspace = true
+
+# Inter-SFU control plane: the Raft-lite placement/membership RPCs (V1) are POSTed
+# node-to-node over HTTP — the same transport project 09 uses for RequestVote/AppendEntries.
+reqwest.workspace = true
+# Randomized election timeout: the same thing that breaks split votes in project 09's Raft
+# breaks them here so the mesh converges on a single placement leader.
+rand.workspace = true
+
+# Recording (V4) maps each track's RTP timestamp to wall-clock time via RTCP sender reports
+# (the p14 clock-mapping idea) and stamps segment start/end times.
+chrono.workspace = true
+# Room ids / recording ids.
+uuid.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# Observability: relay copies out per region-pair (the fan-out-amplification number the boss
+# fight judges), placement commits/elections, layers carried per leg, recorded bytes — all
+# rendered at `/metrics` (same wiring as projects 01 / 15 / 16).
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Black-box acceptance tests (written during a /quest) drive the public signaling/cluster
+# HTTP surface; property tests fuzz the placement state machine (one home per room) and the
+# cascade loop-prevention/relay-dedup logic.
+proptest.workspace = true

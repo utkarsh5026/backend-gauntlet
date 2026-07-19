@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package ratelimit.v1;
+
+// A distributed rate-limiting service. Gateways and upstream services call
+// `Check` before admitting a request; the limiter returns an allow/deny decision
+// and reports how much of the budget remains. The decision must be cheap and
+// fast — this sits on someone else's hot path.
+service RateLimiter {
+  // Atomically account for one request against `key` and return the decision.
+  // Consumes `cost` tokens of budget when allowed.
+  rpc Check(CheckRequest) returns (CheckResponse);
+
+  // Report the current state for `key` WITHOUT consuming budget — for
+  // dashboards, debugging, and "am I about to be limited?" probes.
+  rpc Peek(PeekRequest) returns (CheckResponse);
+}
+
+message CheckRequest {
+  // The identity to limit on: an API key, user id, or client IP.
+  string key = 1;
+  // How many tokens this request should cost. 0 is treated as 1.
+  uint32 cost = 2;
+}
+
+message PeekRequest {
+  // The identity whose state to inspect.
+  string key = 1;
+}
+
+message CheckResponse {
+  // Whether the request is permitted.
+  bool allowed = 1;
+  // Budget remaining in the current window after this decision.
+  uint64 remaining = 2;
+  // The configured ceiling that applied (burst size / window limit).
+  uint64 limit = 3;
+  // If denied, how long the caller should wait before retrying, in milliseconds.
+  uint64 retry_after_ms = 4;
+}

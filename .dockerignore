@@ -1,0 +1,12 @@
+# Workspace-root Docker build contexts (e.g. projects/*/Dockerfile with context ../..).
+**/target/
+**/.git/
+**/node_modules/
+**/.vite/
+**/dist/
+**/.env
+**/.env.local
+**/data/
+**/data-*/
+**/bench/results/
+**/.cursor/

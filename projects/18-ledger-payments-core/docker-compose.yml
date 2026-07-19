@@ -1,0 +1,37 @@
+services:
+  # Postgres is the transactional source of truth: accounts, immutable entries,
+  # the idempotency record, and the webhook outbox all live here. The whole point
+  # of the project (V2) is the isolation level Postgres runs your transfers under.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+      POSTGRES_DB: ledger
+    # Host port = 54NN with NN=18 (project-scoped); container port stays 5432.
+    ports:
+      - "5418:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Redis caches idempotency responses (V3) for fast replay. It is a cache, not
+  # the source of truth — Postgres holds the durable idempotency record, so Redis
+  # being down degrades to a Postgres read, never to a double-charge.
+  redis:
+    image: redis:7-alpine
+    # Host port = 63NN with NN=18; container port stays 6379.
+    ports:
+      - "6318:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

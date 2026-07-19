@@ -243,3 +243,60 @@ cargo run -p realtime-pubsub
 # multi-node test (V4): run two with CLUSTER=true on different ports,
 # subscribe on one, publish on the other, watch it arrive.
 ```
+
+## 🔬 From the field
+
+<!-- Adoption backlog distilled from RESEARCH.md by /harvest. NOT graded:
+     [~] = open, [✔] = adopted — not counted toward graded progress;
+     shown under FROM THE FIELD in status detail.
+     Tick a box when the idea has actually landed in this project. -->
+
+### Protocol extras (MQTT-inspired)
+
+- [~] Retained messages: the broker keeps the last message per topic, and a new
+  subscriber receives it immediately on subscribe; publishing an empty retained
+  payload clears it *(→ RESEARCH.md §4)*
+- [~] Last Will & Testament: a client registers a "will" message at connect,
+  and an abrupt disconnect makes the broker publish it — the canonical
+  online/offline pattern, a natural companion to presence *(→ RESEARCH.md §4)*
+- [~] Persistent sessions: a subscriber that reconnects with its session id
+  receives the messages published while it was offline — real time decoupling,
+  not fire-and-forget *(→ RESEARCH.md §1 & 4)*
+- [~] QoS 1 over the socket: delivery is publish → ack, and unacked messages
+  are redelivered on reconnect — at-least-once to the client, duplicates
+  possible and documented *(→ RESEARCH.md §4)*
+- [~] Wildcard subscriptions: one subscription matches a topic family
+  (`home/+/temp`, `events.us.>`) via trie-based matching, not per-topic
+  enumeration *(→ RESEARCH.md §1 & 4)*
+
+### Delivery & flow-control upgrades
+
+- [~] Credit-based flow control (AMQP 1.0 model): a subscriber grants credit
+  and the server sends at most that many messages — a slow consumer throttles
+  itself without being disconnected and without a fixed drop policy
+  *(→ RESEARCH.md §3.4)*
+- [~] Write batching: the outbound path coalesces queued messages into batched
+  socket writes, and the fan-out throughput gain is measured
+  *(→ RESEARCH.md §3.6)*
+- [~] Zero-copy fan-out: one published payload is shared by reference
+  (`bytes::Bytes`) across every subscriber's mailbox — no per-subscriber copy
+  of the body *(→ RESEARCH.md §3.6)*
+- [~] A replayable topic buffer (fan-out-read): each topic keeps a bounded
+  in-memory log with per-subscriber cursors, so a new subscriber can replay the
+  last N messages instead of joining blind *(→ RESEARCH.md §3.1 & 3.5)*
+- [~] Consumer groups: N members of a group share a topic's messages (each
+  message to exactly one member) while ordinary subscribers still get them all
+  — competing consumers layered on pub/sub *(→ RESEARCH.md §3.5)*
+- [~] Redis Streams as the cross-node bus: the V4 bridge rides `XADD` /
+  `XREADGROUP` instead of fire-and-forget pub/sub, so a node that briefly
+  disconnects catches up instead of silently missing messages
+  *(→ RESEARCH.md §4 & 5)*
+
+### Correctness practice
+
+- [~] Deterministic simulation testing: the hub + bus run under an injected
+  clock/network (madsim/turmoil) with faults, and any failure reproduces
+  exactly from its seed *(→ RESEARCH.md §7)*
+- [~] Fuzz the frame parser: the JSON protocol parser survives a fuzzer
+  (arbitrary bytes never panic it — malformed input always becomes a protocol
+  `error`) *(→ RESEARCH.md §7)*

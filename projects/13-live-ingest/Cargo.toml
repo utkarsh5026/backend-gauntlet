@@ -1,0 +1,40 @@
+[package]
+name = "live-ingest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+# CORS (browser LL-HLS players fetch cross-origin) + request tracing.
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# RTMP chunks and fMP4 boxes are both length-prefixed big-endian byte soup; `bytes`'
+# `Buf`/`BufMut` read/write u16/u24/u32/u64 BE (the RTMP header + ISO-BMFF wire
+# format) with no separate byte-order crate, and `Bytes` is the cheap-to-clone buffer
+# a built init/segment/part is handed to every viewer as (built once, `.clone()` is a
+# refcount bump — the memoization the fan-out needs).
+bytes.workspace = true
+# `#EXT-X-PROGRAM-DATE-TIME` and the live-edge clock want wall-clock timestamps (V4).
+chrono.workspace = true
+# The RTMP S1 handshake block is 1528 random bytes the client echoes back (V1).
+rand.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test that the chunk-stream reader (V1) and AMF0 codec (V2) never panic on
+# truncated/adversarial input, and round-trip the geometry they parse.
+proptest.workspace = true

@@ -1,0 +1,33 @@
+{
+  "_comment": "Example route table. Point CONFIG_PATH at a copy of this. Routes are matched by host + longest path_prefix + method (V2); each route's upstream is a pool balanced per `lb` (V3).",
+  "routes": [
+    {
+      "name": "users-api",
+      "host": "api.example.com",
+      "path_prefix": "/api/v2/users",
+      "methods": ["GET", "POST"],
+      "upstream": {
+        "backends": ["10.0.0.11:8080", "10.0.0.12:8080"],
+        "lb": "p2c"
+      }
+    },
+    {
+      "name": "api-fallback",
+      "path_prefix": "/api",
+      "methods": [],
+      "upstream": {
+        "backends": ["10.0.0.20:8080"],
+        "lb": "least_conn"
+      }
+    },
+    {
+      "name": "default",
+      "path_prefix": "/",
+      "methods": [],
+      "upstream": {
+        "backends": ["10.0.0.30:8080", "10.0.0.31:8080", "10.0.0.32:8080"],
+        "lb": "round_robin"
+      }
+    }
+  ]
+}

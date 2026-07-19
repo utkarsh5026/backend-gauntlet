@@ -1,0 +1,57 @@
+[package]
+name = "ledger-payments-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+
+# Postgres is the durable, transactional source of truth for the whole ledger:
+# accounts, immutable entries, the idempotency record, and the webhook outbox.
+# The isolation story (V2) lives here — SERIALIZABLE / row locks + 40001 retry.
+sqlx.workspace = true
+# Redis caches idempotency responses for fast replay (V3); Postgres stays the
+# durable record, so a cache miss re-reads the stored result, never re-executes.
+redis.workspace = true
+
+# Outbound webhook delivery (V4): sign, POST to the merchant, retry with backoff.
+# rustls (not OpenSSL) keeps the workspace free of a system TLS dependency.
+reqwest.workspace = true
+# HMAC-SHA256 request signing for webhooks (V4): X-Signature over (timestamp, body).
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Jitter on the webhook retry backoff (V4) so a fleet of failed deliveries doesn't
+# resynchronize into a thundering retry wave.
+rand.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+# Account/transaction/entry timestamps map to TIMESTAMPTZ via chrono; money is
+# integer minor units (i64/BIGINT), never a float.
+chrono.workspace = true
+# Account and transaction ids are UUIDs (no coordination, unlike a BIGSERIAL).
+uuid.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# /metrics: transfers/sec, serialization-retry count, idempotency hit ratio,
+# webhook delivered/failed/dead, outbox lag.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# For property-testing the ledger invariant (V1): random balanced batches keep
+# Σ entries == 0, and the backoff curve (V4) is monotonic, capped, jittered.
+proptest.workspace = true

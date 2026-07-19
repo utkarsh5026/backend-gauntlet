@@ -1,0 +1,43 @@
+[package]
+name = "distributed-cache"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+
+# Cache values are `Bytes` (ref-counted) so cloning a value into a response or a
+# replication forward is a pointer bump, not a copy of the payload.
+bytes.workspace = true
+
+# Gossip (V3) is JSON-over-UDP while you build it — legible on the wire; swap for
+# a binary codec later. Also backs the JSON `/cluster` + error responses.
+serde.workspace = true
+serde_json.workspace = true
+
+# The consistent-hash ring (V2) hashes node ids + keys onto a 64-bit ring with a
+# stable digest — std's DefaultHasher isn't stable across builds, sha2 is.
+sha2.workspace = true
+hex.workspace = true
+
+# SWIM (V3) probes a *random* peer each round — that randomness is core to its
+# O(log n) dissemination and even failure-detection load.
+rand.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test the store's capacity invariant (V1) and the ring's key-movement
+# bound (V2).
+proptest.workspace = true

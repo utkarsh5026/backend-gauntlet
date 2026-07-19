@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: shortener
       POSTGRES_DB: shortener
     ports:
-      - "5432:5432"
+      - "5401:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +18,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6301:6379"
     command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -26,5 +26,40 @@ services:
       timeout: 3s
       retries: 5
 
+  # Scrapes the app's /metrics every 5s and stores it as time-series, so a
+  # monotonic counter can be turned into a rate. UI on host :9001 (9090 → 01).
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9001:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    # The app runs on the HOST (cargo run), not in this network, so Prometheus
+    # reaches it via host.docker.internal. `host-gateway` makes that resolve on
+    # native Linux/WSL too, not just Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Graphs what Prometheus stores. Datasource + dashboard are auto-provisioned
+  # from ./observability/grafana, and anonymous admin is on so there's no login.
+  # UI on host :3001 (3000 → 01).
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:

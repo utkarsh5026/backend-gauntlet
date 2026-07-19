@@ -1,0 +1,39 @@
+[package]
+name = "message-broker"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+# Records carry a producer timestamp (the log stores it in each frame).
+chrono.workspace = true
+
+# Record key/value bytes flow through the produce → log → fetch path. `Bytes` is
+# the cheap-to-clone, ref-counted byte buffer so a record can be shared between
+# the append path and a response without copying.
+bytes.workspace = true
+
+# Per-record CRC in the on-disk frame (V1) — corruption/torn-tail detection.
+# Declared here so it's ready when you build the framing; unused until then.
+crc32fast.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test the framing round-trip (V1) and the partitioner's key-stability
+# and keyless-spread (V3).
+proptest.workspace = true

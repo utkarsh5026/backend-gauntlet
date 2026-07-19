@@ -1,0 +1,6 @@
+# Local env + runtime data — never commit these.
+.env
+/data/
+
+# Reference-peer (transmission) container state from docker-compose.
+/transmission/

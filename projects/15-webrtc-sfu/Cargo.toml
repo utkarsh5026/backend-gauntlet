@@ -1,0 +1,53 @@
+[package]
+name = "webrtc-sfu"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+# The media plane is a single UDP socket the SFU both receives on and forwards from
+# (`tokio::net::UdpSocket`), plus timers/select/signal for the RTCP + BWE loops. The
+# signaling + admin plane is a small axum HTTP server (offer/answer + health/metrics).
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# An SFU **forwards** RTP without decoding it — it reads a few header fields and rewrites
+# seq/timestamp/SSRC in place, then fans the same bytes out to N subscribers. `Bytes` is
+# the cheap-to-clone (refcount-bump) buffer that fan-out needs; `Buf`/`BufMut` read/write
+# the big-endian u16/u32 header + STUN/RTCP fields.
+bytes.workspace = true
+# RFC 5389 wants a random 96-bit STUN transaction id and random ICE ufrag/pwd per session;
+# each stream also gets a random outbound SSRC when the SFU rewrites it.
+rand.workspace = true
+
+# STUN integrity: MESSAGE-INTEGRITY is HMAC-SHA1 over the message keyed by the ICE `pwd`
+# (RFC 5389 §15.4); FINGERPRINT is CRC32 of the message XinORed with 0x5354554e.
+hmac.workspace = true
+sha1.workspace = true
+crc32fast.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# Observability: counters/gauges for packets forwarded, subscribers, layer switches,
+# keyframe requests and each subscriber's estimated bitrate, rendered at `/metrics`
+# (same wiring as project 01 / 14).
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test that the STUN codec round-trips, that the per-subscriber sequence
+# rewriter stays contiguous across drops + the 16-bit wrap, and that the STUN/RTCP
+# parsers never panic on a truncated or adversarial datagram from an open UDP port.
+proptest.workspace = true

@@ -1,0 +1,60 @@
+[package]
+name = "workflow-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+
+# gRPC is the worker/starter transport (V4): workers long-poll for tasks and report
+# results over it. tonic is the runtime, tonic-prost the codec, prost the generated
+# message types. Server + client are both generated (build.rs) so tests and the
+# boss-fight worker can dial the engine with the same contract.
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+
+# A tiny axum server exposes /metrics + /healthz alongside the gRPC frontend — the
+# observability surface (gRPC has no natural place to hang a scrape endpoint).
+axum.workspace = true
+
+# Postgres is the durable source of truth: the append-only event history (V1), the
+# task queues the dispatcher claims from (V4), and the durable timer table (V3). Kill
+# every worker and the engine loses nothing — the history is the state.
+sqlx.workspace = true
+
+serde.workspace = true
+# History-event attributes and workflow/activity payloads are stored as JSON (bytes
+# on the wire, JSONB in the DB) so the engine stays payload-agnostic.
+serde_json.workspace = true
+# Timer fire-times and event timestamps map to TIMESTAMPTZ.
+chrono.workspace = true
+# A run id names one execution attempt — a UUID, so starting a workflow needs no
+# coordinated sequence.
+uuid.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# /metrics: workflow/activity tasks dispatched, replays (sticky hit|miss), timers
+# fired, executions completed|failed, task-queue depth.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[build-dependencies]
+anyhow.workspace = true
+tonic-prost-build.workspace = true
+protoc-bin-vendored.workspace = true
+
+[dev-dependencies]
+# For property-testing replay determinism (V2): folding a history must be a pure
+# function — same events in, same state out, regardless of how they were batched.
+proptest.workspace = true

@@ -22,9 +22,15 @@ use std::{
 /// start the project (ms since Unix epoch). Example below ≈ 2024-01-01.
 pub const CUSTOM_EPOCH_MS: u64 = 1_704_067_200_000;
 
+/// A source of "milliseconds since [`CUSTOM_EPOCH_MS`]". Boxed so tests can inject
+/// a controllable clock — e.g. one that steps *backwards* to simulate an NTP
+/// correction — which `SystemTime::now()` can't reproduce on demand.
+type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
+
 pub struct IdGenerator {
     node_id: u16,
     state: AtomicU64,
+    clock: Clock,
 }
 
 /// The three Snowflake fields recovered from an id by [`IdGenerator::decode`].
@@ -47,10 +53,19 @@ const MAX_SEQUENCE: u64 = 4096;
 
 impl IdGenerator {
     pub fn new(node_id: u16) -> Self {
+        Self::with_clock(node_id, Box::new(Self::current_timestamp_ms))
+    }
+
+    /// Like [`new`](Self::new) but with an injected clock (ms since
+    /// [`CUSTOM_EPOCH_MS`]). Production uses [`Self::current_timestamp_ms`]; tests
+    /// pass a controllable clock to exercise timestamp regressions that
+    /// `SystemTime::now()` can't reproduce.
+    pub fn with_clock(node_id: u16, clock: Clock) -> Self {
         assert!(node_id < 1024, "node_id must fit in 10 bits (0..=1023)");
         Self {
             node_id,
             state: AtomicU64::new(0),
+            clock,
         }
     }
 
@@ -69,7 +84,7 @@ impl IdGenerator {
                 (last_timestamp, sequence)
             };
 
-            let mut current_timestamp = Self::current_timestamp_ms();
+            let mut current_timestamp = (self.clock)();
 
             if current_timestamp < last_timestamp {
                 // Another thread may have advanced `_state` into the next ms while
@@ -82,7 +97,7 @@ impl IdGenerator {
                 seq += 1;
                 if seq >= MAX_SEQUENCE {
                     while current_timestamp <= last_timestamp {
-                        current_timestamp = Self::current_timestamp_ms();
+                        current_timestamp = (self.clock)();
                     }
                     seq = 0;
                 }
@@ -357,5 +372,76 @@ mod tests {
     #[should_panic(expected = "node_id must fit in 10 bits")]
     fn rejects_invalid_node_id() {
         let _ = IdGenerator::new(1024);
+    }
+
+    /// SPEC V1: "clock moving backwards has a defined, non-corrupting behavior
+    /// (no duplicate ids, no panic-crash)".
+    ///
+    /// A Snowflake id embeds the timestamp in its high bits, so a wall-clock step
+    /// *backwards* (NTP correction, VM migration) is corrupting if minted naively:
+    /// the new id sorts *before* ids already issued (breaks time-ordering) and can
+    /// *duplicate* an id already minted in that now-repeated millisecond. We drive
+    /// that through an injected clock that steps back and *stays* there (a stuck
+    /// regression). The generator must:
+    ///   * keep returning promptly — never livelock the create path,
+    ///   * never issue a duplicate id,
+    ///   * keep ids strictly increasing (time-ordered).
+    ///
+    /// EXPECTED TO FAIL until the regression policy is made deliberate: today
+    /// `next_id` does `spin_loop(); continue;` while `now < last`, so a stuck
+    /// backwards clock livelocks and this test trips the recv timeout.
+    ///
+    /// Note: this is *stricter* than the SPEC letter (a hang is technically neither
+    /// a dup nor a panic) — but a livelock on the id hot path is clearly not a
+    /// "defined behavior" worth shipping, so we pin no-hang too.
+    #[test]
+    fn clock_regression_never_hangs_dups_or_reorders() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        // A clock we can move at will (ms since CUSTOM_EPOCH_MS).
+        let now = Arc::new(AtomicU64::new(1_000));
+        let clock_now = Arc::clone(&now);
+        let gen = Arc::new(IdGenerator::with_clock(
+            1,
+            Box::new(move || clock_now.load(Ordering::SeqCst)),
+        ));
+
+        // Phase 1: mint ids at t = 1000.
+        let mut ids: Vec<i64> = (0..100).map(|_| gen.next_id()).collect();
+
+        // The clock steps backwards and stays there — an NTP *step*, not a slew.
+        now.store(500, Ordering::SeqCst);
+
+        // Phase 2 runs on a worker so a livelock surfaces as a timeout instead of
+        // freezing the whole suite. (While this test is red, the worker leaks and
+        // busy-spins until the process exits — that is the bug it catches.)
+        let worker_gen = Arc::clone(&gen);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let more: Vec<i64> = (0..100).map(|_| worker_gen.next_id()).collect();
+            let _ = tx.send(more);
+        });
+
+        let more = rx.recv_timeout(Duration::from_secs(2)).expect(
+            "next_id livelocked under a stuck backwards clock — a regression must not hang",
+        );
+        ids.extend(more);
+
+        // Non-corrupting: strictly increasing and unique across the regression.
+        for pair in ids.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "ids must stay strictly increasing across a clock regression: {} then {}",
+                pair[0],
+                pair[1]
+            );
+        }
+        let unique: HashSet<i64> = ids.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "clock regression produced duplicate ids"
+        );
     }
 }

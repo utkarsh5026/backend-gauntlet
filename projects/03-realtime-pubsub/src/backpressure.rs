@@ -311,7 +311,10 @@ mod tests {
 
         assert_eq!(outbox.try_recv().unwrap(), msg("a"));
         assert_eq!(outbox.try_recv().unwrap(), msg("b"));
-        assert!(outbox.try_recv().is_err(), "\"c\" must not have been buffered");
+        assert!(
+            outbox.try_recv().is_err(),
+            "\"c\" must not have been buffered"
+        );
     }
 
     #[test]

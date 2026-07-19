@@ -1,0 +1,44 @@
+# Dependencies for the BitTorrent client + seeder are a small local **test swarm**:
+# a tracker to announce to, and a spec-compliant reference peer to talk to. Neither is
+# a datastore — BitTorrent keeps its state (pieces on disk, peers in memory) itself.
+#
+# Host ports follow the project-scoped rule (NN=19): the service's conventional port
+# with the last two digits set to 19. Container-internal ports stay canonical.
+services:
+  # A BitTorrent tracker — the announce target for V3. Your client asks it "who else
+  # has infohash X?" and it hands back a compact peer list. opentracker speaks BOTH
+  # HTTP and UDP (BEP 15) on the same port, which is exactly the two transports V3
+  # implements. (Suggested image; swap for any HTTP/UDP tracker if the tag moves.)
+  tracker:
+    image: lednerb/opentracker-docker:latest
+    ports:
+      - "6919:6969"       # HTTP announce/scrape (host 6919 = 6969 → NN=19)
+      - "6919:6969/udp"   # UDP tracker protocol, BEP 15
+    # opentracker is a tiny static binary with no shell/curl for a container healthcheck;
+    # it's serving within ~1s of start. Swap in a tracker with a shell to add an
+    # HTTP GET /announce probe here.
+
+  # A reference BitTorrent client to swarm against — the strict, spec-compliant peer
+  # your from-scratch V4/V5/V6 talk to. Point it at the *same* test torrent (drop the
+  # .torrent into ./transmission/watch and the data into ./transmission/downloads) so it
+  # seeds to your leecher and leeches from your seeder. Transmission is unforgiving: a
+  # wrong handshake or bad framing gets you dropped — which is how you know you're right.
+  peer:
+    image: linuxserver/transmission:latest
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Etc/UTC"
+    ports:
+      - "9019:9091"       # web UI / RPC (host 9019 = 9091 → NN=19)
+      - "51419:51413"     # peer port, TCP …
+      - "51419:51413/udp" # … and UDP (host 51419 = 51413 → NN=19)
+    volumes:
+      - ./transmission/config:/config
+      - ./transmission/downloads:/downloads
+      - ./transmission/watch:/watch
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9091/transmission/web/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

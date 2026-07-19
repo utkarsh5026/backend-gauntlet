@@ -1,0 +1,40 @@
+[package]
+name = "full-text-search"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+common-telemetry.workspace = true
+common-config.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+# An on-disk inverted-index segment (V2) is read by mmap'ing the file: the OS page
+# cache serves hot postings and the whole segment never has to sit in the heap.
+# Declared here so it's ready when you build the segment reader; unused until then.
+memmap2.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+
+# /metrics: searches/sec, a search-latency histogram (for p99), query-cache hit
+# ratio, docs indexed, live segment count, and merges run.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
+
+[dev-dependencies]
+# Property-test the analyzer (V1: analyze is idempotent — analyzing its own output
+# is a fixed point) and BM25 (V3: score rises with term frequency, falls with a
+# longer document — monotonicity), plus the merge invariant (V4: a merged segment
+# has exactly the live docs of its inputs).
+proptest.workspace = true

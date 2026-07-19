@@ -21,7 +21,7 @@ use crate::AppState;
 /// uses. Override `TEST_REDIS_URL` to relocate it (e.g. a non-default host/port
 /// in CI) — the DB-1 default keeps the isolation guarantee for free.
 pub fn test_redis_url() -> String {
-    std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/1".into())
+    std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6301/1".into())
 }
 
 fn slug_id() -> u128 {
@@ -40,7 +40,7 @@ pub fn unique_slug(prefix: &str) -> String {
 pub async fn pg_pool() -> PgPool {
     common_config::load_dotenv();
     let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://shortener:shortener@localhost:5432/shortener".into());
+        .unwrap_or_else(|_| "postgres://shortener:shortener@localhost:5401/shortener".into());
     PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)
@@ -51,7 +51,7 @@ pub async fn pg_pool() -> PgPool {
 /// Lazy pool for tests that never query Postgres (e.g. auth middleware only).
 pub fn lazy_pg_pool() -> PgPool {
     PgPoolOptions::new()
-        .connect_lazy("postgres://localhost:5432/unused")
+        .connect_lazy("postgres://localhost:5401/unused")
         .expect("lazy pool")
 }
 
