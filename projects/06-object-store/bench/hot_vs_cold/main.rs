@@ -16,7 +16,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use chrono::{Duration as ChronoDuration, Utc};
 use http_body_util::BodyExt;
-use object_store::index::Index;
+use object_store::index_backend::IndexBackend;
 use object_store::lifecycle::{Encoding, Lifecycle, LifecyclePolicy, LifecycleRule};
 use object_store::object::ObjectRef;
 use object_store::{routes, AppState, DEFAULT_MAX_OBJECT_SIZE};
@@ -135,7 +135,7 @@ struct Harness {
     _dir: TempDir,
     router: Router,
     lifecycle: Arc<Lifecycle>,
-    index: Arc<Index>,
+    index: Arc<IndexBackend>,
 }
 
 impl Harness {

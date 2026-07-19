@@ -53,10 +53,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
 use tracing::{error, info};
 
-use crate::bucket::BucketMetadata;
 use crate::durable::{publish_temp, TempEntry};
 use crate::error::AppError;
-use crate::index::Index;
+use crate::index_backend::IndexBackend;
 use crate::object::{Digest, ObjectRef};
 use crate::store::Store;
 
@@ -211,9 +210,9 @@ pub struct SweepReport {
 }
 
 /// The lifecycle engine: owns the age policy and the crash-safe migration dance
-/// over V1's [`Store`] and V3's [`Index`].
+/// over V1's [`Store`] and V3's [`IndexBackend`].
 pub struct Lifecycle {
-    index: Arc<Index>,
+    index: Arc<IndexBackend>,
     store: Arc<Store>,
 }
 
@@ -222,7 +221,7 @@ impl Lifecycle {
     const SWEEP_CONCURRENCY: usize = 32;
 
     /// Build the engine. Cheap — the actual scanning happens in [`Self::spawn`].
-    pub fn new(index: Arc<Index>, store: Arc<Store>) -> Arc<Self> {
+    pub fn new(index: Arc<IndexBackend>, store: Arc<Store>) -> Arc<Self> {
         Arc::new(Self { index, store })
     }
 
@@ -279,8 +278,7 @@ impl Lifecycle {
         let mut report = SweepReport::default();
 
         for bucket in self.index.buckets().await? {
-            let bucket_path = self.index.ensure_bucket(&bucket).await?;
-            let meta = BucketMetadata::load(&bucket_path).await?;
+            let meta = self.index.load_bucket_metadata(&bucket).await?;
             let policy = &meta.lifecycle;
             let entries = self.index.index_entries(&bucket).await?;
 
@@ -694,6 +692,7 @@ mod age_tests {
 #[cfg(test)]
 mod tiering_tests {
     use super::*;
+    use crate::index::Index;
     use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
 
@@ -702,7 +701,7 @@ mod tiering_tests {
     fn setup(root: &Path) -> (Arc<Lifecycle>, Arc<Store>) {
         let store = Store::open(root).expect("open store");
         let index = Index::open(root, store.clone()).expect("open index");
-        let lifecycle = Lifecycle::new(index, store.clone());
+        let lifecycle = Lifecycle::new(Arc::new(IndexBackend::local(index)), store.clone());
         (lifecycle, store)
     }
 

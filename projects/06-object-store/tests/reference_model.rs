@@ -596,7 +596,13 @@ async fn apply_real(
             let mut continuation: Option<String> = None;
             loop {
                 let listing = match index
-                    .list(bucket, prefix, delimiter, continuation.as_deref(), *max_keys)
+                    .list(
+                        bucket,
+                        prefix,
+                        delimiter,
+                        continuation.as_deref(),
+                        *max_keys,
+                    )
                     .await
                 {
                     Ok(l) => l,
@@ -615,11 +621,7 @@ async fn apply_real(
     }
 }
 
-fn assert_final_state(
-    model: &Model,
-    store: &Store,
-    index: &Index,
-) -> Result<(), TestCaseError> {
+fn assert_final_state(model: &Model, store: &Store, index: &Index) -> Result<(), TestCaseError> {
     let expected: BTreeMap<(String, String), &LiveObject> = model
         .objects
         .iter()
@@ -672,7 +674,9 @@ fn op_strategy(n_buckets: usize, n_keys: usize) -> impl Strategy<Value = Op> {
     let bucket = 0..n_buckets;
     let key = 0..n_keys;
     prop_oneof![
-        bucket.clone().prop_map(|bucket_idx| Op::CreateBucket { bucket_idx }),
+        bucket
+            .clone()
+            .prop_map(|bucket_idx| Op::CreateBucket { bucket_idx }),
         (
             bucket.clone(),
             key.clone(),

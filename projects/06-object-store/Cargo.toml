@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+default-run = "object-store"
 
 [dependencies]
 common-telemetry.workspace = true
@@ -43,6 +44,10 @@ anyhow.workspace = true
 
 tracing.workspace = true
 
+# Index-as-a-service client (`RemoteIndex` → object-store-index over HTTP JSON).
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+url.workspace = true
+
 # Observability (SPEC): Prometheus counters/gauges/histograms via the `metrics`
 # facade (call sites just name a metric); the exporter installs the process-
 # global recorder and renders `/metrics` for a scrape.
@@ -65,6 +70,11 @@ bench-tools = ["dep:tempfile", "dep:tower", "dep:http-body-util"]
 name = "hot_vs_cold"
 path = "bench/hot_vs_cold/main.rs"
 required-features = ["bench-tools"]
+
+# From-the-field: metadata microservice (see docs/05-how-index-as-a-service-works.md).
+[[bin]]
+name = "object-store-index"
+path = "src/bin/object_store_index.rs"
 
 [dev-dependencies]
 # Property-test the multipart ETag formula (V4) and prefix/delimiter listing (V3).

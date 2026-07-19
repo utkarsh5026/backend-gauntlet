@@ -728,9 +728,7 @@ mod tests {
     #[tokio::test]
     async fn commit_wakes_idle_scrubber_to_verify_new_blob() {
         let (_root, store) = fresh_store();
-        let handle = store
-            .clone()
-            .spawn_scrubber(Duration::from_secs(3600));
+        let handle = store.clone().spawn_scrubber(Duration::from_secs(3600));
 
         // Let the background task park on empty objects/.
         tokio::task::yield_now().await;

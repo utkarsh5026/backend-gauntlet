@@ -7,10 +7,10 @@ to this file so you get one source of truth with colors, emojis and readable
 output. Help tables use `tools/makefile_help.py` (Rich — auto-installed from
 `tools/requirements.txt`).
 
-Unlike the DB-backed projects there is **no Docker** here: the filesystem *is*
-the database (objects/, index/, tmp/, uploads/ under DATA_DIR). So the headline
-task is `dev` — it launches the Rust backend **and** the web console together,
-wired to the same port, so you can watch uploads/listing/multipart in action.
+The filesystem *is* the database (objects/, index/, tmp/, uploads/ under
+DATA_DIR). Headline host loop: `make dev` (cargo + Vite). Container-parity
+stack: `make stack` — three containers (index ↔ object-store ↔ web) sharing a
+volume (docs/05-how-index-as-a-service-works.md).
 
 Usage:
     python3 makefile.py <task> [task ...]
@@ -36,6 +36,7 @@ from makefile_runner import (  # noqa: E402
     C,
     make_runner,
     register_cargo_checks,
+    register_compose_lifecycle,
     register_help,
     register_md,
     register_setup,
@@ -46,7 +47,9 @@ WEB_DIR = PROJECT_DIR / "web"
 # The web console proxies /s3 → the backend and defaults to :9006 (project 06);
 # :9000 is skipped because MinIO squats it. Keep backend + proxy on this port.
 DEFAULT_PORT = "9006"
+DEFAULT_INDEX_PORT = "9106"  # object-store-index binary (From the field)
 WEB_PORT = "5173"  # Vite dev server (see web/vite.config.ts)
+COMPOSE_WEB_PORT = "5106"  # nginx console in docker-compose.yml
 
 runner = make_runner(
     crate="object-store",
@@ -58,12 +61,17 @@ runner = make_runner(
             "See it in action",
             f"make dev (backend + console; open http://localhost:{WEB_PORT})",
         ),
+        (
+            "Container stack (index + API + web)",
+            f"make stack → console http://localhost:{COMPOSE_WEB_PORT}",
+        ),
         ("Run all checks", "make verify"),
     ],
 )
 
 register_setup(runner)
 register_cargo_checks(runner)
+register_compose_lifecycle(runner)
 
 
 def backend_port() -> int:
@@ -204,6 +212,73 @@ def backend() -> None:
         cwd=PROJECT_DIR,
         env=backend_env(port),
     )
+
+
+def index_port() -> int:
+    return int(runner.load_dotenv().get("INDEX_PORT", DEFAULT_INDEX_PORT))
+
+
+def index_env(port: int) -> dict[str, str]:
+    env = runner.load_dotenv()
+    env["INDEX_PORT"] = str(port)
+    env.setdefault("DATA_DIR", str(PROJECT_DIR / "data"))
+    return env
+
+
+@runner.task(
+    "index-svc",
+    "📇",
+    "Run",
+    f"Run index microservice only (INDEX_PORT={DEFAULT_INDEX_PORT}; From the field)",
+)
+def index_svc() -> None:
+    """Host-side metadata process — pair with INDEX_URL=… make backend."""
+    runner.require("cargo", "Install Rust: https://rustup.rs")
+    port = index_port()
+    runner.step(
+        "📇",
+        f"starting object-store-index on http://localhost:{port} … "
+        f"(internal /v1 API; see docs/05-how-index-as-a-service-works.md)",
+    )
+    runner.run(
+        ["cargo", "run", "-p", runner.crate, "--bin", "object-store-index"],
+        cwd=PROJECT_DIR,
+        env=index_env(port),
+    )
+
+
+@runner.task(
+    "up",
+    "🐳",
+    "Services",
+    "Build & start index + object-store + web (docker compose)",
+)
+def up() -> None:
+    runner.require("docker", "Install Docker to use the container stack.")
+    runner.step("🐳", "docker compose up --build -d …")
+    runner.run(
+        [*runner.compose, "up", "--build", "-d"],
+        cwd=PROJECT_DIR,
+    )
+    runner.ok(
+        f"stack up — console http://localhost:{COMPOSE_WEB_PORT} "
+        f"(API :{DEFAULT_PORT}, index :{DEFAULT_INDEX_PORT})"
+    )
+
+
+@runner.task("deps", "🐳", "Services", "Alias for `up` (full compose stack)")
+def deps() -> None:
+    up()
+
+
+@runner.task(
+    "stack",
+    "🐳",
+    "Services",
+    f"Alias for `up` — open http://localhost:{COMPOSE_WEB_PORT}",
+)
+def stack() -> None:
+    up()
 
 
 @runner.task("frontend", "🌐", "Run", f"Run just the web console (Vite dev, :{WEB_PORT})")

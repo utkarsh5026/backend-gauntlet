@@ -341,6 +341,16 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   by a small edit share most of their on-disk bytes — whole-object dedup only
   ever shares identical files *(→ RESEARCH.md §Part 6)*
 
+### Architecture labs
+
+- [✔] Index-as-a-service: the S3 front-end and the `(bucket,key)→blob` index run
+  as two processes; with `INDEX_URL` set, PUT/GET/list still round-trip; killing
+  the index process fails metadata ops cleanly while blob files may already
+  exist (distributed blob-then-pointer)
+  *(→ RESEARCH.md §Part 2; `src/index_backend.rs`, `src/index_server.rs`,
+  `object-store-index` bin; teach-yourself:
+  [`docs/05-how-index-as-a-service-works.md`](docs/05-how-index-as-a-service-works.md))*
+
 ### Durability & correctness practice
 
 - [✔] Property-based tests attack every vertical's invariant with random inputs

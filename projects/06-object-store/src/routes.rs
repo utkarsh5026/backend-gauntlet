@@ -21,9 +21,9 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Deserialize;
 use tower_http::trace::TraceLayer;
 
-use crate::bucket::BucketMetadata;
 use crate::error::AppError;
-use crate::index::{Index, Precondition};
+use crate::index::Precondition;
+use crate::index_backend::IndexBackend;
 use crate::lifecycle::LifecyclePolicy;
 use crate::naming::validate_key;
 use crate::object::{ETag, ObjectRef, ResolvedObject};
@@ -120,18 +120,17 @@ async fn put_bucket_lifecycle(
         .map_err(|e| invalid_err(format!("invalid lifecycle policy: {e}")))?;
     policy.validate()?;
 
-    let dir = state.index.ensure_bucket(bucket).await?;
-    let mut meta = BucketMetadata::load(&dir).await?;
+    state.index.ensure_bucket(bucket).await?;
+    let mut meta = state.index.load_bucket_metadata(bucket).await?;
     meta.lifecycle = policy;
-    meta.store(&dir).await?;
+    state.index.store_bucket_metadata(bucket, &meta).await?;
     Ok(StatusCode::OK)
 }
 
 /// `GET /{bucket}?lifecycle` — return the bucket's lifecycle policy as JSON
 /// (`GetBucketLifecycleConfiguration`). An unset policy is an empty rule list.
 async fn get_bucket_lifecycle(state: &AppState, bucket: &str) -> Result<Response, AppError> {
-    let dir = state.index.ensure_bucket(bucket).await?;
-    let meta = BucketMetadata::load(&dir).await?;
+    let meta = state.index.load_bucket_metadata(bucket).await?;
     Ok(Json(meta.lifecycle).into_response())
 }
 
@@ -591,7 +590,7 @@ fn make_span(bucket: &str, key: &str) -> tracing::Span {
 }
 
 async fn require_object(
-    index: &Index,
+    index: &IndexBackend,
     bucket: &str,
     key: &str,
     object_ref: ObjectRef,

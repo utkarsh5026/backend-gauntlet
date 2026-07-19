@@ -84,7 +84,10 @@ fn fresh_multipart() -> (TempDir, Arc<Store>, Arc<Index>, Arc<Multipart>) {
     let dir = TempDir::new().expect("temp root");
     let store = Store::open(dir.path()).expect("open store");
     let index = Index::open(dir.path(), store.clone()).expect("open index");
-    let multipart = Multipart::open(dir.path(), store.clone(), index.clone()).expect("open mp");
+    let backend = Arc::new(object_store::index_backend::IndexBackend::local(
+        index.clone(),
+    ));
+    let multipart = Multipart::open(dir.path(), store.clone(), backend).expect("open mp");
     (dir, store, index, multipart)
 }
 

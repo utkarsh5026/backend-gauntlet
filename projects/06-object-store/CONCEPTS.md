@@ -123,6 +123,43 @@
 
 ---
 
+## 🧠 Card 6 — Index as a microservice *(From the field · optional)*
+
+**The problem.** At laptop scale, `Arc<Index>` in the same process as the S3 HTTP
+front-end is correct and simple. At S3 scale the key→location map is a separately
+scaled metadata fleet (persistence + coherent cache + witness) because metadata
+QPS, failure domains, and ownership diverge from "dumb disks holding bytes."
+
+**The idea.** Keep the same index *contract* (`put` / `get` / `list` / …) but put
+it behind an HTTP JSON API in a second binary (or container). The S3 front-end
+owns blobs (`Store`); the index service owns pointers. A process boundary turns
+crashes into partial failure: "blob durable, index RPC failed" is the distributed
+twin of V3's blob-then-pointer window. `make stack` runs index + API + web
+console as three containers on one compose network — no Kubernetes required.
+
+**In the wild:** S3's front-end → index/metadata subsystem → ShardStore storage
+nodes (RESEARCH Part 2); Azure's partition layer; Colossus metadata in BigTable.
+
+**You own it when you can explain:**
+- [ ] Why "index" is a role that can live in-process or out-of-process without
+  changing the blob-then-pointer rule.
+- [ ] What RPC adds (latency, timeouts, status codes) and what it does not fix
+  (a wrong write order is still wrong).
+- [ ] How killing the index mid-PUT should look to a client vs what GC must clean up.
+- [ ] Why `ensure_bucket` cannot return a `PathBuf` over the wire.
+
+**Depth probes:**
+- Trace one PUT across two processes: stream → `Store::commit` → HTTP `put` →
+  index JSON on disk.
+- List three failure modes that exist only when the index is remote.
+
+**Trap:** splitting early for "realism" before V3's crash invariants are solid —
+you will debug networking and consistency at once.
+
+**Teach-yourself doc:** [`docs/05-how-index-as-a-service-works.md`](docs/05-how-index-as-a-service-works.md).
+
+---
+
 ## ⚡ Rapid-fire round
 
 - [ ] `Range` semantics: `206` + `Content-Range`, open-ended (`bytes=a-`) and suffix (`bytes=-n`) forms, `416` with `bytes */len` — and why video seeking depends on them.

@@ -1,0 +1,80 @@
+# Three-container stack for the From-the-field index split + web console.
+#
+#   web ──────── /s3 ──────► object-store (S3 API, blobs)
+#                                 │
+#                                 │ INDEX_URL HTTP
+#                                 ▼
+#                           index (metadata)
+#
+# Both Rust services share the `storedata` volume at /data so objects/ and
+# index/ stay coherent. Host ports use project 06 (9006 / 9106 / 5106).
+#
+#   docker compose up --build
+#   open http://localhost:5106
+#
+# Fast edit loop remains `make dev` (host cargo + Vite). This file is for
+# container-parity networking.
+
+services:
+  index:
+    build:
+      context: ../..
+      dockerfile: projects/06-object-store/Dockerfile
+    entrypoint: ["object-store-index"]
+    environment:
+      DATA_DIR: /data
+      INDEX_PORT: "9106"
+      RUST_LOG: info,object_store=debug
+      LOG_FORMAT: pretty
+    volumes:
+      - storedata:/data
+    ports:
+      - "9106:9106"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9106/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 8
+      start_period: 5s
+    restart: unless-stopped
+
+  object-store:
+    build:
+      context: ../..
+      dockerfile: projects/06-object-store/Dockerfile
+    environment:
+      DATA_DIR: /data
+      PORT: "9000"
+      INDEX_URL: http://index:9106
+      MAX_OBJECT_SIZE: "5368709120"
+      LIFECYCLE_SCAN_INTERVAL_SECS: "60"
+      RUST_LOG: info,object_store=debug
+      LOG_FORMAT: pretty
+    volumes:
+      - storedata:/data
+    ports:
+      - "9006:9000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 8
+      start_period: 5s
+    depends_on:
+      index:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "5106:80"
+    depends_on:
+      object-store:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  storedata:

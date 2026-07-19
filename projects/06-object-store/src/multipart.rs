@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::durable::TempEntry;
 use crate::error::AppError;
-use crate::index::Index;
+use crate::index_backend::IndexBackend;
 use crate::naming::validate_bucket_name;
 use crate::object::{Digest, ETag, ObjectMeta};
 use crate::store::Store;
@@ -55,7 +55,7 @@ impl UploadSession {
 pub struct Multipart {
     root: PathBuf,
     store: Arc<Store>,
-    index: Arc<Index>,
+    index: Arc<IndexBackend>,
 }
 
 /// What `UploadPart` hands back — the per-part ETag (the part's MD5) the client
@@ -77,15 +77,15 @@ impl Multipart {
     /// `root` if needed.
     ///
     /// Returns an [`Arc`] so the HTTP layer can share one instance across
-    /// requests; it borrows the same [`Store`] (V1 blobs) and [`Index`] (V3
-    /// metadata) a completed upload is written through.
+    /// requests; it borrows the same [`Store`] (V1 blobs) and [`IndexBackend`]
+    /// (V3 metadata) a completed upload is written through.
     ///
     /// # Errors
     /// Propagates any `std::io::Error` from creating the staging directory.
     pub fn open(
         root: impl AsRef<Path>,
         store: Arc<Store>,
-        index: Arc<Index>,
+        index: Arc<IndexBackend>,
     ) -> std::io::Result<Arc<Self>> {
         let root = root.as_ref().join("uploads");
         std::fs::create_dir_all(&root)?;
@@ -435,6 +435,7 @@ fn verify_parts_digest(sorted_parts: &[PartETag]) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::Index;
     use bytes::Bytes;
     use futures_util::stream;
     use tempfile::TempDir;
@@ -449,8 +450,9 @@ mod tests {
         let root = TempDir::new().expect("temp root");
         let store = Store::open(root.path()).expect("open store");
         let index = Index::open(root.path(), store.clone()).expect("open index");
+        let backend = Arc::new(IndexBackend::local(index.clone()));
         let multipart =
-            Multipart::open(root.path(), store.clone(), index.clone()).expect("open multipart");
+            Multipart::open(root.path(), store.clone(), backend).expect("open multipart");
         (root, store, index, multipart)
     }
 

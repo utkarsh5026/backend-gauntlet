@@ -8,6 +8,8 @@ Tailwind v4 · shadcn/ui**, dark theme.
 
 ## Run
 
+**Host (fast edit loop):**
+
 ```bash
 # 1. start the backend (from projects/06-object-store/) on port 9006
 PORT=9006 cargo run -p object-store
@@ -16,6 +18,16 @@ PORT=9006 cargo run -p object-store
 bun install
 bun run dev                        # http://localhost:5173
 ```
+
+**Containers (index + API + this console):**
+
+```bash
+# from projects/06-object-store/
+make stack                         # http://localhost:5106
+```
+
+Compose builds this app into nginx; `/s3` is proxied to the `object-store`
+service (same strip-prefix idea as Vite below).
 
 > **Why 9006, not the store's default 9000?** MinIO (a Docker dep in this repo)
 > squats host port `:9000`, so binding there fails with *Address already in use*.

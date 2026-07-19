@@ -38,6 +38,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use object_store::index::Index;
+use object_store::index_backend::IndexBackend;
 use object_store::lifecycle::{Lifecycle, LifecyclePolicy, LifecycleRule};
 use object_store::store::Store;
 use object_store::{routes, AppState, DEFAULT_MAX_OBJECT_SIZE};
@@ -108,7 +109,7 @@ impl TestApp {
     fn engine(&self) -> Arc<Lifecycle> {
         let store = Store::open(&self.root).expect("open store");
         let index = Index::open(&self.root, store.clone()).expect("open index");
-        Lifecycle::new(index, store)
+        Lifecycle::new(Arc::new(IndexBackend::local(index)), store)
     }
 
     /// `PUT /{bucket}?lifecycle` — set the policy over the real HTTP surface.
