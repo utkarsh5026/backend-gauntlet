@@ -63,7 +63,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 sha2 = { version = "0.10" }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
-sqlx-core = { version = "0.8", features = ["_rt-tokio", "any", "chrono", "json", "migrate", "offline", "uuid"] }
+sqlx-core = { version = "0.9", features = ["_rt-tokio", "any", "chrono", "json", "migrate", "offline", "uuid"] }
 sqlx-postgres = { version = "0.8", default-features = false, features = ["any", "chrono", "json", "migrate", "offline", "uuid"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -113,7 +113,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 sha2 = { version = "0.10" }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
-sqlx-core = { version = "0.8", features = ["_rt-tokio", "any", "chrono", "json", "migrate", "offline", "uuid"] }
+sqlx-core = { version = "0.9", features = ["_rt-tokio", "any", "chrono", "json", "migrate", "offline", "uuid"] }
 sqlx-postgres = { version = "0.8", default-features = false, features = ["any", "chrono", "json", "migrate", "offline", "uuid"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 tokio = { version = "1", features = ["full", "test-util"] }
