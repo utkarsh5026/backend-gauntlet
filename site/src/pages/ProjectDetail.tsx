@@ -1,8 +1,16 @@
 import { Link, Navigate, useParams } from 'react-router-dom'
-import { ExternalLink } from 'lucide-react'
 import { getProject, projectLinks } from '@/data/projects'
 import { findProject } from '@/data/roadmap'
 import { StateBadge } from '@/components/StateBadge'
+import { AssetGallery } from '@/components/AssetGallery'
+import { Reveal } from '@/components/Reveal'
+
+/** First sentence as the hook; the rest goes behind a disclosure. */
+function splitLead(text: string): [string, string] {
+  const match = text.match(/^.*?[.!?]["”')\]]*(?=\s|$)/)
+  if (!match) return [text, '']
+  return [match[0], text.slice(match[0].length).trim()]
+}
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
@@ -14,54 +22,56 @@ export function ProjectDetail() {
   }
 
   const links = projectLinks(detail)
+  const [problemLead, problemRest] = splitLead(detail.problem)
 
   return (
-    <article className="space-y-14 animate-fade-up">
+    <article className="space-y-14">
       <header className="max-w-2xl space-y-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="font-mono text-[0.7rem] uppercase tracking-[0.2em] text-copper">
-            Project {detail.id}
-          </p>
+        <p className="m-0 flex flex-wrap items-baseline gap-3 text-[0.85rem] text-fg-muted">
+          <span>
+            <span className="text-accent">$</span> cat projects/{detail.id}-
+            {detail.slug}/SPEC.md
+          </span>
           {meta && <StateBadge state={meta.state} />}
-        </div>
-        <h1 className="font-display text-4xl font-extrabold tracking-tight sm:text-5xl">
+        </p>
+        <h1 className="font-display m-0 text-xl font-bold tracking-tight sm:text-2xl">
           {detail.title}
         </h1>
-        <p className="text-lg text-fg-muted">{detail.tagline}</p>
-        <div className="flex flex-wrap gap-3 pt-2">
-          <a
-            href={links.spec}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1.5 font-mono text-[0.75rem] uppercase tracking-wider"
-          >
-            SPEC.md <ExternalLink className="size-3" />
+        <p className="m-0 text-fg-muted">{detail.tagline}</p>
+        <p className="m-0 flex flex-wrap gap-x-5 gap-y-1 pt-1 text-[0.85rem]">
+          <a href={links.spec} target="_blank" rel="noreferrer">
+            SPEC.md ↗
           </a>
           <a
             href={links.code}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 font-mono text-[0.75rem] uppercase tracking-wider text-fg-muted"
+            className="text-fg-muted hover:text-fg"
           >
-            Source <ExternalLink className="size-3" />
+            source ↗
           </a>
-          <Link
-            to="/roadmap"
-            className="inline-flex items-center gap-1.5 font-mono text-[0.75rem] uppercase tracking-wider text-fg-muted no-underline hover:text-copper"
-          >
-            All projects
+          <Link to="/roadmap" className="text-fg-muted no-underline hover:text-fg">
+            ← all projects
           </Link>
-        </div>
+        </p>
       </header>
 
-      <section className="max-w-2xl space-y-3">
-        <h2 className="font-display text-2xl font-bold">Problem</h2>
-        <p className="text-fg-muted">{detail.problem}</p>
+      <section className="max-w-2xl space-y-4">
+        <h2 className="rule-title m-0 text-[1rem] font-bold">problem</h2>
+        <p className="m-0 leading-relaxed text-fg">{problemLead}</p>
+        {problemRest && (
+          <Reveal label="the full problem">
+            <p className="m-0 leading-relaxed text-fg-muted">{problemRest}</p>
+          </Reveal>
+        )}
         {detail.whatItDoes.length > 0 && (
-          <ul className="mt-4 list-disc space-y-1.5 pl-5 text-fg-muted">
+          <ul className="m-0 list-none space-y-2 p-0 pt-1 text-[0.85rem] text-fg-muted">
             {detail.whatItDoes.map((line) => (
               <li key={line}>
-                <code className="font-mono text-[0.9em] text-fg">{line}</code>
+                <span className="mr-2 text-accent-dim" aria-hidden>
+                  -
+                </span>
+                <code className="text-fg">{line}</code>
               </li>
             ))}
           </ul>
@@ -69,49 +79,47 @@ export function ProjectDetail() {
       </section>
 
       <section className="space-y-4">
-        <h2 className="font-display text-2xl font-bold">Mental model</h2>
-        <p className="max-w-2xl text-fg-muted">
-          Verticals in order — each is a concept to internalize, not a solution
-          walkthrough.
-        </p>
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-stretch">
+        <h2 className="rule-title m-0 text-[1rem] font-bold">mental model</h2>
+        <div className="flex flex-wrap items-center gap-y-2">
           {detail.verticals.map((step, i) => (
-            <div key={step.id} className="flex items-stretch sm:contents">
-              <div className="min-w-0 flex-1 rounded-lg border border-line bg-bg-elevated/60 px-4 py-4 sm:max-w-[11rem]">
-                <p className="font-mono text-[0.65rem] uppercase tracking-wider text-copper">
-                  {step.id}
+            <div key={step.id} className="flex items-center">
+              <div className="border border-line bg-panel px-4 py-2.5">
+                <p className="m-0 text-[0.7rem] text-accent">{step.id}</p>
+                <p className="m-0 mt-0.5 text-[0.85rem] font-medium text-fg">
+                  {step.title}
                 </p>
-                <p className="mt-1 text-sm font-medium text-fg">{step.title}</p>
               </div>
               {i < detail.verticals.length - 1 && (
-                <div
-                  className="flex items-center justify-center px-1 font-mono text-copper/60 sm:px-1.5"
-                  aria-hidden
-                >
+                <span className="px-2 text-fg-muted" aria-hidden>
                   →
-                </div>
+                </span>
               )}
             </div>
           ))}
         </div>
       </section>
 
-      <section className="space-y-6">
-        <h2 className="font-display text-2xl font-bold">Verticals</h2>
-        <p className="max-w-2xl text-fg-muted">
-          Concepts to internalize. The SPEC owns the acceptance criteria and
-          proofs.
-        </p>
-        <ul className="space-y-5">
+      <AssetGallery projectDir={`${detail.id}-${detail.slug}`} />
+
+      <section className="space-y-5">
+        <h2 className="rule-title m-0 text-[1rem] font-bold">
+          verticals
+          <span className="text-[0.75rem] font-normal text-fg-muted">
+            concepts to internalize
+          </span>
+        </h2>
+        <ul className="m-0 list-none space-y-7 p-0">
           {detail.verticals.map((v) => (
             <li
               key={v.id}
-              className="grid gap-1 border-l-2 border-copper/40 pl-4 sm:grid-cols-[4rem_1fr]"
+              className="grid gap-1 border-l border-accent-dim py-1 pl-5 sm:grid-cols-[3.5rem_1fr]"
             >
-              <span className="font-mono text-sm text-copper">{v.id}</span>
+              <span className="text-[0.85rem] text-accent">{v.id}</span>
               <div>
-                <h3 className="font-display text-lg font-bold">{v.title}</h3>
-                <p className="mt-1 text-fg-muted">{v.concept}</p>
+                <h3 className="m-0 text-[0.95rem] font-bold">{v.title}</h3>
+                <p className="mb-0 mt-2 text-[0.9rem] leading-relaxed text-fg-muted">
+                  {v.concept}
+                </p>
               </div>
             </li>
           ))}
@@ -119,21 +127,26 @@ export function ProjectDetail() {
       </section>
 
       <section className="max-w-2xl space-y-3">
-        <h2 className="font-display text-2xl font-bold">Horizontals</h2>
-        <ul className="list-disc space-y-2 pl-5 text-fg-muted">
+        <h2 className="rule-title m-0 text-[1rem] font-bold">horizontals</h2>
+        <ul className="m-0 list-none space-y-3 p-0 text-[0.9rem] leading-relaxed text-fg-muted">
           {detail.horizontals.map((h) => (
-            <li key={h}>{h}</li>
+            <li key={h}>
+              <span className="mr-2 text-accent-dim" aria-hidden>
+                -
+              </span>
+              {h}
+            </li>
           ))}
         </ul>
       </section>
 
       {detail.boss && (
-        <section className="max-w-2xl space-y-3 rounded-lg border border-copper/25 bg-copper/5 px-5 py-6">
-          <p className="font-mono text-[0.7rem] uppercase tracking-[0.18em] text-copper">
-            Boss fight
+        <section className="panel mt-2 max-w-2xl px-6 py-6">
+          <p className="panel-title text-warn">🐉 boss fight</p>
+          <h2 className="m-0 text-[1.05rem] font-bold">{detail.boss.name}</h2>
+          <p className="mb-0 mt-3 text-[0.9rem] leading-relaxed text-fg-muted">
+            {detail.boss.idea}
           </p>
-          <h2 className="font-display text-2xl font-bold">{detail.boss.name}</h2>
-          <p className="text-fg-muted">{detail.boss.idea}</p>
         </section>
       )}
     </article>

@@ -10,16 +10,13 @@ export function ProgressBar({
   const clamped = Math.max(0, Math.min(100, value))
   return (
     <div
-      className={cn('h-1.5 overflow-hidden rounded-full bg-line', className)}
+      className={cn('cells', className)}
       role="progressbar"
       aria-valuenow={clamped}
       aria-valuemin={0}
       aria-valuemax={100}
     >
-      <div
-        className="h-full rounded-full bg-copper transition-[width] duration-500"
-        style={{ width: `${clamped}%` }}
-      />
+      <div style={{ width: `${clamped}%` }} />
     </div>
   )
 }

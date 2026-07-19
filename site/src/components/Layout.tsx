@@ -3,23 +3,23 @@ import { cn } from '@/lib/utils'
 import { REPO_URL } from '@/data/roadmap'
 
 const nav = [
-  { to: '/', label: 'Home', end: true },
-  { to: '/method', label: 'Method' },
-  { to: '/roadmap', label: 'Projects' },
+  { to: '/', label: 'home', end: true },
+  { to: '/method', label: 'method' },
+  { to: '/roadmap', label: 'projects' },
 ]
 
 export function Layout() {
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-20 border-b border-line/80 bg-bg/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-3.5">
+      <header className="sticky top-0 z-20 border-b border-line bg-bg">
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-5 py-3">
           <NavLink
             to="/"
-            className="font-display text-[1.05rem] font-bold tracking-tight text-fg no-underline hover:text-copper"
+            className="font-display text-[0.8rem] font-bold text-fg no-underline hover:text-accent"
           >
-            backend-gauntlet
+            <span className="text-fg-muted">~/</span>backend-gauntlet
           </NavLink>
-          <nav className="flex flex-wrap items-center gap-1 sm:gap-2">
+          <nav className="flex items-center gap-1 text-[0.8rem]">
             {nav.map((item) => (
               <NavLink
                 key={item.to}
@@ -27,9 +27,9 @@ export function Layout() {
                 end={item.end}
                 className={({ isActive }) =>
                   cn(
-                    'rounded px-2.5 py-1.5 font-mono text-[0.7rem] uppercase tracking-[0.12em] no-underline transition-colors',
+                    'px-2 py-1 no-underline',
                     isActive
-                      ? 'bg-copper/15 text-copper'
+                      ? 'bg-panel text-accent'
                       : 'text-fg-muted hover:text-fg',
                   )
                 }
@@ -41,22 +41,25 @@ export function Layout() {
               href={REPO_URL}
               target="_blank"
               rel="noreferrer"
-              className="ml-1 rounded border border-line px-2.5 py-1.5 font-mono text-[0.7rem] uppercase tracking-[0.12em] text-fg-muted no-underline hover:border-copper/50 hover:text-copper"
+              className="px-2 py-1 text-fg-muted no-underline hover:text-fg"
             >
-              GitHub
+              github ↗
             </a>
           </nav>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl flex-1 px-5 py-10 sm:py-14">
+      <main className="mx-auto w-full max-w-4xl flex-1 px-5 py-10 sm:py-12">
         <Outlet />
       </main>
 
-      <footer className="border-t border-line/80 py-8">
-        <div className="mx-auto flex max-w-5xl flex-col gap-2 px-5 font-mono text-[0.7rem] text-fg-muted sm:flex-row sm:items-center sm:justify-between">
-          <span>Built to learn. One primitive at a time.</span>
-          <span className="text-copper/80">Rust · Tokio · Axum</span>
+      <footer className="border-t border-line py-6">
+        <div className="mx-auto flex max-w-4xl flex-col gap-1 px-5 text-[0.75rem] text-fg-muted sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            <span className="text-accent-dim">[gauntlet]</span> built to learn —
+            one primitive at a time
+          </span>
+          <span>rust · tokio · axum</span>
         </div>
       </footer>
     </div>

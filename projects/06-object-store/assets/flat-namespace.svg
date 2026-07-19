@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" role="img" aria-label="Flat keyspace, faked folders, and dedup">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
+    </marker>
+    <marker id="arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#ceac63"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="560" fill="#0e1311"/>
+
+  <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">No folders, no copies — a key is only a pointer</text>
+  <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">Listings fake the folders; identical bytes are stored once; delete drops a pointer.</text>
+
+  <!-- left: the flat list -->
+  <rect x="48" y="96" width="400" height="216" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="126" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#d3ddd6">what the index really stores</text>
+  <text x="68" y="146" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">one flat, sorted list of opaque keys</text>
+
+  <text x="68" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#d3ddd6">photos/2024/beach.jpg</text>
+  <text x="268" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#7f8d84">→ blob <tspan fill="#5fb8a1">a3f2…</tspan></text>
+  <text x="68" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#d3ddd6">photos/2024/dog.jpg</text>
+  <text x="268" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#7f8d84">→ blob 91c4…</text>
+  <text x="68" y="230" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#d3ddd6">photos/2025/cat.jpg</text>
+  <text x="268" y="230" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#7f8d84">→ blob <tspan fill="#5fb8a1">a3f2…</tspan></text>
+  <text x="68" y="256" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#d3ddd6">readme.txt</text>
+  <text x="268" y="256" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#7f8d84">→ blob 77b0…</text>
+
+  <text x="68" y="292" font-family="system-ui, sans-serif" font-size="10.5" font-style="italic" fill="#7f8d84">the slashes mean nothing to storage</text>
+
+  <!-- arrow to listing -->
+  <line x1="456" y1="200" x2="524" y2="200" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="490" y="176" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">list with</text>
+  <text x="490" y="188" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">a delimiter</text>
+
+  <!-- right: the folder illusion -->
+  <rect x="528" y="96" width="384" height="216" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="548" y="126" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#d3ddd6">what a listing shows — folders, faked</text>
+  <text x="548" y="156" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#5fb8a1">GET /b?prefix=photos/&amp;delimiter=/</text>
+
+  <text x="548" y="190" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#d3ddd6">photos/2024/ <tspan fill="#7f8d84">← two keys, one row</tspan></text>
+  <text x="548" y="216" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#d3ddd6">photos/2025/</text>
+
+  <text x="548" y="254" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">keys sharing the next “/” segment collapse</text>
+  <text x="548" y="270" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">into one prefix — the whole folder illusion</text>
+
+  <!-- bottom: dedup + delete -->
+  <rect x="48" y="352" width="864" height="168" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="382" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#d3ddd6">two keys, one blob — why delete is cheap</text>
+
+  <rect x="72" y="404" width="240" height="36" rx="8" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="88" y="427" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">photos/2024/beach.jpg</text>
+
+  <rect x="72" y="462" width="240" height="36" rx="8" fill="#0e1311" stroke="#ceac63" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="88" y="485" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#7f8d84">photos/2025/cat.jpg</text>
+  <text x="330" y="485" font-family="system-ui, sans-serif" font-size="10.5" fill="#ceac63">✕ DELETE — drops only this pointer</text>
+
+  <rect x="430" y="416" width="180" height="56" rx="8" fill="#0e1311" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="458" y="440" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#5fb8a1">blob a3f2…</text>
+  <text x="458" y="458" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">stored once</text>
+
+  <line x1="312" y1="422" x2="426" y2="438" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="312" y1="472" x2="426" y2="456" stroke="#ceac63" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow-warn)"/>
+
+  <text x="656" y="436" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">bytes survive while any key points at</text>
+  <text x="656" y="452" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">them — a background GC sweeps the rest</text>
+</svg>

@@ -19,51 +19,66 @@ const pillars = [
 
 export function Method() {
   return (
-    <article className="mx-auto max-w-2xl space-y-12 animate-fade-up">
-      <header className="space-y-4">
-        <p className="font-mono text-[0.7rem] uppercase tracking-[0.2em] text-copper">
-          Pedagogy
+    <article className="mx-auto max-w-2xl space-y-12">
+      <header className="space-y-3">
+        <p className="m-0 text-[0.85rem] text-fg-muted">
+          <span className="text-accent">$</span> cat METHOD.md
         </p>
-        <h1 className="font-display text-4xl font-extrabold tracking-tight sm:text-5xl">
-          How this lab works
+        <h1 className="font-display m-0 text-xl font-bold tracking-tight sm:text-2xl">
+          how this lab works
         </h1>
-        <p className="text-lg text-fg-muted">
-          This is not a tutorial walkthrough and not a product demo. It is a
-          progression of infrastructure primitives in Rust, designed so the owner
-          writes the interesting code themselves.
+        <p className="m-0 text-fg-muted">
+          Not a tutorial walkthrough, not a product demo. A progression of
+          infrastructure primitives in Rust, designed so the owner writes the
+          interesting code themselves.
         </p>
       </header>
 
-      <ol className="space-y-8">
-        {pillars.map((p, i) => (
-          <li key={p.title} className="grid gap-2 sm:grid-cols-[3rem_1fr]">
-            <span className="font-mono text-sm text-copper/80">
-              {String(i + 1).padStart(2, '0')}
-            </span>
-            <div>
-              <h2 className="font-display text-xl font-bold">{p.title}</h2>
-              <p className="mt-1 text-fg-muted">{p.body}</p>
-            </div>
+      <ul className="m-0 list-none space-y-9 p-0">
+        {pillars.map((p) => (
+          <li key={p.title}>
+            <h2 className="m-0 text-[1rem] font-bold">
+              <span className="mr-2 text-accent" aria-hidden>
+                ▸
+              </span>
+              {p.title}
+            </h2>
+            <p className="mb-0 mt-2.5 pl-5 leading-relaxed text-fg-muted">
+              {p.body}
+            </p>
           </li>
         ))}
-      </ol>
+      </ul>
 
-      <section className="space-y-3 border-t border-line pt-10">
-        <h2 className="font-display text-xl font-bold">What I refuse to do</h2>
-        <ul className="list-disc space-y-2 pl-5 text-fg-muted">
-          <li>Copy paste “full solutions” for vertical challenges</li>
-          <li>Skip benches and call a feature done</li>
-          <li>Log secrets or commit <code className="font-mono text-copper">.env</code></li>
-          <li>Treat green <code className="font-mono text-copper">cargo check</code> as mastery</li>
+      <section className="panel mt-2 px-6 py-6">
+        <p className="panel-title">what I refuse to do</p>
+        <ul className="m-0 list-none space-y-2.5 p-0 text-fg-muted">
+          <li>
+            <span className="mr-2 text-err">✕</span>copy-paste “full solutions”
+            for vertical challenges
+          </li>
+          <li>
+            <span className="mr-2 text-err">✕</span>skip benches and call a
+            feature done
+          </li>
+          <li>
+            <span className="mr-2 text-err">✕</span>log secrets or commit{' '}
+            <code className="text-fg">.env</code>
+          </li>
+          <li>
+            <span className="mr-2 text-err">✕</span>treat a green{' '}
+            <code className="text-fg">cargo check</code> as mastery
+          </li>
         </ul>
       </section>
 
-      <section className="space-y-3 border-t border-line pt-10">
-        <h2 className="font-display text-xl font-bold">Why public</h2>
-        <p className="text-fg-muted">
+      <section className="space-y-2">
+        <h2 className="rule-title m-0 text-[1rem] font-bold">why public</h2>
+        <p className="m-0 text-fg-muted">
           Hiring and peer eyes should see how I think about scale — tradeoffs,
-          failure modes, and proof — not a polished SaaS landing page for unfinished
-          crates. The repo is the source of truth; this site is the reading room.
+          failure modes, and proof — not a polished SaaS landing page for
+          unfinished crates. The repo is the source of truth; this site is the
+          reading room.
         </p>
       </section>
     </article>
