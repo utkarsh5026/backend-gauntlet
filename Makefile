@@ -8,6 +8,10 @@
 status: ## Progress dashboard across all projects (pass NN to drill in: make status NN=02)
 	@python3 tools/status.py $(NN)
 
+.PHONY: status-readme
+status-readme: ## Refresh the README.md progress block from `make status`
+	@python3 tools/update_readme_status.py
+
 .PHONY: trophies
 trophies: ## 🏆 Trophy case — achievements derived from code, SPECs, and git history
 	@python3 tools/status.py trophies

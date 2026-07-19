@@ -75,6 +75,63 @@ bolted on at the end:
 
 ---
 
+## 📊 Where am I
+
+Live progress across every project — the same dashboard as `make status`.
+CI refreshes this block on every push to `master`.
+
+<!-- status-dashboard:start -->
+```text
+  🦀 backend-gauntlet  ·  progress across all projects
+
+  overall  ██░░░░░░░░░░░░░░░░░░  10%    verticals 13/93  ·  checklist 29/340
+  🏆 case   🩸 ⚔️ ☑️ 🧾 🏎️ 📐 🐙 🔥  8/13 · python3 tools/status.py trophies
+  ──────────────────────────────────────────────────────────
+  ##  project              state          progress         vert  chk    next
+
+  01  url-shortener        [active]       ████▊░░░░░  48%  3/3   8/20   12 checklist item(s) left
+  02  rate-limiter         [paused]       ░░░░░░░░░░   0%  0/3   0/14   V1 Token bucket · token_bucket.rs (1 todo!())
+  03  realtime-pubsub      [active]       █▊░░░░░░░░  17%  3/4   0/14   V4 Multi-node fan-out · cluster.rs (2 todo!())
+  04  job-queue            [active]       ███████▌░░  75%  4/4   8/12   4 checklist item(s) left
+  05  metrics-pipeline     [not-started]  ░░░░░░░░░░   0%  0/4   0/13   V1 The ingest parser + the time-seri… · parse.rs (2 todo!())
+  06  object-store         [active]       ████████▉░  89%  3/4   13/14  V2 Streaming bodies, end to end · streaming.rs (1 todo!())
+  07  distributed-cache    [not-started]  ░░░░░░░░░░   0%  0/4   0/12   V1 A bounded local cache with O(1) e… · store.rs (5 todo!())
+  08  message-broker       [not-started]  ░░░░░░░░░░   0%  0/4   0/12   V1 Segmented append-only log · log.rs (2 todo!())
+  09  raft-kv              [not-started]  ░░░░░░░░░░   0%  0/4   0/12   V1 Leader election · election.rs (3 todo!())
+  10  api-gateway          [not-started]  ░░░░░░░░░░   0%  0/4   0/15   V1 The reverse-proxy forwarding core · proxy.rs (2 todo!())
+  11  vod-streaming        [not-started]  ░░░░░░░░░░   0%  0/4   0/12   V1 ISO-BMFF demuxer · isobmff.rs (2 todo!())
+  12  transcode-pipeline   [not-started]  ░░░░░░░░░░   0%  0/4   0/16   V1 Keyframe-aligned chunking · chunk.rs (1 todo!())
+  13  live-ingest          [not-started]  ░░░░░░░░░░   0%  0/4   0/16   V1 RTMP handshake + chunk-stream rea… · rtmp.rs (2 todo!())
+  14  media-transport      [not-started]  ░░░░░░░░░░   0%  0/4   0/16   V1 RTP packetization + depacketizati… · rtp.rs (6 todo!())
+  15  webrtc-sfu           [not-started]  ░░░░░░░░░░   0%  0/4   0/14   V1 ICE / STUN connectivity · ice.rs (5 todo!())
+  16  live-platform        [not-started]  ░░░░░░░░░░   0%  0/4   0/22   V1 Stream control plane / session li… · control.rs (5 todo!())
+  17  global-conferencing  [not-started]  ░░░░░░░░░░   0%  0/4   0/16   V1 Global room placement via consens… · placement.rs (6 todo!())
+  18  ledger-payments-core [not-started]  ░░░░░░░░░░   0%  0/4   0/19   V1 Double-entry ledger core · ledger.rs (5 todo!())
+  19  bittorrent           [not-started]  ░░░░░░░░░░   0%  0/6   0/17   V1 Bencode · bencode.rs (3 todo!())
+  20  full-text-search     [not-started]  ░░░░░░░░░░   0%  0/5   0/18   V1 The analyzer · analyzer.rs (1 todo!())
+  21  workflow-engine      [not-started]  ░░░░░░░░░░   0%  0/5   0/18   V1 Event-sourced history log · history.rs (4 todo!())
+  22  lsm-redis            [not-started]  ░░░░░░░░░░   0%  0/7   0/18   V1 RESP protocol codec · resp.rs (2 todo!())
+  ──────────────────────────────────────────────────────────
+  vert verticals done/total   chk checklist done/total   green=done yellow=in progress
+  drill into a project → make <name> or make NN (e.g. make url-shortener · make 01) · make projects lists them
+```
+<!-- status-dashboard:end -->
+
+<details>
+<summary>How this stays fresh</summary>
+
+```bash
+make status          # local terminal dashboard (colors)
+make status-readme   # regenerate the block above into README.md
+```
+
+On push to `master`, [`.github/workflows/update-status.yml`](.github/workflows/update-status.yml)
+runs `make status-readme` and commits the result when anything moved.
+
+</details>
+
+---
+
 ## 🗺️ The roadmap
 
 > Difficulty: 🟢 foundational · 🟡 intermediate · 🟠 advanced · 🔴 hard · 🏆 capstone
