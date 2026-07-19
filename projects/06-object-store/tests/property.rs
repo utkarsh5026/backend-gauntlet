@@ -200,7 +200,12 @@ fn temp_count(store: &Store) -> usize {
 }
 
 /// Put an index row pointing `(bucket, key)` at an already-stored blob.
-async fn put_stored(index: &Index, bucket: &str, key: &str, stored: &Stored) -> Result<(), AppError> {
+async fn put_stored(
+    index: &Index,
+    bucket: &str,
+    key: &str,
+    stored: &Stored,
+) -> Result<(), AppError> {
     index
         .put(
             bucket,

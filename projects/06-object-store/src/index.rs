@@ -14,10 +14,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 
+use crate::bucket::BucketMetadata;
+use crate::durable::TempEntry;
 use crate::error::AppError;
 use crate::naming::{encode_key, validate_bucket_name, validate_key};
 use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject};
-use crate::store::{Store, TempEntry};
+use crate::store::Store;
 
 /// Maps `(bucket, key)` → the blob (and metadata) backing it, and owns the
 /// consistency + reclamation rules over the V1 store.
@@ -98,18 +100,30 @@ impl Index {
             return Err(AppError::BucketAlreadyExists);
         }
         tokio::fs::create_dir_all(&bucket_path).await?;
+        BucketMetadata::new().store(&bucket_path).await?;
         Ok(())
+    }
+
+    pub async fn buckets(&self) -> Result<Vec<String>, AppError> {
+        let mut buckets = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                buckets.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(buckets)
     }
 
     /// Error with [`AppError::NoSuchBucket`] when no bucket with that name exists.
     ///
     /// Validates the bucket name first (see [`validate_bucket_name`]).
-    pub async fn ensure_bucket(&self, bucket: &str) -> Result<(), AppError> {
+    pub async fn ensure_bucket(&self, bucket: &str) -> Result<PathBuf, AppError> {
         validate_bucket_name(bucket)?;
         if !tokio::fs::try_exists(self.root.join(bucket)).await? {
             return Err(AppError::NoSuchBucket);
         }
-        Ok(())
+        Ok(self.root.join(bucket))
     }
 
     /// Append a new live version for `(bucket, key)` and flip `latest` to it.
@@ -461,6 +475,14 @@ impl Index {
             .buffer_unordered(Self::GC_READ_CONCURRENCY)
             .try_collect()
             .await
+    }
+
+    pub async fn index_entries(&self, bucket: &str) -> Result<Vec<ObjectMeta>, AppError> {
+        validate_bucket_name(bucket)?;
+        let mut paths = Vec::new();
+        Self::push_index_files(&mut paths, &self.objects_dir(bucket)).await?;
+        let entries = Self::read_index_entries(paths).await?;
+        Ok(entries)
     }
 
     #[inline]

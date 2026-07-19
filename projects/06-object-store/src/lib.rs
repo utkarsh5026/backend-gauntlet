@@ -9,6 +9,7 @@
 //! this compiles and serves. `GET /healthz` works; the first real PUT/GET/list
 //! hits a `todo!()` and panics — that panic message is your worklist.
 
+pub mod bucket;
 pub mod durable;
 pub mod error;
 pub mod index;
@@ -25,6 +26,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use index::Index;
+use lifecycle::Lifecycle;
 use multipart::Multipart;
 use store::Store;
 
@@ -39,6 +41,7 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub index: Arc<Index>,
     pub multipart: Arc<Multipart>,
+    pub lifecycle: Arc<Lifecycle>,
     pub max_object_size: u64,
 }
 
@@ -48,10 +51,12 @@ impl AppState {
         let store = Store::open(data_dir)?;
         let index = Index::open(data_dir, store.clone())?;
         let multipart = Multipart::open(data_dir, store.clone(), index.clone())?;
+        let lifecycle = Lifecycle::new(index.clone(), store.clone());
         Ok(Self {
             store,
             index,
             multipart,
+            lifecycle,
             max_object_size,
         })
     }

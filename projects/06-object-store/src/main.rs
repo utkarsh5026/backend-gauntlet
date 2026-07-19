@@ -16,6 +16,7 @@ const DEFAULT_PORT: u16 = 9000;
 const DEFAULT_DATA_DIR: &str = "./data";
 
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
+const DEFAULT_LIFECYCLE_SCAN_INTERVAL_SECS: u64 = 60;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,6 +38,16 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::open(&data_dir, max_object_size)?;
     info!(%data_dir, max_object_size, "object store opened");
+
+    let lifecycle_scan_interval = Duration::from_secs(common_config::parse_or(
+        "LIFECYCLE_SCAN_INTERVAL_SECS",
+        DEFAULT_LIFECYCLE_SCAN_INTERVAL_SECS,
+    ));
+    // Spawn the *same* engine the read path uses (transparent tiered GETs), so
+    // there is one `Lifecycle` over the data dir. Keep the JoinHandle for the
+    // process lifetime — dropping it aborts the sweeper.
+    let _lifecycle = state.lifecycle.clone().spawn(lifecycle_scan_interval);
+    info!(?lifecycle_scan_interval, "lifecycle sweeper started");
 
     let app = routes::router(state).merge(routes::metrics_router(metrics_handle));
 

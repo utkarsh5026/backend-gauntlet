@@ -171,10 +171,7 @@ mod tests {
         assert_eq!(loaded.created_at, meta.created_at);
         assert_eq!(loaded.lifecycle.rules.len(), 1);
         assert_eq!(loaded.lifecycle.rules[0].id, "cool-then-delete");
-        assert_eq!(
-            loaded.lifecycle.rules[0].prefix.as_deref(),
-            Some("logs/")
-        );
+        assert_eq!(loaded.lifecycle.rules[0].prefix.as_deref(), Some("logs/"));
         assert_eq!(loaded.lifecycle.rules[0].tier_after_days, Some(30));
         assert_eq!(loaded.lifecycle.rules[0].expire_after_days, Some(365));
     }
@@ -231,7 +228,10 @@ mod tests {
             .unwrap();
 
         let err = BucketMetadata::load(root.path()).await;
-        assert!(err.is_err(), "corrupt metadata must not be silently discarded");
+        assert!(
+            err.is_err(),
+            "corrupt metadata must not be silently discarded"
+        );
     }
 
     #[tokio::test]

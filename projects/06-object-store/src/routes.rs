@@ -10,7 +10,7 @@
 //!   - `POST   /{bucket}/{key}?uploadId=…`              → CompleteMultipartUpload
 //!   - `DELETE /{bucket}/{key}?uploadId=…`              → AbortMultipartUpload
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -22,8 +22,10 @@ use serde::Deserialize;
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
+use crate::bucket::BucketMetadata;
 use crate::error::AppError;
 use crate::index::Index;
+use crate::lifecycle::LifecyclePolicy;
 use crate::naming::validate_key;
 use crate::object::{ETag, ObjectRef, ResolvedObject};
 use crate::streaming::ChecksumSpec;
@@ -44,7 +46,7 @@ const SIZE_KEY: &str = "size";
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/{bucket}", put(create_bucket).get(list_objects))
+        .route("/{bucket}", put(put_bucket).get(list_objects))
         // Object-level: put/get/delete + the multipart verbs (query-dispatched).
         .route(
             "/{bucket}/{*key}",
@@ -78,18 +80,56 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-/// `PUT /{bucket}` — create a bucket (V3 `CreateBucket`).
+/// `PUT /{bucket}` — create a bucket (V3 `CreateBucket`), OR replace its
+/// lifecycle policy when `?lifecycle` is present (`PutBucketLifecycleConfiguration`).
 ///
 /// # Errors
 ///
 /// Returns an [`AppError`] if the index rejects the bucket (e.g. an invalid
-/// name, or a storage failure).
-async fn create_bucket(
+/// name, or a storage failure), or — on the `?lifecycle` path — if the body is
+/// not a valid policy, the policy fails [`LifecyclePolicy::validate`], or the
+/// bucket does not exist.
+async fn put_bucket(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
+    Query(q): Query<BucketQuery>,
+    body: Bytes,
 ) -> Result<StatusCode, AppError> {
+    if q.lifecycle.is_some() {
+        return put_bucket_lifecycle(&state, &bucket, &body).await;
+    }
     state.index.create_bucket(&bucket).await?;
     Ok(StatusCode::OK)
+}
+
+/// Parse, validate, and durably store a bucket's lifecycle policy.
+///
+/// The bucket must already exist ([`Index::ensure_bucket`] errors
+/// [`AppError::NoSuchBucket`] otherwise) — S3 rejects a lifecycle config on a
+/// missing bucket. The policy is validated *before* it touches disk so an
+/// incoherent rule (tier ≥ expire, zero age) never gets persisted.
+async fn put_bucket_lifecycle(
+    state: &AppState,
+    bucket: &str,
+    body: &[u8],
+) -> Result<StatusCode, AppError> {
+    let policy: LifecyclePolicy = serde_json::from_slice(body)
+        .map_err(|e| invalid_err(format!("invalid lifecycle policy: {e}")))?;
+    policy.validate()?;
+
+    let dir = state.index.ensure_bucket(bucket).await?;
+    let mut meta = BucketMetadata::load(&dir).await?;
+    meta.lifecycle = policy;
+    meta.store(&dir).await?;
+    Ok(StatusCode::OK)
+}
+
+/// `GET /{bucket}?lifecycle` — return the bucket's lifecycle policy as JSON
+/// (`GetBucketLifecycleConfiguration`). An unset policy is an empty rule list.
+async fn get_bucket_lifecycle(state: &AppState, bucket: &str) -> Result<Response, AppError> {
+    let dir = state.index.ensure_bucket(bucket).await?;
+    let meta = BucketMetadata::load(&dir).await?;
+    Ok(Json(meta.lifecycle).into_response())
 }
 
 /// `GET /{bucket}` — list objects (V3 `ListObjectsV2`).
@@ -101,6 +141,9 @@ async fn list_objects(
     Path(bucket): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, AppError> {
+    if q.lifecycle.is_some() {
+        return get_bucket_lifecycle(&state, &bucket).await;
+    }
     let listing = state
         .index
         .list(
@@ -243,13 +286,39 @@ async fn get_object(
         (0, meta.size.saturating_sub(1))
     };
 
-    let file = state
-        .store
-        .open_blob_range(&meta.digest, start, end)
-        .await?;
-    let stream = tokio_util::io::ReaderStream::new(crate::metrics::ObservedDownload::new(file));
-    let body = Body::from_stream(stream);
+    if start > end {
+        return Err(invalid_err(format!(
+            "invalid range: start={start} end={end}"
+        )));
+    }
     let response_size = end - start + 1;
+
+    let body = match state.lifecycle.locate(&meta.digest).await?.encoding {
+        crate::lifecycle::Encoding::Raw => {
+            let file = state
+                .store
+                .open_blob_range(&meta.digest, start, end)
+                .await?;
+            let reader = crate::metrics::ObservedDownload::new(file);
+            Body::from_stream(tokio_util::io::ReaderStream::new(reader))
+        }
+        crate::lifecycle::Encoding::Zstd => {
+            use tokio::io::AsyncReadExt;
+            if end >= meta.size {
+                return Err(invalid_err(format!(
+                    "invalid range: start={start} end={end} size={}",
+                    meta.size
+                )));
+            }
+            let mut reader = state.lifecycle.open_tiered(&meta.digest).await?;
+            if start > 0 {
+                let mut skip = (&mut reader).take(start);
+                tokio::io::copy(&mut skip, &mut tokio::io::sink()).await?;
+            }
+            let reader = crate::metrics::ObservedDownload::new(reader.take(response_size));
+            Body::from_stream(tokio_util::io::ReaderStream::new(reader))
+        }
+    };
 
     let status = if is_range {
         StatusCode::PARTIAL_CONTENT
@@ -541,6 +610,13 @@ struct PostQuery {
     upload_id: Option<String>,
 }
 
+/// Query params on `PUT /{bucket}` — distinguishes `CreateBucket` from
+/// `PutBucketLifecycleConfiguration` by the valueless `?lifecycle` flag.
+#[derive(Debug, Deserialize)]
+struct BucketQuery {
+    lifecycle: Option<String>,
+}
+
 /// Query params on `GET /{bucket}` (`ListObjectsV2`) — the standard S3 listing
 /// knobs: prefix filter, `delimiter` for pseudo-directories, `continuation-token`
 /// for paging, and `max-keys` to cap the page size.
@@ -552,6 +628,7 @@ struct ListQuery {
     continuation_token: Option<String>,
     #[serde(rename = "max-keys")]
     max_keys: Option<usize>,
+    lifecycle: Option<String>,
 }
 
 /// Query params on `GET` / `HEAD /{bucket}/{key}` — optional `versionId` pins a
