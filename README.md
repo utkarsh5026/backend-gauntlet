@@ -84,7 +84,7 @@ CI refreshes this block on every push to `master`.
 ```text
   🦀 backend-gauntlet  ·  progress across all projects
 
-  overall  ██░░░░░░░░░░░░░░░░░░  10%    verticals 13/93  ·  checklist 29/340
+  overall  ██░░░░░░░░░░░░░░░░░░  10%    verticals 14/93  ·  checklist 29/340
   ──────────────────────────────────────────────────────────
   ##  project              state          progress         vert  chk  
 
@@ -93,7 +93,7 @@ CI refreshes this block on every push to `master`.
   03  realtime-pubsub      [active]       █▊░░░░░░░░  17%  3/4   0/14 
   04  job-queue            [active]       ███████▌░░  75%  4/4   8/12 
   05  metrics-pipeline     [not-started]  ░░░░░░░░░░   0%  0/4   0/13 
-  06  object-store         [active]       ████████▉░  89%  3/4   13/14
+  06  object-store         [active]       █████████▍  94%  4/4   13/14
   07  distributed-cache    [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
   08  message-broker       [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
   09  raft-kv              [not-started]  ░░░░░░░░░░   0%  0/4   0/12 
