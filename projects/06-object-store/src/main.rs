@@ -37,7 +37,13 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = common_config::or_default("DATA_DIR", DEFAULT_DATA_DIR);
     let max_object_size: u64 = common_config::parse_or("MAX_OBJECT_SIZE", DEFAULT_MAX_OBJECT_SIZE);
 
-    let state = AppState::open(&data_dir, max_object_size)?;
+    let state = AppState::open(&data_dir, max_object_size)?
+        .with_auth(object_store::auth::AuthConfig::from_env_optional());
+    if state.auth.is_some() {
+        info!("object auth enabled (presigned URLs + access credentials)");
+    } else {
+        warn!("object auth disabled — routes are open; set SECRET_ACCESS_KEY to gate them");
+    }
     info!(%data_dir, max_object_size, "object store opened");
 
     let lifecycle_scan_interval = Duration::from_secs(common_config::parse_or(

@@ -11,21 +11,22 @@
 //!   - `DELETE /{bucket}/{key}?uploadId=…`              → AbortMultipartUpload
 
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use metrics_exporter_prometheus::PrometheusHandle;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
+use crate::auth::{self, PresignRequest};
 use crate::error::AppError;
 use crate::index::Precondition;
 use crate::index_backend::IndexBackend;
 use crate::lifecycle::LifecyclePolicy;
-use crate::naming::validate_key;
+use crate::naming::{Bucket, Key, ObjectPath};
 use crate::object::{ETag, ObjectRef, ResolvedObject};
 use crate::s3_xml::{
     complete_multipart_result, initiate_multipart_result, list_bucket_result,
@@ -42,15 +43,14 @@ const SIZE_KEY: &str = "size";
 ///
 /// Wires bucket routes (`/{bucket}`) and object routes (`/{bucket}/{*key}`),
 /// with the object POST/PUT/DELETE verbs doubling as the query-dispatched
-/// multipart API (see the module docs). The body limit is disabled so large
-/// uploads stream through [`streaming::stream_to_store`] rather than being
-/// buffered, and every request is traced via [`TraceLayer`]. `GET /metrics`
-/// lives in the separate [`metrics_router`].
+/// multipart API (see the module docs). Object routes get
+/// [`auth::object_auth_middleware`] via `route_layer` so handlers stay
+/// auth-free. The body limit is disabled so large uploads stream through
+/// [`streaming::stream_to_store`] rather than being buffered, and every
+/// request is traced via [`TraceLayer`]. `GET /metrics` lives in the
+/// separate [`metrics_router`].
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/{bucket}", put(put_bucket).get(list_objects))
-        // Object-level: put/get/delete + the multipart verbs (query-dispatched).
+    let object_routes = Router::new()
         .route(
             "/{bucket}/{*key}",
             put(put_object)
@@ -59,6 +59,16 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_object)
                 .post(post_object),
         )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::object_auth_middleware,
+        ));
+
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/presign", post(presign))
+        .route("/{bucket}", put(put_bucket).get(list_objects))
+        .merge(object_routes)
         .layer(DefaultBodyLimit::disable())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -83,6 +93,79 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+#[derive(Debug, Deserialize)]
+struct PresignBody {
+    /// HTTP method to authorize (`GET`, `PUT`, `DELETE`, `HEAD`, `POST`).
+    method: String,
+    bucket: String,
+    key: String,
+    /// Seconds from now until the URL expires (must be > 0).
+    expires_in_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct PresignResponse {
+    /// Path + query to use as the request URI (no host).
+    url: String,
+    expires: i64,
+}
+
+/// `POST /presign` — mint a presigned object URL.
+///
+/// Requires `Authorization: Bearer <ACCESS_KEY_ID>:<SECRET>` (or Bearer secret).
+/// Returns 403 when auth is not configured or the bearer is wrong.
+async fn presign(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PresignBody>,
+) -> Result<Json<PresignResponse>, AppError> {
+    let auth = state.auth.as_ref().ok_or(AppError::AccessDenied)?;
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if !auth::access_credentials_match(auth, authorization) {
+        return Err(AppError::AccessDenied);
+    }
+
+    let bucket = Bucket::new(body.bucket)?;
+    let key = Key::new(body.key)?;
+    if body.expires_in_secs == 0 {
+        return Err(AppError::InvalidRequest(
+            "expires_in_secs must be greater than zero".into(),
+        ));
+    }
+
+    let method = parse_presign_method(&body.method)?;
+    let expires_at = Utc::now() + Duration::seconds(body.expires_in_secs as i64);
+    let signed = auth::sign(
+        auth,
+        &PresignRequest {
+            method,
+            bucket: bucket.into_string(),
+            key: key.into_string(),
+            expires_at,
+        },
+    )?;
+
+    Ok(Json(PresignResponse {
+        url: signed.path_and_query,
+        expires: expires_at.timestamp(),
+    }))
+}
+
+fn parse_presign_method(raw: &str) -> Result<Method, AppError> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "GET" => Ok(Method::GET),
+        "PUT" => Ok(Method::PUT),
+        "DELETE" => Ok(Method::DELETE),
+        "HEAD" => Ok(Method::HEAD),
+        "POST" => Ok(Method::POST),
+        _ => Err(AppError::InvalidRequest(format!(
+            "unsupported presign method: {raw}"
+        ))),
+    }
+}
+
 /// `PUT /{bucket}` — create a bucket (V3 `CreateBucket`), OR replace its
 /// lifecycle policy when `?lifecycle` is present (`PutBucketLifecycleConfiguration`).
 ///
@@ -94,7 +177,7 @@ async fn healthz() -> &'static str {
 /// bucket does not exist.
 async fn put_bucket(
     State(state): State<AppState>,
-    Path(bucket): Path<String>,
+    bucket: Bucket,
     Query(q): Query<BucketQuery>,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
@@ -113,7 +196,7 @@ async fn put_bucket(
 /// incoherent rule (tier ≥ expire, zero age) never gets persisted.
 async fn put_bucket_lifecycle(
     state: &AppState,
-    bucket: &str,
+    bucket: &Bucket,
     body: &[u8],
 ) -> Result<StatusCode, AppError> {
     let policy: LifecyclePolicy = serde_json::from_slice(body)
@@ -129,7 +212,7 @@ async fn put_bucket_lifecycle(
 
 /// `GET /{bucket}?lifecycle` — return the bucket's lifecycle policy as JSON
 /// (`GetBucketLifecycleConfiguration`). An unset policy is an empty rule list.
-async fn get_bucket_lifecycle(state: &AppState, bucket: &str) -> Result<Response, AppError> {
+async fn get_bucket_lifecycle(state: &AppState, bucket: &Bucket) -> Result<Response, AppError> {
     let meta = state.index.load_bucket_metadata(bucket).await?;
     Ok(Json(meta.lifecycle).into_response())
 }
@@ -139,7 +222,7 @@ async fn get_bucket_lifecycle(state: &AppState, bucket: &str) -> Result<Response
 /// Returns a S3 `<ListBucketResult>` XML body (`Content-Type: application/xml`).
 async fn list_objects(
     State(state): State<AppState>,
-    Path(bucket): Path<String>,
+    bucket: Bucket,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, AppError> {
     if q.lifecycle.is_some() {
@@ -164,7 +247,7 @@ async fn list_objects(
         .filter_map(|o| {
             let live = o.latest_live()?;
             Some(ListContent {
-                key: o.key.clone(),
+                key: o.key.to_string(),
                 last_modified: live.last_modified,
                 etag: live.etag.0,
                 size: live.size,
@@ -173,7 +256,7 @@ async fn list_objects(
         .collect();
 
     let body = list_bucket_result(&ListBucketParams {
-        name: &bucket,
+        name: bucket.as_str(),
         prefix,
         delimiter: q.delimiter.as_deref(),
         max_keys,
@@ -196,8 +279,7 @@ async fn list_objects(
 /// verification; the three-header negotiation lives in [`ChecksumSpec`], so the
 /// handler only ever sees the parsed result.
 ///
-/// TODO(security): still unauthenticated — an open PUT is an open disk for the
-/// whole internet. Gate writes behind a credential (SigV4, or a simpler HMAC).
+/// Auth is enforced by [`auth::object_auth_middleware`] on the object router.
 #[tracing::instrument(
     skip_all,
     fields(
@@ -208,13 +290,13 @@ async fn list_objects(
 )]
 async fn put_object(
     State(state): State<AppState>,
-    Path((bucket, key)): Path<(String, String)>,
+    ObjectPath { bucket, key }: ObjectPath,
     Query(q): Query<PutQuery>,
     headers: HeaderMap,
     ChecksumSpec(checksum_algo): ChecksumSpec,
     body: Body,
 ) -> Result<Response, AppError> {
-    let span = make_span(&bucket, &key);
+    let span = make_span(bucket.as_str(), key.as_str());
 
     let _guard = crate::metrics::InFlightGuard::new();
     let content_type = content_type_of(&headers);
@@ -229,8 +311,6 @@ async fn put_object(
             .await?;
         return Ok((StatusCode::OK, [(header::ETAG, part.etag.0)]).into_response());
     }
-
-    validate_key(&key)?;
 
     let streaming::Stored { digest, etag, size } =
         streaming::stream_to_store(&state.store, stream, state.max_object_size, checksum_algo)
@@ -301,11 +381,11 @@ fn parse_write_precondition(headers: &HeaderMap) -> Result<Precondition, AppErro
 )]
 async fn get_object(
     State(state): State<AppState>,
-    Path((bucket, key)): Path<(String, String)>,
+    ObjectPath { bucket, key }: ObjectPath,
     Query(q): Query<GetQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let span = make_span(&bucket, &key);
+    let span = make_span(bucket.as_str(), key.as_str());
     let object_ref = ObjectRef::from_query(q.version_id);
 
     let meta = require_object(&state.index, &bucket, &key, object_ref, &span).await?;
@@ -443,11 +523,11 @@ fn validate_range(range: &str) -> Result<(u64, u64), AppError> {
 )]
 async fn head_object(
     State(state): State<AppState>,
-    Path((bucket, key)): Path<(String, String)>,
+    ObjectPath { bucket, key }: ObjectPath,
     Query(q): Query<GetQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let span = make_span(&bucket, &key);
+    let span = make_span(bucket.as_str(), key.as_str());
     let object_ref = ObjectRef::from_query(q.version_id);
     let meta = require_object(&state.index, &bucket, &key, object_ref, &span).await?;
 
@@ -470,7 +550,7 @@ async fn head_object(
 
 /// Query params on `DELETE /{bucket}/{key}`; `?uploadId` switches delete to
 /// AbortMultipartUpload. Optional `versionId` deletes one historical version.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct DeleteQuery {
     #[serde(rename = "uploadId")]
     upload_id: Option<String>,
@@ -498,10 +578,10 @@ struct DeleteQuery {
 )]
 async fn delete_object(
     State(state): State<AppState>,
-    Path((bucket, key)): Path<(String, String)>,
+    ObjectPath { bucket, key }: ObjectPath,
     Query(q): Query<DeleteQuery>,
 ) -> Result<StatusCode, AppError> {
-    let span = make_span(&bucket, &key);
+    let span = make_span(bucket.as_str(), key.as_str());
     if let Some(upload_id) = q.upload_id.as_deref() {
         state.multipart.abort(upload_id).await?;
         return Ok(StatusCode::NO_CONTENT);
@@ -527,7 +607,7 @@ async fn delete_object(
 /// bubbled up from `multipart.initiate` / `multipart.complete`.
 async fn post_object(
     State(state): State<AppState>,
-    Path((bucket, key)): Path<(String, String)>,
+    ObjectPath { bucket, key }: ObjectPath,
     Query(q): Query<PostQuery>,
     headers: HeaderMap,
     body: Body,
@@ -538,7 +618,7 @@ async fn post_object(
             .multipart
             .initiate(&bucket, &key, content_type)
             .await?;
-        let body = initiate_multipart_result(&bucket, &key, &upload_id);
+        let body = initiate_multipart_result(bucket.as_str(), key.as_str(), &upload_id);
         return Ok(xml_response(StatusCode::OK, body));
     }
 
@@ -553,7 +633,8 @@ async fn post_object(
         let parts = parse_complete_multipart_body(ct, &bytes)?;
         let meta = state.multipart.complete(upload_id, parts).await?;
         let live = meta.latest_live().ok_or(AppError::NoSuchKey)?;
-        let body = complete_multipart_result(&meta.bucket, &meta.key, live.etag.as_str());
+        let body =
+            complete_multipart_result(meta.bucket.as_str(), meta.key.as_str(), live.etag.as_str());
         return Ok(xml_response(StatusCode::OK, body));
     }
 
@@ -591,8 +672,8 @@ fn make_span(bucket: &str, key: &str) -> tracing::Span {
 
 async fn require_object(
     index: &IndexBackend,
-    bucket: &str,
-    key: &str,
+    bucket: &Bucket,
+    key: &Key,
     object_ref: ObjectRef,
     span: &tracing::Span,
 ) -> Result<ResolvedObject, AppError> {
@@ -667,7 +748,7 @@ struct ListQuery {
 
 /// Query params on `GET` / `HEAD /{bucket}/{key}` — optional `versionId` pins a
 /// historical version; absent means latest.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct GetQuery {
     #[serde(rename = "versionId")]
     version_id: Option<u64>,
@@ -676,6 +757,7 @@ struct GetQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthConfig;
     use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
     use http_body_util::BodyExt;
     use tempfile::TempDir;
@@ -1112,5 +1194,148 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    fn auth_router() -> (TempDir, Router, AuthConfig) {
+        let dir = TempDir::new().expect("temp data dir");
+        let auth = AuthConfig::new("route-akid", "route-test-secret");
+        let state = AppState::open(dir.path(), 1 << 20)
+            .expect("open AppState")
+            .with_auth(Some(auth.clone()));
+        (dir, router(state), auth)
+    }
+
+    #[tokio::test]
+    async fn unsigned_put_is_forbidden_when_auth_enabled() {
+        let (_dir, router, _auth) = auth_router();
+        ensure_bucket(&router, "docs").await;
+        let status = put_bytes(&router, "docs", "a.txt", b"nope").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn presign_then_put_get_round_trips() {
+        let (_dir, router, auth) = auth_router();
+        ensure_bucket(&router, "docs").await;
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .method("POST")
+                .uri("/presign")
+                .header(header::AUTHORIZATION, "Bearer route-akid:route-test-secret")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"method":"PUT","bucket":"docs","key":"a.txt","expires_in_secs":60}"#,
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let minted: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        let put_url = minted["url"].as_str().expect("url");
+
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .method("PUT")
+                .uri(put_url)
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(b"hello".to_vec()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let get_signed = auth::sign(
+            &auth,
+            &PresignRequest {
+                method: Method::GET,
+                bucket: "docs".into(),
+                key: "a.txt".into(),
+                expires_at: Utc::now() + Duration::seconds(60),
+            },
+        )
+        .unwrap();
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri(get_signed.path_and_query)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn presign_without_bearer_is_forbidden() {
+        let (_dir, router, _auth) = auth_router();
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .method("POST")
+                .uri("/presign")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"method":"GET","bucket":"docs","key":"a.txt","expires_in_secs":60}"#,
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn healthz_stays_open_when_auth_enabled() {
+        let (_dir, router, _auth) = auth_router();
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn put_with_access_credentials_works_without_presign() {
+        let (_dir, router, auth) = auth_router();
+        ensure_bucket(&router, "docs").await;
+
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .method("PUT")
+                .uri("/docs/cred.txt")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", auth.credential_token()),
+                )
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(b"via-creds".to_vec()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, body) = send(
+            &router,
+            Request::builder()
+                .uri("/docs/cred.txt")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", auth.credential_token()),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"via-creds");
     }
 }

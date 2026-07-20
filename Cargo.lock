@@ -2255,6 +2255,7 @@ dependencies = [
  "common-telemetry",
  "futures-util",
  "hex",
+ "hmac",
  "http-body-util",
  "loom",
  "md-5",
