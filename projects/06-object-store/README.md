@@ -130,5 +130,7 @@ Everything I had to understand, I wrote down first-principles style:
 - [`docs/04-how-continuous-scrubbing-works.md`](docs/04-how-continuous-scrubbing-works.md) — detect, quarantine, never serve: the at-rest auditor.
 - [`docs/05-how-index-as-a-service-works.md`](docs/05-how-index-as-a-service-works.md) — splitting metadata from bytes, and what a process boundary does to crash semantics.
 - [`docs/06-benchmarks.md`](docs/06-benchmarks.md) — the curated numbers and how they were measured.
+- [`docs/07-durability-review.md`](docs/07-durability-review.md) — threat list + guardrails for blob publish, pointer flip, and cold-tier migration.
+- [`docs/08-how-loom-and-shuttle-work.md`](docs/08-how-loom-and-shuttle-work.md) — concurrency model checkers (Loom exhaustive / Shuttle randomized) before the GC↔PUT race exercise.
 
 The graded contract lives in [`SPEC.md`](SPEC.md); the concept map I test myself against is [`CONCEPTS.md`](CONCEPTS.md); the industry research it's all distilled from — how S3, ShardStore, Backblaze, and Haystack really work — is [`RESEARCH.md`](RESEARCH.md).
