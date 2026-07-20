@@ -6,6 +6,10 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
+      # Merging project work changes which project is "current focus", so the
+      # site must redeploy to recompute it (see site/scripts/generate-focus.ts).
+      # The `pages` concurrency group below collapses rapid pushes into one deploy.
+      - 'projects/**'
   workflow_dispatch:
 
 permissions:
@@ -22,6 +26,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # generate-focus.ts walks merge history to compute "current focus" —
+          # a shallow checkout would only see the latest commit and find no
+          # merges at all.
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
