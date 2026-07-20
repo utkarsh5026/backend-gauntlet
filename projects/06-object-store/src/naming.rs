@@ -7,6 +7,8 @@
 use std::fmt;
 use std::ops::Deref;
 
+use axum::extract::{FromRequestParts, Path};
+use axum::http::request::Parts;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -119,6 +121,17 @@ impl TryFrom<&str> for Bucket {
     type Error = AppError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Bucket {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Path(raw) = Path::<String>::from_request_parts(parts, state)
+            .await
+            .map_err(|e| AppError::InvalidRequest(e.to_string()))?;
+        Self::new(raw)
     }
 }
 
@@ -250,6 +263,17 @@ impl ObjectPath {
             bucket: Bucket::new(bucket)?,
             key: Key::new(key)?,
         })
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for ObjectPath {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Path((bucket, key)) = Path::<(String, String)>::from_request_parts(parts, state)
+            .await
+            .map_err(|e| AppError::InvalidRequest(e.to_string()))?;
+        Self::new(bucket, key)
     }
 }
 
