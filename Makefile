@@ -63,6 +63,23 @@ portainer: ## Start Portainer — web UI for all containers (https://localhost:9
 portainer-down: ## Stop and remove Portainer
 	@docker compose -f tools/portainer/docker-compose.yml -p portainer down
 
+.PHONY: hooks
+hooks: ## Point this clone at .githooks (pre-commit: fmt, pre-push: fmt+hakari)
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit .githooks/pre-push tools/preflight.sh
+	@echo "git hooks installed → core.hooksPath=.githooks"
+	@echo "  pre-commit: make preflight (fmt)"
+	@echo "  pre-push:   make preflight-lint (fmt + hakari)"
+	@echo "  bypass:     SKIP_GIT_HOOKS=1 git commit|push ..."
+
+.PHONY: preflight
+preflight: ## Fast CI gate: cargo fmt --check (same check that fails most often)
+	@./tools/preflight.sh
+
+.PHONY: preflight-lint
+preflight-lint: ## Broader CI lint gate: fmt --check + hakari (if installed)
+	@./tools/preflight.sh --lint
+
 .PHONY: help
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \

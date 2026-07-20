@@ -604,7 +604,7 @@ async fn apply_real(
             loop {
                 let listing = match index
                     .list(
-                    &b(bucket),
+                        &b(bucket),
                         prefix,
                         delimiter,
                         continuation.as_deref(),
@@ -637,7 +637,10 @@ fn assert_final_state(model: &Model, store: &Store, index: &Index) -> Result<(),
 
     for ((bucket, key), obj) in expected {
         let obs = block_on(async {
-            match index.resolve(&b(&bucket), &k(&key), ObjectRef::Latest).await {
+            match index
+                .resolve(&b(&bucket), &k(&key), ObjectRef::Latest)
+                .await
+            {
                 Ok(resolved) => {
                     let body = read_blob(store, &resolved.digest)
                         .await

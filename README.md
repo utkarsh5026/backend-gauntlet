@@ -135,6 +135,8 @@ cargo run -p url-shortener
 cargo check --workspace
 cargo test -p url-shortener
 make status          # progress dashboard
+make hooks           # once: block commit/push if rustfmt (CI) would fail
+make preflight       # optional manual: cargo fmt --check
 ```
 
 **→** [`projects/01-url-shortener/SPEC.md`](projects/01-url-shortener/SPEC.md)

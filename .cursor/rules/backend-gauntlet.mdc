@@ -30,6 +30,7 @@ is by design, not a bug to fix.
 - Idiomatic async Rust (tokio/axum); match surrounding style; format with `cargo fmt`.
 
 ## Useful commands
+`make hooks` (once per clone — fmt gate on commit/push) · `make preflight` ·
 `cargo check --workspace` · `cargo clippy --workspace -- -D warnings` ·
 `cargo fmt --all` · `cargo run -p <crate>`. Per project: `docker compose up -d`,
 `sqlx migrate run`.

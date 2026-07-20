@@ -515,7 +515,10 @@ mod tests {
     async fn upload_part_rejects_out_of_range_part_numbers() {
         let (_root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         for bad in [0, Multipart::MAX_PART_NUMBER + 1] {
             let outcome = mp.upload_part(&id, bad, body(b"x"), 1 << 20).await;
@@ -539,7 +542,10 @@ mod tests {
     async fn upload_part_etag_is_the_part_md5() {
         let (_root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         let bytes = b"one part's worth of bytes";
         let part = upload(&mp, &id, 1, bytes).await;
@@ -554,7 +560,10 @@ mod tests {
     async fn upload_part_over_the_cap_is_rejected_and_leaves_no_part_file() {
         let (root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         let outcome = mp.upload_part(&id, 1, body(&[b'x'; 100]), 50).await;
         assert!(
@@ -596,7 +605,10 @@ mod tests {
     async fn complete_computes_the_multipart_etag() {
         let (_root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         let a: &[u8] = b"aaaaaaaa";
         let b: &[u8] = b"bbbbbbbbbbbb";
@@ -665,7 +677,10 @@ mod tests {
     async fn complete_rejects_a_client_etag_that_does_not_match_the_staged_part() {
         let (_root, store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         upload(&mp, &id, 1, b"real bytes").await;
 
         // Client claims a well-formed but wrong MD5 for part 1.
@@ -695,7 +710,10 @@ mod tests {
     async fn complete_rejects_a_part_that_was_never_staged() {
         let (_root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         let p1 = upload(&mp, &id, 1, b"only part one").await;
         // Fabricate a part 2 the server never received.
         let ghost = PartETag {
@@ -713,7 +731,10 @@ mod tests {
     async fn complete_rejects_an_empty_part_list() {
         let (_root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         assert!(matches!(
             mp.complete(&id, vec![]).await,
@@ -725,7 +746,10 @@ mod tests {
     async fn complete_rejects_duplicate_part_numbers() {
         let (_root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         let p1 = upload(&mp, &id, 1, b"first").await;
         let dup = PartETag {
             part_number: 1,
@@ -755,7 +779,10 @@ mod tests {
     async fn retrying_a_part_overwrites_the_previous_bytes() {
         let (_root, store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         // First attempt at part 1 is superseded by a retry with new content.
         upload(&mp, &id, 1, b"STALE-first-try").await;
@@ -774,7 +801,10 @@ mod tests {
     async fn abort_reclaims_staged_parts_and_indexes_nothing() {
         let (root, _store, index, mp) = fresh();
         index.create_bucket(&b(BUCKET)).await.unwrap();
-        let id = mp.initiate(&b(BUCKET), &k("k"), "text/plain".into()).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         upload(&mp, &id, 1, b"staged but never completed").await;
 
         mp.abort(&id).await.expect("abort");

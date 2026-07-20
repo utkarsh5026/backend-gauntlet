@@ -255,10 +255,7 @@ impl ObjectPath {
     /// # Errors
     ///
     /// [`AppError::InvalidRequest`] if either name fails its rules.
-    pub fn new(
-        bucket: impl Into<String>,
-        key: impl Into<String>,
-    ) -> Result<Self, AppError> {
+    pub fn new(bucket: impl Into<String>, key: impl Into<String>) -> Result<Self, AppError> {
         Ok(Self {
             bucket: Bucket::new(bucket)?,
             key: Key::new(key)?,
@@ -315,10 +312,7 @@ mod tests {
 
     #[test]
     fn bucket_new_rejects_length_outside_bounds() {
-        assert!(matches!(
-            Bucket::new(""),
-            Err(AppError::InvalidRequest(_))
-        ));
+        assert!(matches!(Bucket::new(""), Err(AppError::InvalidRequest(_))));
         assert!(matches!(
             Bucket::new("ab"),
             Err(AppError::InvalidRequest(_))
@@ -349,10 +343,7 @@ mod tests {
             Bucket::new("photos-"),
             Err(AppError::InvalidRequest(_))
         ));
-        assert!(matches!(
-            Bucket::new("-"),
-            Err(AppError::InvalidRequest(_))
-        ));
+        assert!(matches!(Bucket::new("-"), Err(AppError::InvalidRequest(_))));
     }
 
     #[test]
@@ -406,10 +397,7 @@ mod tests {
     fn key_new_counts_bytes_not_chars() {
         let key = "é".repeat(513);
         assert_eq!(key.chars().count(), 513);
-        assert!(matches!(
-            Key::new(key),
-            Err(AppError::InvalidRequest(_))
-        ));
+        assert!(matches!(Key::new(key), Err(AppError::InvalidRequest(_))));
     }
 
     #[test]
