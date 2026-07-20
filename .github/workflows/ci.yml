@@ -40,7 +40,10 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          # Negations keep dashboard/web-only edits out of the Rust package list.
+          # Do NOT add bare `!web/**` / `!dashboard/**` negations here. Under the
+          # default `some` quantifier those patterns match almost every file
+          # (anything not under web/), so unrelated PRs pull in every frontend-
+          # bearing crate. Frontend-only scope is handled by the fe_* filters.
           filters: |
             rust_workspace:
               - 'Cargo.toml'
@@ -54,20 +57,16 @@ jobs:
               - 'tools/ci_resolve_packages.py'
             url_shortener:
               - 'projects/01-url-shortener/**'
-              - '!projects/01-url-shortener/dashboard/**'
             rate_limiter:
               - 'projects/02-rate-limiter/**'
             realtime_pubsub:
               - 'projects/03-realtime-pubsub/**'
-              - '!projects/03-realtime-pubsub/web/**'
             job_queue:
               - 'projects/04-job-queue/**'
-              - '!projects/04-job-queue/web/**'
             metrics_pipeline:
               - 'projects/05-metrics-pipeline/**'
             object_store:
               - 'projects/06-object-store/**'
-              - '!projects/06-object-store/web/**'
             distributed_cache:
               - 'projects/07-distributed-cache/**'
             message_broker:
@@ -78,30 +77,24 @@ jobs:
               - 'projects/10-api-gateway/**'
             vod_streaming:
               - 'projects/11-vod-streaming/**'
-              - '!projects/11-vod-streaming/web/**'
             transcode_pipeline:
               - 'projects/12-transcode-pipeline/**'
             live_ingest:
               - 'projects/13-live-ingest/**'
-              - '!projects/13-live-ingest/web/**'
             media_transport:
               - 'projects/14-media-transport/**'
             webrtc_sfu:
               - 'projects/15-webrtc-sfu/**'
-              - '!projects/15-webrtc-sfu/web/**'
             live_platform:
               - 'projects/16-live-platform/**'
-              - '!projects/16-live-platform/web/**'
             global_conferencing:
               - 'projects/17-global-conferencing/**'
-              - '!projects/17-global-conferencing/web/**'
             ledger_payments:
               - 'projects/18-ledger-payments-core/**'
             bittorrent:
               - 'projects/19-bittorrent/**'
             full_text_search:
               - 'projects/20-full-text-search/**'
-              - '!projects/20-full-text-search/web/**'
             workflow_engine:
               - 'projects/21-workflow-engine/**'
             lsm_redis:

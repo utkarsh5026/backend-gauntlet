@@ -979,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_json_includes_latest_version_id() {
+    async fn list_xml_includes_live_object_key() {
         let (_dir, router) = fresh_router();
         send(
             &router,
@@ -999,11 +999,11 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        let json: serde_json::Value = serde_json::from_slice(&body).expect("list JSON");
-        let objects = json["objects"].as_array().expect("objects array");
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0]["key"], "readme");
-        assert_eq!(objects[0]["versionId"], 2);
+        // ListObjectsV2 XML has no versionId; latest is whatever GET without
+        // ?versionId= returns (see get_with_version_id_serves_that_version).
+        let listing = crate::s3_xml::parse_list_bucket(&body).expect("list XML");
+        assert_eq!(listing.object_keys(), vec!["readme".to_string()]);
+        assert_eq!(listing.contents[0].size, 2); // live version is "v2"
     }
 
     #[tokio::test]
@@ -1021,13 +1021,12 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let err = crate::s3_xml::parse_error(&body).expect("error XML");
+        assert_eq!(err.code, "InvalidRequest");
         assert!(
-            json["error"]
-                .as_str()
-                .unwrap()
-                .contains("unrecognised POST"),
-            "bare POST must explain the missing multipart query"
+            err.message.contains("unrecognised POST"),
+            "bare POST must explain the missing multipart query, got {:?}",
+            err.message
         );
     }
 
@@ -1079,8 +1078,9 @@ mod tests {
         let (status, _, body) =
             put_bytes_if_match(&router, "docs", "k", b"lost", Some(&stale)).await;
         assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"], "precondition failed");
+        let err = crate::s3_xml::parse_error(&body).expect("error XML");
+        assert_eq!(err.code, "PreconditionFailed");
+        assert_eq!(err.message, "precondition failed");
 
         let (status, _, body) = send(
             &router,
