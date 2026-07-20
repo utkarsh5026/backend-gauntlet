@@ -1,78 +1,261 @@
-//! S3-style bucket and key naming — shared path-safety rules.
+//! S3-style bucket and key naming — validated newtypes + path encoding.
 //!
-//! Any module that turns `(bucket, key)` into filesystem paths (`index`,
-//! `multipart`, …) should use these helpers so naming rules stay in one place.
+//! Construct [`Bucket`] / [`Key`] at the trust boundary (`Bucket::new` /
+//! [`Key::new`]). Downstream code takes `&Bucket` / `&Key` (or `.as_str()`) and
+//! does **not** re-run validation — the type is the proof.
+
+use std::fmt;
+use std::ops::Deref;
+
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-/// Enforce S3-style bucket naming (3–63 chars, `[a-z0-9-]`, no leading or
-/// trailing hyphen).
+/// A validated S3 bucket name (3–63 chars, `[a-z0-9-]`, no leading/trailing `-`).
 ///
-/// Doubles as the path-traversal defense: because `/`, `.`, and `_` are
-/// rejected, a validated bucket name can only ever be a single directory
-/// segment under the index root.
-///
-/// # Errors
-///
-/// [`AppError::InvalidRequest`] describing the first rule the name breaks.
-pub fn validate_bucket_name(bucket: &str) -> Result<(), AppError> {
-    if bucket.len() < 3 || bucket.len() > 63 {
-        return Err(AppError::InvalidRequest(
-            "bucket name must be 3–63 characters".into(),
-        ));
-    }
-    if !bucket
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
-        return Err(AppError::InvalidRequest(
-            "bucket name may only contain lowercase letters, digits, and hyphens".into(),
-        ));
+/// Doubles as the path-traversal defense: `/`, `.`, and `_` are rejected, so a
+/// [`Bucket`] can only ever be a single directory segment under the index root.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Bucket(String);
+
+impl Bucket {
+    /// Check S3-style bucket naming without constructing a [`Bucket`].
+    ///
+    /// Rules: 3–63 chars, `[a-z0-9-]`, no leading/trailing hyphen.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::InvalidRequest`] describing the first rule the name breaks.
+    pub fn validate(name: &str) -> Result<(), AppError> {
+        if name.len() < 3 || name.len() > 63 {
+            return Err(AppError::InvalidRequest(
+                "bucket name must be 3–63 characters".into(),
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(AppError::InvalidRequest(
+                "bucket name may only contain lowercase letters, digits, and hyphens".into(),
+            ));
+        }
+
+        if name.starts_with('-') || name.ends_with('-') {
+            return Err(AppError::InvalidRequest(
+                "bucket name may not start or end with a hyphen".into(),
+            ));
+        }
+
+        Ok(())
     }
 
-    if bucket.starts_with('-') || bucket.ends_with('-') {
-        return Err(AppError::InvalidRequest(
-            "bucket name may not start or end with a hyphen".into(),
-        ));
+    /// Validate and wrap a bucket name.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::InvalidRequest`] describing the first rule the name breaks.
+    pub fn new(name: impl Into<String>) -> Result<Self, AppError> {
+        let name = name.into();
+        Self::validate(&name)?;
+        Ok(Self(name))
     }
 
-    Ok(())
+    /// Wrap a name that is already known to be valid (e.g. loaded from our own
+    /// index layout after a prior [`Self::new`]). Does not re-validate.
+    pub fn from_trusted(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
-/// Cap an object key's length: S3 allows keys up to **1024 bytes** (UTF-8) and
-/// disallows the empty key.
-///
-/// Unlike a bucket name, a key's *charset* is unrestricted — any byte is legal,
-/// and [`encode_key`] makes it path-safe. So this guards only *length*: an
-/// unbounded key would otherwise become an oversized filename (`ENAMETOOLONG`, a
-/// `500`) or an accounting hole. Rejecting it here makes an over-long key a clean
-/// `400`.
-///
-/// # Errors
-///
-/// [`AppError::InvalidRequest`] if the key is empty or exceeds 1024 bytes.
-pub fn validate_key(key: &str) -> Result<(), AppError> {
-    const MAX_KEY_LEN: usize = 1024;
-    if key.is_empty() {
-        return Err(AppError::InvalidRequest(
-            "object key must not be empty".into(),
-        ));
+impl Deref for Bucket {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
     }
-    if key.len() > MAX_KEY_LEN {
-        return Err(AppError::InvalidRequest(format!(
-            "object key must be at most {MAX_KEY_LEN} bytes, got {}",
-            key.len()
-        )));
+}
+
+impl AsRef<str> for Bucket {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
-    Ok(())
+}
+
+impl PartialEq<str> for Bucket {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for Bucket {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl fmt::Display for Bucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for Bucket {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for Bucket {
+    type Error = AppError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+/// A validated object key: non-empty, at most 1024 UTF-8 bytes.
+///
+/// The keyspace is flat — `/` is allowed and only meaningful to listing, never
+/// a real directory. Use [`Key::encode`] before joining into a filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Key(String);
+
+impl Key {
+    /// Check key length rules without constructing a [`Key`].
+    ///
+    /// S3 allows keys up to **1024 UTF-8 bytes** and disallows the empty key.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::InvalidRequest`] if the key is empty or exceeds 1024 bytes.
+    pub fn validate(key: &str) -> Result<(), AppError> {
+        const MAX_KEY_LEN: usize = 1024;
+        if key.is_empty() {
+            return Err(AppError::InvalidRequest(
+                "object key must not be empty".into(),
+            ));
+        }
+        if key.len() > MAX_KEY_LEN {
+            return Err(AppError::InvalidRequest(format!(
+                "object key must be at most {MAX_KEY_LEN} bytes, got {}",
+                key.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate and wrap an object key.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::InvalidRequest`] if the key is empty or exceeds 1024 bytes.
+    pub fn new(key: impl Into<String>) -> Result<Self, AppError> {
+        let key = key.into();
+        Self::validate(&key)?;
+        Ok(Self(key))
+    }
+
+    /// Wrap a key already known to be valid (e.g. deserialized from our index).
+    pub fn from_trusted(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Percent-encode into a single safe filename component (see [`encode_key`]).
+    pub fn encode(&self) -> String {
+        encode_key(&self.0)
+    }
+}
+
+impl Deref for Key {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for Key {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for Key {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for Key {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for Key {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for Key {
+    type Error = AppError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+/// Validated `(bucket, key)` pair — the usual object address.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ObjectPath {
+    pub bucket: Bucket,
+    pub key: Key,
+}
+
+impl ObjectPath {
+    /// Validate both sides.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::InvalidRequest`] if either name fails its rules.
+    pub fn new(
+        bucket: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            bucket: Bucket::new(bucket)?,
+            key: Key::new(key)?,
+        })
+    }
 }
 
 /// Percent-encode a key into a single safe filename component.
 ///
-/// The keyspace is flat, so `a/b/c.jpg` must become one file, not a nested
-/// directory. Unreserved characters (`[A-Za-z0-9-._~]`) pass through; every
-/// other byte becomes `%XX`, which flattens `/` and neutralizes any
-/// path-traversal attempt in the key.
+/// Prefer [`Key::encode`] when you already hold a [`Key`].
 pub fn encode_key(key: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(key.len());
@@ -93,70 +276,59 @@ pub fn encode_key(key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_key, validate_bucket_name, validate_key};
+    use super::*;
     use crate::error::AppError;
 
     #[test]
-    fn validate_bucket_name_accepts_valid_names() {
+    fn bucket_new_accepts_valid_names() {
         let max_len = "a".repeat(63);
         for name in ["abc", "photos", "my-bucket", "a1b2c3", max_len.as_str()] {
-            validate_bucket_name(name).unwrap_or_else(|e| {
+            Bucket::new(name).unwrap_or_else(|e| {
                 panic!("{name:?} should be a valid bucket name, got {e}");
             });
         }
     }
 
     #[test]
-    fn validate_bucket_name_rejects_length_outside_bounds() {
-        assert!(
-            matches!(validate_bucket_name(""), Err(AppError::InvalidRequest(_))),
-            "empty is below the 3-char minimum"
-        );
-        assert!(
-            matches!(validate_bucket_name("ab"), Err(AppError::InvalidRequest(_))),
-            "2 chars is below the 3-char minimum"
-        );
-        assert!(
-            matches!(
-                validate_bucket_name(&"a".repeat(64)),
-                Err(AppError::InvalidRequest(_))
-            ),
-            "64 chars is above the 63-char maximum"
-        );
+    fn bucket_new_rejects_length_outside_bounds() {
+        assert!(matches!(
+            Bucket::new(""),
+            Err(AppError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            Bucket::new("ab"),
+            Err(AppError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            Bucket::new("a".repeat(64)),
+            Err(AppError::InvalidRequest(_))
+        ));
     }
 
-    /// The charset whitelist is also the path-traversal defense: `/`, `.`, `_`,
-    /// and uppercase can never name a bucket directory segment.
     #[test]
-    fn validate_bucket_name_rejects_illegal_chars() {
+    fn bucket_new_rejects_illegal_chars() {
         for bad in ["Photos", "my_bucket", "a/b", "../etc", "my.bucket", "café"] {
             assert!(
-                matches!(validate_bucket_name(bad), Err(AppError::InvalidRequest(_))),
-                "{bad:?} must be rejected as an invalid bucket name"
+                matches!(Bucket::new(bad), Err(AppError::InvalidRequest(_))),
+                "{bad:?} must be rejected"
             );
         }
     }
 
     #[test]
-    fn validate_bucket_name_rejects_leading_or_trailing_hyphen() {
-        assert!(
-            matches!(
-                validate_bucket_name("-photos"),
-                Err(AppError::InvalidRequest(_))
-            ),
-            "a leading hyphen is not a valid S3 bucket name"
-        );
-        assert!(
-            matches!(
-                validate_bucket_name("photos-"),
-                Err(AppError::InvalidRequest(_))
-            ),
-            "a trailing hyphen is not a valid S3 bucket name"
-        );
-        assert!(
-            matches!(validate_bucket_name("-"), Err(AppError::InvalidRequest(_))),
-            "a lone hyphen fails both length and hyphen-edge rules"
-        );
+    fn bucket_new_rejects_leading_or_trailing_hyphen() {
+        assert!(matches!(
+            Bucket::new("-photos"),
+            Err(AppError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            Bucket::new("photos-"),
+            Err(AppError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            Bucket::new("-"),
+            Err(AppError::InvalidRequest(_))
+        ));
     }
 
     #[test]
@@ -173,8 +345,6 @@ mod tests {
         assert_eq!(encode_key("my file.txt"), "my%20file.txt");
     }
 
-    /// `/` becomes `%2f`, so a traversal-shaped key collapses to one filename
-    /// component and cannot climb out of the bucket directory.
     #[test]
     fn encode_key_neutralizes_path_traversal() {
         assert_eq!(encode_key("../../etc/passwd"), "..%2f..%2fetc%2fpasswd");
@@ -183,52 +353,47 @@ mod tests {
 
     #[test]
     fn encode_key_encodes_non_ascii_bytes() {
-        // "café" in UTF-8 is c a f c3 a9 — the non-ASCII bytes become %XX.
         assert_eq!(encode_key("café"), "caf%c3%a9");
     }
 
     #[test]
-    fn validate_key_accepts_normal_and_max_length_keys() {
+    fn key_new_accepts_normal_and_max_length_keys() {
         for key in [
             "a",
             "a/b/c.jpg",
             "with spaces & symbols!",
             "../../etc/passwd",
         ] {
-            validate_key(key).unwrap_or_else(|e| panic!("{key:?} should be a valid key, got {e}"));
+            Key::new(key).unwrap_or_else(|e| panic!("{key:?} should be valid, got {e}"));
         }
-        // The 1024-byte boundary (S3's max) is allowed.
-        validate_key(&"k".repeat(1024)).expect("a 1024-byte key is exactly at the cap");
+        Key::new("k".repeat(1024)).expect("1024-byte key at the cap");
     }
 
     #[test]
-    fn validate_key_rejects_empty_key() {
-        assert!(
-            matches!(validate_key(""), Err(AppError::InvalidRequest(_))),
-            "the empty key is not a valid S3 key"
-        );
+    fn key_new_rejects_empty_and_over_length() {
+        assert!(matches!(Key::new(""), Err(AppError::InvalidRequest(_))));
+        assert!(matches!(
+            Key::new("k".repeat(1025)),
+            Err(AppError::InvalidRequest(_))
+        ));
     }
 
     #[test]
-    fn validate_key_rejects_over_length_keys() {
-        assert!(
-            matches!(
-                validate_key(&"k".repeat(1025)),
-                Err(AppError::InvalidRequest(_))
-            ),
-            "1025 bytes is one over S3's 1024-byte cap"
-        );
-    }
-
-    /// Byte length, not char count: a multi-byte key at the char limit but over
-    /// the *byte* cap must still be rejected (S3 counts UTF-8 bytes).
-    #[test]
-    fn validate_key_counts_bytes_not_chars() {
-        let key = "é".repeat(513); // 513 chars × 2 bytes = 1026 bytes > 1024
+    fn key_new_counts_bytes_not_chars() {
+        let key = "é".repeat(513);
         assert_eq!(key.chars().count(), 513);
-        assert!(
-            matches!(validate_key(&key), Err(AppError::InvalidRequest(_))),
-            "1026 bytes exceeds the cap even though it's only 513 chars"
-        );
+        assert!(matches!(
+            Key::new(key),
+            Err(AppError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn object_path_validates_both_sides() {
+        let path = ObjectPath::new("photos", "a/b.txt").unwrap();
+        assert_eq!(path.bucket.as_str(), "photos");
+        assert_eq!(path.key.as_str(), "a/b.txt");
+        assert!(ObjectPath::new("Bad", "k").is_err());
+        assert!(ObjectPath::new("photos", "").is_err());
     }
 }

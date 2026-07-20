@@ -19,6 +19,7 @@ use url::Url;
 use crate::bucket::BucketMetadata;
 use crate::error::AppError;
 use crate::index::{Index, Listing, NewVersion, Precondition};
+use crate::naming::{Bucket, Key};
 use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject, VersionId};
 
 /// Body for `PUT /v1/{bucket}/keys/{key}` — publish a new live version.
@@ -164,8 +165,8 @@ pub struct ResolvedObjectWire {
 impl From<ResolvedObject> for ResolvedObjectWire {
     fn from(r: ResolvedObject) -> Self {
         Self {
-            bucket: r.bucket,
-            key: r.key,
+            bucket: r.bucket.into_string(),
+            key: r.key.into_string(),
             version_id: r.version_id,
             digest: r.digest,
             etag: r.etag,
@@ -179,8 +180,8 @@ impl From<ResolvedObject> for ResolvedObjectWire {
 impl From<ResolvedObjectWire> for ResolvedObject {
     fn from(r: ResolvedObjectWire) -> Self {
         Self {
-            bucket: r.bucket,
-            key: r.key,
+            bucket: crate::naming::Bucket::from_trusted(r.bucket),
+            key: crate::naming::Key::from_trusted(r.key),
             version_id: r.version_id,
             digest: r.digest,
             etag: r.etag,
@@ -256,19 +257,19 @@ impl RemoteIndex {
         Ok(url)
     }
 
-    fn bucket_url(&self, bucket: &str) -> Result<Url, AppError> {
-        self.with_segments(&["v1", "buckets", bucket])
+    fn bucket_url(&self, bucket: &Bucket) -> Result<Url, AppError> {
+        self.with_segments(&["v1", "buckets", bucket.as_str()])
     }
 
-    fn key_url(&self, bucket: &str, key: &str) -> Result<Url, AppError> {
+    fn key_url(&self, bucket: &Bucket, key: &Key) -> Result<Url, AppError> {
         let mut url = self.parse_base()?;
         {
             let mut path = url.path_segments_mut().map_err(|_| {
                 AppError::InvalidRequest("INDEX_URL cannot be a base for path joins".into())
             })?;
             path.clear();
-            path.extend(["v1", "buckets", bucket, "keys"]);
-            for segment in key.split('/') {
+            path.extend(["v1", "buckets", bucket.as_str(), "keys"]);
+            for segment in key.as_str().split('/') {
                 path.push(segment);
             }
         }
@@ -309,7 +310,7 @@ impl RemoteIndex {
         Err(self.map_response_error(res).await)
     }
 
-    pub async fn create_bucket(&self, bucket: &str) -> Result<(), AppError> {
+    pub async fn create_bucket(&self, bucket: &Bucket) -> Result<(), AppError> {
         self.request_empty(self.client.put(self.bucket_url(bucket)?))
             .await
     }
@@ -319,15 +320,15 @@ impl RemoteIndex {
         self.request_json(self.client.get(url)).await
     }
 
-    pub async fn ensure_bucket(&self, bucket: &str) -> Result<(), AppError> {
+    pub async fn ensure_bucket(&self, bucket: &Bucket) -> Result<(), AppError> {
         self.request_empty(self.client.head(self.bucket_url(bucket)?))
             .await
     }
 
     pub async fn put(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         version: NewVersion,
         pre: Precondition,
     ) -> Result<ObjectMeta, AppError> {
@@ -342,15 +343,15 @@ impl RemoteIndex {
         self.request_json(self.client.put(url).json(&body)).await
     }
 
-    pub async fn get(&self, bucket: &str, key: &str) -> Result<Option<ObjectMeta>, AppError> {
+    pub async fn get(&self, bucket: &Bucket, key: &Key) -> Result<Option<ObjectMeta>, AppError> {
         let url = self.key_url(bucket, key)?;
         self.request_json(self.client.get(url)).await
     }
 
     pub async fn resolve(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         object_ref: ObjectRef,
     ) -> Result<ResolvedObject, AppError> {
         // Separate prefix from `/keys/{*key}` — axum cannot nest under a wildcard.
@@ -360,8 +361,8 @@ impl RemoteIndex {
                 AppError::InvalidRequest("INDEX_URL cannot be a base for path joins".into())
             })?;
             path.clear();
-            path.extend(["v1", "buckets", bucket, "resolve"]);
-            for segment in key.split('/') {
+            path.extend(["v1", "buckets", bucket.as_str(), "resolve"]);
+            for segment in key.as_str().split('/') {
                 path.push(segment);
             }
         }
@@ -374,8 +375,8 @@ impl RemoteIndex {
 
     pub async fn delete(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         object_ref: ObjectRef,
     ) -> Result<(), AppError> {
         let url = self.key_url(bucket, key)?;
@@ -388,13 +389,13 @@ impl RemoteIndex {
 
     pub async fn list(
         &self,
-        bucket: &str,
+        bucket: &Bucket,
         prefix: &str,
         delimiter: Option<&str>,
         continuation: Option<&str>,
         max_keys: usize,
     ) -> Result<Listing, AppError> {
-        let mut url = self.with_segments(&["v1", "buckets", bucket, "list"])?;
+        let mut url = self.with_segments(&["v1", "buckets", bucket.as_str(), "list"])?;
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("prefix", prefix);
@@ -410,8 +411,8 @@ impl RemoteIndex {
         Ok(wire.into())
     }
 
-    pub async fn index_entries(&self, bucket: &str) -> Result<Vec<ObjectMeta>, AppError> {
-        let url = self.with_segments(&["v1", "buckets", bucket, "entries"])?;
+    pub async fn index_entries(&self, bucket: &Bucket) -> Result<Vec<ObjectMeta>, AppError> {
+        let url = self.with_segments(&["v1", "buckets", bucket.as_str(), "entries"])?;
         self.request_json(self.client.get(url)).await
     }
 
@@ -421,17 +422,17 @@ impl RemoteIndex {
         Ok(body.reclaimed)
     }
 
-    pub async fn load_bucket_metadata(&self, bucket: &str) -> Result<BucketMetadata, AppError> {
-        let url = self.with_segments(&["v1", "buckets", bucket, "metadata"])?;
+    pub async fn load_bucket_metadata(&self, bucket: &Bucket) -> Result<BucketMetadata, AppError> {
+        let url = self.with_segments(&["v1", "buckets", bucket.as_str(), "metadata"])?;
         self.request_json(self.client.get(url)).await
     }
 
     pub async fn store_bucket_metadata(
         &self,
-        bucket: &str,
+        bucket: &Bucket,
         meta: &BucketMetadata,
     ) -> Result<(), AppError> {
-        let url = self.with_segments(&["v1", "buckets", bucket, "metadata"])?;
+        let url = self.with_segments(&["v1", "buckets", bucket.as_str(), "metadata"])?;
         self.request_empty(self.client.put(url).json(meta)).await
     }
 }
@@ -445,6 +446,7 @@ fn app_error_from_wire(code: &str, message: String) -> AppError {
         "InvalidRequest" => AppError::InvalidRequest(message),
         "EntityTooLarge" => AppError::EntityTooLarge,
         "PreconditionFailed" => AppError::PreconditionFailed,
+        "AccessDenied" => AppError::AccessDenied,
         _ => AppError::Other(anyhow::anyhow!("index service: {code}: {message}")),
     }
 }
@@ -466,7 +468,7 @@ impl IndexBackend {
         Self::Remote(RemoteIndex::new(base_url))
     }
 
-    pub async fn create_bucket(&self, bucket: &str) -> Result<(), AppError> {
+    pub async fn create_bucket(&self, bucket: &Bucket) -> Result<(), AppError> {
         match self {
             Self::Local(i) => i.create_bucket(bucket).await,
             Self::Remote(r) => r.create_bucket(bucket).await,
@@ -481,7 +483,7 @@ impl IndexBackend {
     }
 
     /// Network-friendly ensure: existence check only (no [`std::path::PathBuf`]).
-    pub async fn ensure_bucket(&self, bucket: &str) -> Result<(), AppError> {
+    pub async fn ensure_bucket(&self, bucket: &Bucket) -> Result<(), AppError> {
         match self {
             Self::Local(i) => {
                 i.ensure_bucket(bucket).await?;
@@ -493,8 +495,8 @@ impl IndexBackend {
 
     pub async fn put(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         version: NewVersion,
         pre: Precondition,
     ) -> Result<ObjectMeta, AppError> {
@@ -504,7 +506,7 @@ impl IndexBackend {
         }
     }
 
-    pub async fn get(&self, bucket: &str, key: &str) -> Result<Option<ObjectMeta>, AppError> {
+    pub async fn get(&self, bucket: &Bucket, key: &Key) -> Result<Option<ObjectMeta>, AppError> {
         match self {
             Self::Local(i) => i.get(bucket, key).await,
             Self::Remote(r) => r.get(bucket, key).await,
@@ -513,8 +515,8 @@ impl IndexBackend {
 
     pub async fn resolve(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         object_ref: ObjectRef,
     ) -> Result<ResolvedObject, AppError> {
         match self {
@@ -525,8 +527,8 @@ impl IndexBackend {
 
     pub async fn delete(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         object_ref: ObjectRef,
     ) -> Result<(), AppError> {
         match self {
@@ -537,7 +539,7 @@ impl IndexBackend {
 
     pub async fn list(
         &self,
-        bucket: &str,
+        bucket: &Bucket,
         prefix: &str,
         delimiter: Option<&str>,
         continuation: Option<&str>,
@@ -555,7 +557,7 @@ impl IndexBackend {
         }
     }
 
-    pub async fn index_entries(&self, bucket: &str) -> Result<Vec<ObjectMeta>, AppError> {
+    pub async fn index_entries(&self, bucket: &Bucket) -> Result<Vec<ObjectMeta>, AppError> {
         match self {
             Self::Local(i) => i.index_entries(bucket).await,
             Self::Remote(r) => r.index_entries(bucket).await,
@@ -570,7 +572,7 @@ impl IndexBackend {
     }
 
     /// Load `index/<bucket>/metadata.json` (locally or via the index service).
-    pub async fn load_bucket_metadata(&self, bucket: &str) -> Result<BucketMetadata, AppError> {
+    pub async fn load_bucket_metadata(&self, bucket: &Bucket) -> Result<BucketMetadata, AppError> {
         match self {
             Self::Local(i) => {
                 let dir = i.ensure_bucket(bucket).await?;
@@ -583,7 +585,7 @@ impl IndexBackend {
     /// Persist bucket metadata (lifecycle policy, etc.).
     pub async fn store_bucket_metadata(
         &self,
-        bucket: &str,
+        bucket: &Bucket,
         meta: &BucketMetadata,
     ) -> Result<(), AppError> {
         match self {
