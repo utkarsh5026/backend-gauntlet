@@ -27,7 +27,7 @@ use crate::index::Precondition;
 use crate::index_backend::IndexBackend;
 use crate::lifecycle::LifecyclePolicy;
 use crate::naming::{Bucket, Key, ObjectPath};
-use crate::object::{ETag, ObjectRef, ResolvedObject};
+use crate::object::{Digest, ETag, ObjectRef, ResolvedObject};
 use crate::s3_xml::{
     complete_multipart_result, initiate_multipart_result, list_bucket_result,
     parse_complete_multipart_body, xml_response, ListBucketParams, ListContent,
@@ -135,7 +135,19 @@ async fn presign(
         ));
     }
 
-    let method = parse_presign_method(&body.method)?;
+    let method = match body.method.trim().to_ascii_uppercase().as_str() {
+        "GET" => Method::GET,
+        "PUT" => Method::PUT,
+        "DELETE" => Method::DELETE,
+        "HEAD" => Method::HEAD,
+        "POST" => Method::POST,
+        _ => {
+            return Err(AppError::InvalidRequest(format!(
+                "unsupported presign method: {}",
+                body.method
+            )));
+        }
+    };
     let expires_at = Utc::now() + Duration::seconds(body.expires_in_secs as i64);
     let signed = auth::sign(
         auth,
@@ -151,19 +163,6 @@ async fn presign(
         url: signed.path_and_query,
         expires: expires_at.timestamp(),
     }))
-}
-
-fn parse_presign_method(raw: &str) -> Result<Method, AppError> {
-    match raw.trim().to_ascii_uppercase().as_str() {
-        "GET" => Ok(Method::GET),
-        "PUT" => Ok(Method::PUT),
-        "DELETE" => Ok(Method::DELETE),
-        "HEAD" => Ok(Method::HEAD),
-        "POST" => Ok(Method::POST),
-        _ => Err(AppError::InvalidRequest(format!(
-            "unsupported presign method: {raw}"
-        ))),
-    }
 }
 
 /// `PUT /{bucket}` — create a bucket (V3 `CreateBucket`), OR replace its
@@ -316,20 +315,14 @@ async fn put_object(
         streaming::stream_to_store(&state.store, stream, state.max_object_size, checksum_algo)
             .await?;
 
-    state
-        .index
-        .put(
-            &bucket,
-            &key,
-            crate::index::NewVersion {
-                digest,
-                etag: etag.clone(),
-                size,
-                content_type,
-            },
-            pre,
-        )
-        .await?;
+    let version = crate::index::NewVersion {
+        digest,
+        etag: etag.clone(),
+        size,
+        content_type,
+    };
+
+    state.index.put(&bucket, &key, version, pre).await?;
     span.record(SIZE_KEY, size);
     Ok((StatusCode::OK, [(header::ETAG, etag.0)]).into_response())
 }
@@ -411,32 +404,7 @@ async fn get_object(
     }
     let response_size = end - start + 1;
 
-    let body = match state.lifecycle.locate(&meta.digest).await?.encoding {
-        crate::lifecycle::Encoding::Raw => {
-            let file = state
-                .store
-                .open_blob_range(&meta.digest, start, end)
-                .await?;
-            let reader = crate::metrics::ObservedDownload::new(file);
-            Body::from_stream(tokio_util::io::ReaderStream::new(reader))
-        }
-        crate::lifecycle::Encoding::Zstd => {
-            use tokio::io::AsyncReadExt;
-            if end >= meta.size {
-                return Err(invalid_err(format!(
-                    "invalid range: start={start} end={end} size={}",
-                    meta.size
-                )));
-            }
-            let mut reader = state.lifecycle.open_tiered(&meta.digest).await?;
-            if start > 0 {
-                let mut skip = (&mut reader).take(start);
-                tokio::io::copy(&mut skip, &mut tokio::io::sink()).await?;
-            }
-            let reader = crate::metrics::ObservedDownload::new(reader.take(response_size));
-            Body::from_stream(tokio_util::io::ReaderStream::new(reader))
-        }
-    };
+    let body = stream_object_range(&state, &meta.digest, meta.size, (start, end)).await?;
 
     let status = if is_range {
         StatusCode::PARTIAL_CONTENT
@@ -467,6 +435,62 @@ async fn get_object(
     }
     metrics::counter!(crate::metrics::OBJECTS_GET_TOTAL).increment(1);
     Ok(response)
+}
+
+/// Build a streaming HTTP body for bytes `[start, end]` (inclusive) of an object.
+///
+/// [`Lifecycle::locate`](crate::lifecycle::Lifecycle::locate) decides the on-disk
+/// layout; this helper turns that into a [`Body`] without buffering the whole
+/// object:
+///
+/// - [`Encoding::Raw`](crate::lifecycle::Encoding::Raw) (hot) — seek with
+///   [`Store::open_blob_range`](crate::store::Store::open_blob_range) so only the
+///   requested slice is read from disk.
+/// - [`Encoding::Zstd`](crate::lifecycle::Encoding::Zstd) (cold) — open a
+///   streaming decoder via [`Lifecycle::open_tiered`](crate::lifecycle::Lifecycle::open_tiered),
+///   skip `start` logical bytes, then take `end - start + 1`. Cold ranges cannot
+///   seek inside the compressed file, so a mid-object range still pays to decode
+///   from byte 0.
+///
+/// Both arms wrap the reader in [`ObservedDownload`](crate::metrics::ObservedDownload)
+/// so GET bytes count toward download metrics.
+///
+/// # Errors
+///
+/// - Propagates locate / open failures (including [`AppError::NoSuchKey`]).
+/// - [`AppError::InvalidRequest`] when a cold range has `end >= object_size`
+///   (the zstd path has no equivalent of `open_blob_range`'s EOF check).
+/// - I/O errors while skipping the cold prefix.
+async fn stream_object_range(
+    state: &AppState,
+    digest: &Digest,
+    object_size: u64,
+    range: (u64, u64),
+) -> Result<Body, AppError> {
+    let (start, end) = range;
+    let response_size = end - start + 1;
+    match state.lifecycle.locate(digest).await?.encoding {
+        crate::lifecycle::Encoding::Raw => {
+            let file = state.store.open_blob_range(digest, start, end).await?;
+            let reader = crate::metrics::ObservedDownload::new(file);
+            Ok(Body::from_stream(tokio_util::io::ReaderStream::new(reader)))
+        }
+        crate::lifecycle::Encoding::Zstd => {
+            use tokio::io::AsyncReadExt;
+            if end >= object_size {
+                return Err(invalid_err(format!(
+                    "invalid range: start={start} end={end} size={object_size}"
+                )));
+            }
+            let mut reader = state.lifecycle.open_tiered(digest).await?;
+            if start > 0 {
+                let mut skip = (&mut reader).take(start);
+                tokio::io::copy(&mut skip, &mut tokio::io::sink()).await?;
+            }
+            let reader = crate::metrics::ObservedDownload::new(reader.take(response_size));
+            Ok(Body::from_stream(tokio_util::io::ReaderStream::new(reader)))
+        }
+    }
 }
 
 /// Parse an HTTP `Range` header value into inclusive `(start, end)` byte
