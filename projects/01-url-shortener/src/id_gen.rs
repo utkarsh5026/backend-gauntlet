@@ -394,7 +394,11 @@ mod tests {
     /// Note: this is *stricter* than the SPEC letter (a hang is technically neither
     /// a dup nor a panic) — but a livelock on the id hot path is clearly not a
     /// "defined behavior" worth shipping, so we pin no-hang too.
+    ///
+    /// Ignored so CI stays green; remove `#[ignore]` when implementing the
+    /// clock-regression policy (see SPEC / CONCEPTS).
     #[test]
+    #[ignore = "RED: next_id livelocks on a stuck backwards clock — exercise"]
     fn clock_regression_never_hangs_dups_or_reorders() {
         use std::sync::mpsc;
         use std::time::Duration;

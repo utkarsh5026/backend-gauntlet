@@ -417,7 +417,7 @@ mod tests {
             .await
             .unwrap();
         scope.track(&slug);
-        let mut prod_conn = redis::Client::open("redis://127.0.0.1:6301/0")
+        let mut prod_conn = redis::Client::open(crate::test_support::app_redis_url())
             .unwrap()
             .get_connection_manager()
             .await

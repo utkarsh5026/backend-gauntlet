@@ -30,6 +30,12 @@ pub fn test_redis_url() -> String {
     "redis://127.0.0.1:6301/1".into()
 }
 
+/// Same Redis host/port as [`test_redis_url`], but logical DB 0 (app namespace).
+/// Used by tests that assert scoped keys never land on the production DB.
+pub fn app_redis_url() -> String {
+    with_redis_db(&test_redis_url(), 0)
+}
+
 /// Force logical Redis DB `db` on a URL that may already include a DB index.
 fn with_redis_db(url: &str, db: u8) -> String {
     let (base, suffix) = match url.find(['?', '#']) {
