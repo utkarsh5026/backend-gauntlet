@@ -40,130 +40,19 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          # Negations keep dashboard/web-only edits out of the Rust package list.
+          # Single catch-all → JSON file list. Package scope is decided in
+          # tools/ci_resolve_packages.py (avoids dorny `!` negation false-positives
+          # and keeps clippy/nextest on only the crates you touched).
+          list-files: json
           filters: |
-            rust_workspace:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'crates/**'
-              - 'deny.toml'
-              - '.config/hakari.toml'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/nightly.yml'
-              - 'tools/ci_resolve_packages.py'
-            url_shortener:
-              - 'projects/01-url-shortener/**'
-              - '!projects/01-url-shortener/dashboard/**'
-            rate_limiter:
-              - 'projects/02-rate-limiter/**'
-            realtime_pubsub:
-              - 'projects/03-realtime-pubsub/**'
-              - '!projects/03-realtime-pubsub/web/**'
-            job_queue:
-              - 'projects/04-job-queue/**'
-              - '!projects/04-job-queue/web/**'
-            metrics_pipeline:
-              - 'projects/05-metrics-pipeline/**'
-            object_store:
-              - 'projects/06-object-store/**'
-              - '!projects/06-object-store/web/**'
-            distributed_cache:
-              - 'projects/07-distributed-cache/**'
-            message_broker:
-              - 'projects/08-message-broker/**'
-            raft_kv:
-              - 'projects/09-raft-kv/**'
-            api_gateway:
-              - 'projects/10-api-gateway/**'
-            vod_streaming:
-              - 'projects/11-vod-streaming/**'
-              - '!projects/11-vod-streaming/web/**'
-            transcode_pipeline:
-              - 'projects/12-transcode-pipeline/**'
-            live_ingest:
-              - 'projects/13-live-ingest/**'
-              - '!projects/13-live-ingest/web/**'
-            media_transport:
-              - 'projects/14-media-transport/**'
-            webrtc_sfu:
-              - 'projects/15-webrtc-sfu/**'
-              - '!projects/15-webrtc-sfu/web/**'
-            live_platform:
-              - 'projects/16-live-platform/**'
-              - '!projects/16-live-platform/web/**'
-            global_conferencing:
-              - 'projects/17-global-conferencing/**'
-              - '!projects/17-global-conferencing/web/**'
-            ledger_payments:
-              - 'projects/18-ledger-payments-core/**'
-            bittorrent:
-              - 'projects/19-bittorrent/**'
-            full_text_search:
-              - 'projects/20-full-text-search/**'
-              - '!projects/20-full-text-search/web/**'
-            workflow_engine:
-              - 'projects/21-workflow-engine/**'
-            lsm_redis:
-              - 'projects/22-lsm-redis/**'
-            fe_01:
-              - 'projects/01-url-shortener/dashboard/**'
-            fe_03:
-              - 'projects/03-realtime-pubsub/web/**'
-            fe_04:
-              - 'projects/04-job-queue/web/**'
-            fe_06:
-              - 'projects/06-object-store/web/**'
-            fe_11:
-              - 'projects/11-vod-streaming/web/**'
-            fe_13:
-              - 'projects/13-live-ingest/web/**'
-            fe_15:
-              - 'projects/15-webrtc-sfu/web/**'
-            fe_16:
-              - 'projects/16-live-platform/web/**'
-            fe_17:
-              - 'projects/17-global-conferencing/web/**'
-            fe_20:
-              - 'projects/20-full-text-search/web/**'
+            any:
+              - '**'
       - name: Resolve package / frontend scope
         id: resolve
         env:
           # boolean inputs arrive as strings on workflow_dispatch; empty on PR/push.
           CI_FORCE_ALL: ${{ github.event.inputs.full == 'true' }}
-          FILTER_rust_workspace: ${{ steps.filter.outputs.rust_workspace }}
-          FILTER_url_shortener: ${{ steps.filter.outputs.url_shortener }}
-          FILTER_rate_limiter: ${{ steps.filter.outputs.rate_limiter }}
-          FILTER_realtime_pubsub: ${{ steps.filter.outputs.realtime_pubsub }}
-          FILTER_job_queue: ${{ steps.filter.outputs.job_queue }}
-          FILTER_metrics_pipeline: ${{ steps.filter.outputs.metrics_pipeline }}
-          FILTER_object_store: ${{ steps.filter.outputs.object_store }}
-          FILTER_distributed_cache: ${{ steps.filter.outputs.distributed_cache }}
-          FILTER_message_broker: ${{ steps.filter.outputs.message_broker }}
-          FILTER_raft_kv: ${{ steps.filter.outputs.raft_kv }}
-          FILTER_api_gateway: ${{ steps.filter.outputs.api_gateway }}
-          FILTER_vod_streaming: ${{ steps.filter.outputs.vod_streaming }}
-          FILTER_transcode_pipeline: ${{ steps.filter.outputs.transcode_pipeline }}
-          FILTER_live_ingest: ${{ steps.filter.outputs.live_ingest }}
-          FILTER_media_transport: ${{ steps.filter.outputs.media_transport }}
-          FILTER_webrtc_sfu: ${{ steps.filter.outputs.webrtc_sfu }}
-          FILTER_live_platform: ${{ steps.filter.outputs.live_platform }}
-          FILTER_global_conferencing: ${{ steps.filter.outputs.global_conferencing }}
-          FILTER_ledger_payments: ${{ steps.filter.outputs.ledger_payments }}
-          FILTER_bittorrent: ${{ steps.filter.outputs.bittorrent }}
-          FILTER_full_text_search: ${{ steps.filter.outputs.full_text_search }}
-          FILTER_workflow_engine: ${{ steps.filter.outputs.workflow_engine }}
-          FILTER_lsm_redis: ${{ steps.filter.outputs.lsm_redis }}
-          FILTER_fe_01: ${{ steps.filter.outputs.fe_01 }}
-          FILTER_fe_03: ${{ steps.filter.outputs.fe_03 }}
-          FILTER_fe_04: ${{ steps.filter.outputs.fe_04 }}
-          FILTER_fe_06: ${{ steps.filter.outputs.fe_06 }}
-          FILTER_fe_11: ${{ steps.filter.outputs.fe_11 }}
-          FILTER_fe_13: ${{ steps.filter.outputs.fe_13 }}
-          FILTER_fe_15: ${{ steps.filter.outputs.fe_15 }}
-          FILTER_fe_16: ${{ steps.filter.outputs.fe_16 }}
-          FILTER_fe_17: ${{ steps.filter.outputs.fe_17 }}
-          FILTER_fe_20: ${{ steps.filter.outputs.fe_20 }}
+          CHANGED_FILES_JSON: ${{ steps.filter.outputs.any_files }}
         run: python3 tools/ci_resolve_packages.py
 
   secrets:

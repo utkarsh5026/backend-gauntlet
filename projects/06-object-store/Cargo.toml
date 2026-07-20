@@ -81,6 +81,10 @@ path = "src/bin/object_store_index.rs"
 [dev-dependencies]
 # Property-test the multipart ETag formula (V4) and prefix/delimiter listing (V3).
 proptest.workspace = true
+# Concurrency model checkers (From-the-field / docs/08): Loom exhaustive,
+# Shuttle randomized. Intro demos in tests/loom_shuttle_intro.rs.
+loom = { workspace = true }
+shuttle = { workspace = true }
 # Store tests run against an isolated on-disk root, wiped when the test ends.
 tempfile.workspace = true
 # HTTP integration tests (tests/http_api.rs) drive the real router in-process:

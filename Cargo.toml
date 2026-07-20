@@ -221,6 +221,13 @@ dotenvy = "0.15"
 proptest = "1"
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
+# Project 06 (object store) From-the-field: concurrency model checkers for the
+# GC↔in-flight-PUT race (and friends). Loom = exhaustive interleavings of small
+# models; Shuttle = randomized schedules that scale larger. See RESEARCH.md
+# §Part 8 (ShardStore lightweight formal methods) and
+# projects/06-object-store/docs/08-how-loom-and-shuttle-work.md.
+loom = "0.7"
+shuttle = "0.9"
 
 # --- internal shared crates ---
 common-telemetry = { path = "crates/common-telemetry" }

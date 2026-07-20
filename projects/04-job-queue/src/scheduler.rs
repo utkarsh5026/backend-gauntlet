@@ -109,21 +109,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
-    use sqlx::postgres::PgPoolOptions;
-
-    /// A real pool, mirroring project 01's `test_support::pg_pool`: honour
-    /// `DATABASE_URL`, else fall back to the project-scoped dev URL (host port 5404).
-    async fn pg_pool() -> PgPool {
-        common_config::load_dotenv();
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://jobs:jobs@localhost:5404/jobs".into());
-        PgPoolOptions::new()
-            .max_connections(3)
-            .connect(&url)
-            .await
-            .expect("postgres — is `docker compose up -d` running in projects/04-job-queue?")
-    }
-
     /// A per-test queue name → a per-test NOTIFY channel, so parallel tests can't
     /// wake each other. Combines a nanosecond clock with a process-wide counter.
     fn unique_queue(prefix: &str) -> String {
@@ -143,9 +128,12 @@ mod tests {
         assert_ne!(channel_name("a"), channel_name("b"));
     }
 
-    #[tokio::test]
-    async fn notify_wakes_an_idle_listener() {
-        let pool = pg_pool().await;
+    // `wait_for_work` queries `jobs` for the earliest due `run_at`, so these need a
+    // migrated schema. `#[sqlx::test]` gives each case its own DB (CI's shared
+    // `DATABASE_URL` is project 01's `shortener` DB and has no `jobs` table).
+
+    #[sqlx::test]
+    async fn notify_wakes_an_idle_listener(pool: PgPool) {
         let queue = unique_queue("wake");
 
         let waiter_pool = pool.clone();
@@ -173,9 +161,8 @@ mod tests {
     /// The durable fallback: with **no** NOTIFY at all, `wait_for_work` must still
     /// return after roughly the poll interval. This is what makes NOTIFY a mere
     /// optimisation — a dropped/never-sent notification is never stranded forever.
-    #[tokio::test]
-    async fn poll_fallback_returns_without_any_notify() {
-        let pool = pg_pool().await;
+    #[sqlx::test]
+    async fn poll_fallback_returns_without_any_notify(pool: PgPool) {
         let queue = unique_queue("fallback");
 
         let start = Instant::now();
@@ -198,9 +185,8 @@ mod tests {
     /// worker listening on queue *A*. If it did, every queue would share one wakeup
     /// and workers would thrash on each other's traffic. Here A's only legitimate
     /// wakeup is its own 500ms poll, so waking earlier than ~400ms means leakage.
-    #[tokio::test]
-    async fn notify_is_scoped_to_its_queue_channel() {
-        let pool = pg_pool().await;
+    #[sqlx::test]
+    async fn notify_is_scoped_to_its_queue_channel(pool: PgPool) {
         let queue_a = unique_queue("scope_a");
         let queue_b = unique_queue("scope_b");
 
@@ -230,9 +216,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn notify_ready_is_fire_and_forget_without_listeners() {
-        let pool = pg_pool().await;
+    #[sqlx::test]
+    async fn notify_ready_is_fire_and_forget_without_listeners(pool: PgPool) {
         notify_ready(&pool, &unique_queue("no_listener"))
             .await
             .expect("notify_ready must succeed even with zero listeners");

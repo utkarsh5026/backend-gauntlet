@@ -16,12 +16,40 @@ use crate::id_gen::IdGenerator;
 use crate::ingest::ClickIngestor;
 use crate::AppState;
 
-/// Redis URL for tests. Defaults to logical DB 1 (dev/app uses DB 0 via
-/// `REDIS_URL`) so `cargo test` never touches the cache a running dev server
-/// uses. Override `TEST_REDIS_URL` to relocate it (e.g. a non-default host/port
-/// in CI) — the DB-1 default keeps the isolation guarantee for free.
+/// Redis URL for tests. Prefers `TEST_REDIS_URL`, else derives DB 1 from
+/// `REDIS_URL` (so CI's `redis://localhost:6379` works), else the local Compose
+/// host port (`6301`). Logical DB 1 keeps `cargo test` off the DB 0 cache a
+/// running `make run` uses.
 pub fn test_redis_url() -> String {
-    std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6301/1".into())
+    if let Ok(url) = std::env::var("TEST_REDIS_URL") {
+        return url;
+    }
+    if let Ok(url) = std::env::var("REDIS_URL") {
+        return with_redis_db(&url, 1);
+    }
+    "redis://127.0.0.1:6301/1".into()
+}
+
+/// Same Redis host/port as [`test_redis_url`], but logical DB 0 (app namespace).
+/// Used by tests that assert scoped keys never land on the production DB.
+pub fn app_redis_url() -> String {
+    with_redis_db(&test_redis_url(), 0)
+}
+
+/// Force logical Redis DB `db` on a URL that may already include a DB index.
+fn with_redis_db(url: &str, db: u8) -> String {
+    let (base, suffix) = match url.find(['?', '#']) {
+        Some(i) => (&url[..i], &url[i..]),
+        None => (url, ""),
+    };
+    let base = base.trim_end_matches('/');
+    if let Some(slash) = base.rfind('/') {
+        let after = &base[slash + 1..];
+        if !after.is_empty() && after.chars().all(|c| c.is_ascii_digit()) {
+            return format!("{}{db}{suffix}", &base[..=slash]);
+        }
+    }
+    format!("{base}/{db}{suffix}")
 }
 
 fn slug_id() -> u128 {
@@ -187,6 +215,22 @@ impl IntegrationFixtures {
 #[cfg(test)]
 mod smoke_tests {
     use super::*;
+
+    #[test]
+    fn with_redis_db_appends_or_replaces_index() {
+        assert_eq!(
+            with_redis_db("redis://localhost:6379", 1),
+            "redis://localhost:6379/1"
+        );
+        assert_eq!(
+            with_redis_db("redis://localhost:6379/0", 1),
+            "redis://localhost:6379/1"
+        );
+        assert_eq!(
+            with_redis_db("redis://127.0.0.1:6301/0?protocol=3", 1),
+            "redis://127.0.0.1:6301/1?protocol=3"
+        );
+    }
 
     #[tokio::test]
     async fn integration_fixtures_wires_app_state() {
