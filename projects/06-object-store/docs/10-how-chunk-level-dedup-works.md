@@ -396,6 +396,13 @@ hash-then-chunk-then optionally compress each chunk's physical encoding.
 | Subtopic | File / symbol |
 | --- | --- |
 | From-the-field acceptance line | [`SPEC.md`](../SPEC.md) § Storage-engine labs → Chunk-level dedup |
+| **Scaffold — cutter** | [`src/cdc.rs`](../src/cdc.rs) (`CdcChunker` wraps `fastcdc::v2020`, `CdcConfig`) |
+| **Scaffold — config on state** | [`AppState::cdc`](../src/lib.rs) / [`with_cdc`](../src/lib.rs); boot: `main` → `CdcConfig::from_env` |
+| **Scaffold — manifest** | [`src/manifest.rs`](../src/manifest.rs) (encode/load/map_range/open_range) |
+| **Scaffold — CDC PUT** | [`streaming::stream_cdc_to_store`](../src/streaming.rs) (`todo!()`) |
+| **Scaffold — index grain** | [`BlobKind`](../src/object.rs) on `VersionKind::Live` / `NewVersion` |
+| **Scaffold — GET** | [`routes::stream_manifest_range`](../src/routes.rs) |
+| **Scaffold — GC expand** | [`Index::mark_meta_digests`](../src/index.rs) → `manifest::chunk_digests` |
 | Whole-object CAS today | [`src/store.rs`](../src/store.rs) |
 | Streaming PUT (network chunks) | [`src/streaming.rs`](../src/streaming.rs) |
 | Hash-then-compress rationale | [`src/lifecycle.rs`](../src/lifecycle.rs) module docs |
@@ -403,8 +410,13 @@ hash-then-chunk-then optionally compress each chunk's physical encoding.
 | Industry comparisons (Garage, …) | [`RESEARCH.md`](../RESEARCH.md) §Part 6 |
 | Multipart (not CDC) | [`docs/01-how-multipart-uploads-work.md`](01-how-multipart-uploads-work.md) |
 | Scrubbing per CAS object | [`docs/04-how-continuous-scrubbing-works.md`](04-how-continuous-scrubbing-works.md) |
+| Env knobs | [`.env.example`](../.env.example) (`CDC_*`) |
 
-When you are ready to implement: keep identity = plaintext digest, introduce a
-cutter + per-chunk `commit_temp`, store a manifest, point the index at it, and
-teach GC/GET to walk the recipe. This document's job is done when that plan
-feels obvious — not when the code is written.
+**Scaffold status:** modules and hooks are wired; bodies are `todo!()`. Default
+`AppState` keeps CDC off (tests unaffected). In `main`, env is loaded once into
+`state.cdc`; set `CDC_ENABLED=true` only when you start filling the cutter —
+that PUT path panics on purpose until implemented.
+
+When you are ready to implement: keep identity = plaintext digest, fill
+`CdcChunker` + per-chunk `commit_temp`, commit a manifest, set
+`BlobKind::Manifest`, and teach GC/GET to walk the recipe.
