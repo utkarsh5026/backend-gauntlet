@@ -344,9 +344,12 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   choice and why *(→ RESEARCH.md §Part 6; proof: cold-tier zstd in
   `src/lifecycle.rs`, hash-then-compress rationale in its module docs —
   compression applies to lifecycle-tiered blobs, not the hot tree)*
-- [~] Chunk-level dedup (content-defined chunking): two large objects differing
+- [✔] Chunk-level dedup (content-defined chunking): two large objects differing
   by a small edit share most of their on-disk bytes — whole-object dedup only
-  ever shares identical files *(→ RESEARCH.md §Part 6)*
+  ever shares identical files *(→ RESEARCH.md §Part 6; teach-yourself:
+  [`docs/10-how-chunk-level-dedup-works.md`](docs/10-how-chunk-level-dedup-works.md);
+  `src/cdc.rs` / `src/manifest.rs` / `streaming::stream_cdc_to_store`;
+  `AppState.cdc` defaults off; proof: `tests/cdc_acceptance.rs`)*
 
 ### Architecture labs
 

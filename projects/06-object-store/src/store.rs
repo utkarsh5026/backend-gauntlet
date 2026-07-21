@@ -184,6 +184,25 @@ impl Store {
         Ok(())
     }
 
+    /// Stage in-memory `bytes` under `tmp/` and [`commit_temp`] them at their
+    /// SHA-256 content address.
+    ///
+    /// Convenience for callers that already hold the full blob (CDC chunks,
+    /// manifest JSON) rather than streaming into a temp file themselves.
+    /// Dedup, metrics, and scrubber wake all go through [`Self::commit_temp`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors staging the temp file or from [`Self::commit_temp`].
+    pub async fn commit_bytes(&self, bytes: &[u8]) -> Result<Digest, AppError> {
+        let digest = Digest(hex::encode(Sha256::digest(bytes)));
+        let mut temp = crate::durable::TempEntry::unique_in(self.tmp_dir(), "bytes");
+        tokio::fs::write(temp.path(), bytes).await?;
+        self.commit_temp(temp.path(), &digest).await?;
+        temp.disarm();
+        Ok(digest)
+    }
+
     /// Open a committed blob for asynchronous reading.
     ///
     /// # Errors

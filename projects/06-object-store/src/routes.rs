@@ -32,8 +32,8 @@ use crate::s3_xml::{
     complete_multipart_result, initiate_multipart_result, list_bucket_result,
     parse_complete_multipart_body, xml_response, ListBucketParams, ListContent,
 };
-use crate::streaming::ChecksumSpec;
-use crate::{streaming, AppState};
+use crate::streaming::{ChecksumSpec, Streamer};
+use crate::AppState;
 
 const BUCKET_KEY: &str = "bucket";
 const KEY: &str = "key";
@@ -311,20 +311,23 @@ async fn put_object(
         return Ok((StatusCode::OK, [(header::ETAG, part.etag.0)]).into_response());
     }
 
-    let streaming::Stored { digest, etag, size } =
-        streaming::stream_to_store(&state.store, stream, state.max_object_size, checksum_algo)
-            .await?;
+    let mut streamer = Streamer::new(stream, state.max_object_size, checksum_algo);
+    if state.cdc.enabled {
+        streamer = streamer.with_cdc(state.cdc);
+    }
+    let stored = streamer.stream(&state.store).await?;
 
     let version = crate::index::NewVersion {
-        digest,
-        etag: etag.clone(),
-        size,
+        digest: stored.digest,
+        etag: stored.etag.clone(),
+        size: stored.size,
         content_type,
+        blob_kind: stored.blob_kind,
     };
 
     state.index.put(&bucket, &key, version, pre).await?;
-    span.record(SIZE_KEY, size);
-    Ok((StatusCode::OK, [(header::ETAG, etag.0)]).into_response())
+    span.record(SIZE_KEY, stored.size);
+    Ok((StatusCode::OK, [(header::ETAG, stored.etag.0)]).into_response())
 }
 
 /// Parse a write's conditional headers into a [`Precondition`] for `index.put`
@@ -404,7 +407,15 @@ async fn get_object(
     }
     let response_size = end - start + 1;
 
-    let body = stream_object_range(&state, &meta.digest, meta.size, (start, end)).await?;
+    let body = match meta.blob_kind {
+        crate::object::BlobKind::Whole => {
+            stream_object_range(&state, &meta.digest, meta.size, (start, end)).await?
+        }
+        crate::object::BlobKind::Manifest => {
+            // Only reached once CDC PUTs land Manifest versions.
+            stream_manifest_range(&state, &meta.digest, meta.size, (start, end)).await?
+        }
+    };
 
     let status = if is_range {
         StatusCode::PARTIAL_CONTENT
@@ -435,6 +446,29 @@ async fn get_object(
     }
     metrics::counter!(crate::metrics::OBJECTS_GET_TOTAL).increment(1);
     Ok(response)
+}
+
+/// Assemble a logical Range from a CDC manifest + chunk blobs.
+///
+/// Scaffold: delegates to [`crate::manifest::open_range`] (`todo!()` until you
+/// implement chunk walk + tiered opens).
+async fn stream_manifest_range(
+    state: &AppState,
+    manifest_digest: &Digest,
+    object_size: u64,
+    range: (u64, u64),
+) -> Result<Body, AppError> {
+    let (start, end) = range;
+    if end >= object_size {
+        return Err(invalid_err(format!(
+            "invalid range: start={start} end={end} size={object_size}"
+        )));
+    }
+    let reader =
+        crate::manifest::open_range(&state.store, &state.lifecycle, manifest_digest, start, end)
+            .await?;
+    let reader = crate::metrics::ObservedDownload::new(reader);
+    Ok(Body::from_stream(tokio_util::io::ReaderStream::new(reader)))
 }
 
 /// Build a streaming HTTP body for bytes `[start, end]` (inclusive) of an object.

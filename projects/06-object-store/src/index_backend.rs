@@ -20,7 +20,7 @@ use crate::bucket::BucketMetadata;
 use crate::error::AppError;
 use crate::index::{Index, Listing, NewVersion, Precondition};
 use crate::naming::{Bucket, Key};
-use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject, VersionId};
+use crate::object::{BlobKind, Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject, VersionId};
 
 /// Body for `PUT /v1/{bucket}/keys/{key}` — publish a new live version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +29,8 @@ pub struct PutRequest {
     pub etag: ETag,
     pub size: u64,
     pub content_type: String,
+    #[serde(default)]
+    pub blob_kind: BlobKind,
     #[serde(default)]
     pub precondition: PreconditionWire,
 }
@@ -41,6 +43,7 @@ impl PutRequest {
                 etag: self.etag,
                 size: self.size,
                 content_type: self.content_type,
+                blob_kind: self.blob_kind,
             },
             self.precondition.into(),
         )
@@ -160,6 +163,8 @@ pub struct ResolvedObjectWire {
     pub size: u64,
     pub content_type: String,
     pub last_modified: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub blob_kind: BlobKind,
 }
 
 impl From<ResolvedObject> for ResolvedObjectWire {
@@ -173,6 +178,7 @@ impl From<ResolvedObject> for ResolvedObjectWire {
             size: r.size,
             content_type: r.content_type,
             last_modified: r.last_modified,
+            blob_kind: r.blob_kind,
         }
     }
 }
@@ -188,6 +194,7 @@ impl From<ResolvedObjectWire> for ResolvedObject {
             size: r.size,
             content_type: r.content_type,
             last_modified: r.last_modified,
+            blob_kind: r.blob_kind,
         }
     }
 }
@@ -338,6 +345,7 @@ impl RemoteIndex {
             etag: version.etag,
             size: version.size,
             content_type: version.content_type,
+            blob_kind: version.blob_kind,
             precondition: pre.into(),
         };
         self.request_json(self.client.put(url).json(&body)).await

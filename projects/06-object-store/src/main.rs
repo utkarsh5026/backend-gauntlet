@@ -38,11 +38,23 @@ async fn main() -> anyhow::Result<()> {
     let max_object_size: u64 = common_config::parse_or("MAX_OBJECT_SIZE", DEFAULT_MAX_OBJECT_SIZE);
 
     let state = AppState::open(&data_dir, max_object_size)?
-        .with_auth(object_store::auth::AuthConfig::from_env_optional());
+        .with_auth(object_store::auth::AuthConfig::from_env_optional())
+        .with_cdc(object_store::cdc::CdcConfig::from_env());
     if state.auth.is_some() {
         info!("object auth enabled (presigned URLs + access credentials)");
     } else {
         warn!("object auth disabled — routes are open; set SECRET_ACCESS_KEY to gate them");
+    }
+    if state.cdc.enabled {
+        info!(
+            min_chunk = state.cdc.min_size,
+            avg_chunk = state.cdc.avg_size,
+            max_chunk = state.cdc.max_size,
+            min_object = state.cdc.min_object_size,
+            "CDC chunk-level dedup enabled (scaffold — PUT path is still todo!())"
+        );
+    } else {
+        info!("CDC chunk-level dedup disabled — whole-object CAS on PUT");
     }
     info!(%data_dir, max_object_size, "object store opened");
 

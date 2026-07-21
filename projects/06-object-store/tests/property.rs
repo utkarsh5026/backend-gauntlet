@@ -225,6 +225,7 @@ async fn put_stored(
                 etag: stored.etag.clone(),
                 size: stored.size,
                 content_type: "application/octet-stream".into(),
+                blob_kind: object_store::object::BlobKind::Whole,
             },
             Precondition::None,
         )
@@ -244,6 +245,7 @@ async fn put_sample(index: &Index, bucket: &str, key: &str, seed: usize) -> Resu
                 etag: ETag(format!("etag-{seed}")),
                 size: seed as u64,
                 content_type: "application/octet-stream".into(),
+                blob_kind: object_store::object::BlobKind::Whole,
             },
             Precondition::None,
         )

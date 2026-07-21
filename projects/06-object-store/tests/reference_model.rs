@@ -538,6 +538,7 @@ async fn apply_real(
                         etag: stored.etag.clone(),
                         size: stored.size,
                         content_type: CONTENT_TYPE.into(),
+                        blob_kind: object_store::object::BlobKind::Whole,
                     },
                     pre,
                 )

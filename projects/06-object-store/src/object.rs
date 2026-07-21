@@ -23,9 +23,27 @@ pub use crate::naming::{Bucket, Key};
 /// Opaque id of one version under a key. Monotonic per key; never reused.
 pub type VersionId = u64;
 
+/// What the index digest names on disk — whole object bytes, or a CDC manifest.
+///
+/// Existing index JSON without this field deserializes as [`Whole`](Self::Whole)
+/// via `#[serde(default)]` on [`VersionKind::Live`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobKind {
+    /// `digest` is SHA-256 of the full plaintext object (V1 today).
+    #[default]
+    Whole,
+    /// `digest` is SHA-256 of a [`crate::manifest::Manifest`] blob; logical
+    /// bytes are the concatenation of the manifest's chunk digests.
+    Manifest,
+}
+
 /// A content digest: the SHA-256 of an object's bytes, hex-encoded. In a
 /// content-addressed store this *is* the blob's name on disk (V1), which is what
 /// makes dedup free: identical bytes produce the same digest, stored once.
+///
+/// With CDC, a live version may store a *manifest* digest here instead
+/// ([`BlobKind::Manifest`]) — still a CAS name, finer grain underneath.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Digest(pub String);
 
@@ -92,6 +110,9 @@ pub enum VersionKind {
         etag: ETag,
         size: u64,
         content_type: String,
+        /// Defaults to [`BlobKind::Whole`] for index rows written before CDC.
+        #[serde(default)]
+        blob_kind: BlobKind,
     },
     DeleteMarker,
 }
@@ -112,6 +133,17 @@ impl VersionEntry {
         size: u64,
         content_type: String,
     ) -> Self {
+        Self::live_with_kind(id, digest, etag, size, content_type, BlobKind::Whole)
+    }
+
+    pub fn live_with_kind(
+        id: VersionId,
+        digest: Digest,
+        etag: ETag,
+        size: u64,
+        content_type: String,
+        blob_kind: BlobKind,
+    ) -> Self {
         Self {
             id,
             last_modified: Utc::now(),
@@ -120,18 +152,20 @@ impl VersionEntry {
                 etag,
                 size,
                 content_type,
+                blob_kind,
             },
         }
     }
 
-    pub fn as_live(&self) -> Option<(&Digest, &ETag, u64, &str)> {
+    pub fn as_live(&self) -> Option<(&Digest, &ETag, u64, &str, BlobKind)> {
         match &self.kind {
             VersionKind::Live {
                 digest,
                 etag,
                 size,
                 content_type,
-            } => Some((digest, etag, *size, content_type.as_str())),
+                blob_kind,
+            } => Some((digest, etag, *size, content_type.as_str(), *blob_kind)),
             VersionKind::DeleteMarker => None,
         }
     }
@@ -148,6 +182,7 @@ pub struct ResolvedObject {
     pub size: u64,
     pub content_type: String,
     pub last_modified: DateTime<Utc>,
+    pub blob_kind: BlobKind,
 }
 
 /// What we persist about a stored object — the index row (V3) for one key.
@@ -180,7 +215,27 @@ impl ObjectMeta {
         size: u64,
         content_type: String,
     ) -> Self {
-        let entry = VersionEntry::live(1, digest, etag, size, content_type);
+        Self::new_live_with_kind(
+            bucket,
+            key,
+            digest,
+            etag,
+            size,
+            content_type,
+            BlobKind::Whole,
+        )
+    }
+
+    pub fn new_live_with_kind(
+        bucket: Bucket,
+        key: Key,
+        digest: Digest,
+        etag: ETag,
+        size: u64,
+        content_type: String,
+        blob_kind: BlobKind,
+    ) -> Self {
+        let entry = VersionEntry::live_with_kind(1, digest, etag, size, content_type, blob_kind);
         Self {
             bucket,
             key,
@@ -203,7 +258,8 @@ impl ObjectMeta {
     /// or points at a delete marker.
     pub fn resolve_live(&self, object_ref: ObjectRef) -> Result<ResolvedObject, AppError> {
         let entry = self.resolve(object_ref).ok_or(AppError::NoSuchKey)?;
-        let (digest, etag, size, content_type) = entry.as_live().ok_or(AppError::NoSuchKey)?;
+        let (digest, etag, size, content_type, blob_kind) =
+            entry.as_live().ok_or(AppError::NoSuchKey)?;
         Ok(ResolvedObject {
             bucket: self.bucket.clone(),
             key: self.key.clone(),
@@ -213,6 +269,7 @@ impl ObjectMeta {
             size,
             content_type: content_type.to_string(),
             last_modified: entry.last_modified,
+            blob_kind,
         })
     }
 
@@ -228,13 +285,24 @@ impl ObjectMeta {
         size: u64,
         content_type: String,
     ) -> VersionId {
+        self.append_live_with_kind(digest, etag, size, content_type, BlobKind::Whole)
+    }
+
+    pub fn append_live_with_kind(
+        &mut self,
+        digest: Digest,
+        etag: ETag,
+        size: u64,
+        content_type: String,
+        blob_kind: BlobKind,
+    ) -> VersionId {
         let id = {
             let highest = self.versions.iter().map(|v| v.id).max().unwrap_or(0);
             let id = self.next_id.max(highest + 1);
             self.next_id = id + 1;
             id
         };
-        let entry = VersionEntry::live(id, digest, etag, size, content_type);
+        let entry = VersionEntry::live_with_kind(id, digest, etag, size, content_type, blob_kind);
         self.versions.push(entry);
         self.latest = id;
         id

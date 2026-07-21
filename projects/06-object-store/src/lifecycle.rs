@@ -19,6 +19,11 @@
 //!     ETag, and dedup key never move. Compression is a *physical encoding of a
 //!     blob*, not a new identity. **This is the one we build.**
 //!
+//! The same rule applies to CDC chunk blobs ([`crate::cdc`] /
+//! [`crate::manifest`]): hash plaintext chunks, optionally compress each chunk's
+//! physical encoding later. Do not tier a *manifest* digest as if it were
+//! payload — tier (or leave hot) the chunk digests the manifest names.
+//!
 //! So the mental model: a blob has a fixed *logical digest* ([`Digest`]) and a
 //! *physical representation* ([`Physical`]) that tiering flips between
 //! `objects/<h>` ([`Encoding::Raw`]) and `cold/<h>.zst` ([`Encoding::Zstd`]).
