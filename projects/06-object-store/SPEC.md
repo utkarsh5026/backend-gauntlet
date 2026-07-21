@@ -338,7 +338,9 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   result and its assumptions in the bench doc *(→ RESEARCH.md §Part 3)*
 - [~] Small-object packing (Haystack "needles"): thousands of tiny objects
   occupy a handful of append-only volume files instead of one file each, and
-  GET still streams each one correctly *(→ RESEARCH.md §Part 6)*
+  GET still streams each one correctly
+  *(→ RESEARCH.md §Part 6; teach-yourself:
+  [`docs/11-how-haystack-packing-works.md`](docs/11-how-haystack-packing-works.md))*
 - [✔] Transparent compression: blobs are Zstd-compressed at rest with dedup
   intact, and the design doc states the hash-then-compress vs compress-then-hash
   choice and why *(→ RESEARCH.md §Part 6; proof: cold-tier zstd in

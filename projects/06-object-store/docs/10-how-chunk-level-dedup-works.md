@@ -358,6 +358,8 @@ is the better tool), or data that never overlaps.
   integrity check stays `rehash == path` per CAS object (chunk or manifest).
 - **Haystack packing** (From the field) — orthogonal pressure: packing reduces
   inode cost for tiny objects; CDC may *increase* object count unless packed.
+  Teach-yourself:
+  [`docs/11-how-haystack-packing-works.md`](11-how-haystack-packing-works.md).
 - **Garage / block-level dedup** ([`RESEARCH.md`](../RESEARCH.md) §Part 6) —
   real-world Rust store that dedups at block grain with compression; a codebase
   worth reading when you implement.
