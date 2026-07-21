@@ -18,7 +18,7 @@ use crate::bucket::BucketMetadata;
 use crate::durable::TempEntry;
 use crate::error::AppError;
 use crate::naming::{Bucket, Key};
-use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject};
+use crate::object::{BlobKind, Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject};
 use crate::store::Store;
 
 /// The payload of a new live version — everything [`Index::put`] records about
@@ -29,6 +29,7 @@ pub struct NewVersion {
     pub etag: ETag,
     pub size: u64,
     pub content_type: String,
+    pub blob_kind: BlobKind,
 }
 
 /// The precondition a conditional write must satisfy, evaluated *inside* the
@@ -191,6 +192,7 @@ impl Index {
             etag,
             size,
             content_type,
+            blob_kind,
         } = version;
 
         let lock = self.key_lock(bucket, key);
@@ -218,16 +220,17 @@ impl Index {
 
         let meta = match current {
             Some(mut existing) => {
-                existing.append_live(digest, etag, size, content_type);
+                existing.append_live_with_kind(digest, etag, size, content_type, blob_kind);
                 existing
             }
-            None => ObjectMeta::new_live(
+            None => ObjectMeta::new_live_with_kind(
                 bucket.clone(),
                 key.clone(),
                 digest,
                 etag,
                 size,
                 content_type,
+                blob_kind,
             ),
         };
 
@@ -474,6 +477,12 @@ impl Index {
     /// expected shape of a crash mid-`put` — is silently ignored so a single
     /// half-written temp can't wedge GC. Including tmp digests is what protects a
     /// blob whose committed pointer hasn't been renamed into place yet.
+    ///
+    /// CDC: when a live version is [`BlobKind::Manifest`], the mark set must
+    /// also include every chunk digest named by that manifest — otherwise GC
+    /// would reap shared chunks still needed by another key. Expansion is a
+    /// `todo!()` until you implement [`crate::manifest::chunk_digests`]; it is
+    /// only reached when at least one Manifest live version exists.
     async fn collect_referenced_digests(&self) -> Result<HashSet<Digest>, AppError> {
         let (committed, tmp_files) = {
             let mut buckets = tokio::fs::read_dir(&self.root).await?;
@@ -493,26 +502,44 @@ impl Index {
             (committed, tmp_files)
         };
 
-        let committed_digests = Self::read_index_entries(committed)
-            .await?
-            .into_iter()
-            .flat_map(|m| m.digests().cloned().collect::<Vec<_>>())
-            .collect::<Vec<_>>();
-
-        let tmp_digests = stream::iter(tmp_files)
-            .map(|path| async move {
-                read_json(&path)
-                    .await
-                    .ok()
-                    .map(|m| m.digests().cloned().collect::<Vec<_>>())
-            })
+        let committed_metas = Self::read_index_entries(committed).await?;
+        let tmp_metas: Vec<ObjectMeta> = stream::iter(tmp_files)
+            .map(|path| async move { read_json(&path).await.ok() })
             .buffer_unordered(Self::GC_READ_CONCURRENCY)
             .filter_map(futures_util::future::ready)
-            .flat_map(stream::iter)
-            .collect::<Vec<_>>()
+            .collect()
             .await;
 
-        Ok(committed_digests.into_iter().chain(tmp_digests).collect())
+        let mut referenced = HashSet::new();
+        for meta in committed_metas.iter().chain(tmp_metas.iter()) {
+            self.mark_meta_digests(meta, &mut referenced).await?;
+        }
+        Ok(referenced)
+    }
+
+    /// Insert this meta's live digests (and, for manifests, their chunk digests).
+    async fn mark_meta_digests(
+        &self,
+        meta: &ObjectMeta,
+        referenced: &mut HashSet<Digest>,
+    ) -> Result<(), AppError> {
+        use crate::object::VersionKind;
+        for version in &meta.versions {
+            let VersionKind::Live {
+                digest, blob_kind, ..
+            } = &version.kind
+            else {
+                continue;
+            };
+            referenced.insert(digest.clone());
+            if *blob_kind == BlobKind::Manifest {
+                // Only reached once CDC PUTs exist — safe for today's Whole-only index.
+                for chunk in crate::manifest::chunk_digests(&self.store, digest).await? {
+                    referenced.insert(chunk);
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn push_index_files(out: &mut Vec<PathBuf>, dir: &Path) -> Result<(), AppError> {
@@ -621,6 +648,7 @@ mod tests {
                     etag: stored.etag.clone(),
                     size: stored.size,
                     content_type: "image/jpeg".into(),
+                    blob_kind: BlobKind::Whole,
                 },
                 Precondition::None,
             )
@@ -677,6 +705,7 @@ mod tests {
                     etag: ETag(format!("etag-{digest}")),
                     size: 1024,
                     content_type: "application/octet-stream".into(),
+                    blob_kind: BlobKind::Whole,
                 },
                 Precondition::None,
             )

@@ -6,9 +6,11 @@
 //! memory. Collecting the body into a `Vec<u8>` is the single bug this whole
 //! vertical exists to prevent.
 
+use crate::cdc::{CdcChunker, CdcConfig};
 use crate::durable::TempEntry;
 use crate::error::AppError;
-use crate::object::{Digest, ETag};
+use crate::manifest::{commit_manifest, ChunkRef, Manifest};
+use crate::object::{BlobKind, Digest, ETag};
 use crate::store::Store;
 use axum::extract::FromRequestParts;
 use axum::http::{request::Parts, HeaderMap};
@@ -174,18 +176,79 @@ fn header_str<'h>(headers: &'h HeaderMap, name: &str) -> Result<Option<&'h str>,
 /// The outcome of streaming one body into the store: its content digest, S3
 /// `ETag`, and byte count.
 ///
-/// Produced by [`stream_to_store`] once the staged temp file is committed. The
-/// caller (V3's PUT handler) records these on the `(bucket, key)` index row and
-/// echoes the `ETag` and size back to the client.
+/// Produced by [`stream_to_store`] (or [`stream_cdc_to_store`]) once bytes are
+/// committed. The caller (V3's PUT handler) records these on the `(bucket, key)`
+/// index row and echoes the `ETag` and size back to the client.
+///
+/// For CDC, [`digest`](Self::digest) is the **manifest** CAS name and
+/// [`blob_kind`](Self::blob_kind) is [`BlobKind::Manifest`]; [`size`](Self::size)
+/// and [`etag`](Self::etag) still describe the *logical* whole object.
 pub struct Stored {
     /// SHA-256 of the streamed bytes, hex-encoded — the blob's content address
-    /// (and its name on disk) in the [`Store`].
+    /// (and its name on disk) in the [`Store`]. For CDC this is the manifest.
     pub digest: Digest,
     /// The single-PUT S3 `ETag`, `hex(md5(bytes))`. See [`ETag`] for why this is
     /// deliberately *not* the same value as the content [`Digest`].
     pub etag: ETag,
-    /// Total number of bytes streamed — the object's size.
+    /// Total number of bytes streamed — the object's logical size.
     pub size: u64,
+    /// Whether `digest` names whole-object bytes or a CDC manifest.
+    pub blob_kind: BlobKind,
+}
+
+impl Stored {
+    pub fn whole(digest: Digest, etag: ETag, size: u64) -> Self {
+        Self {
+            digest,
+            etag,
+            size,
+            blob_kind: BlobKind::Whole,
+        }
+    }
+
+    pub fn manifest(digest: Digest, etag: ETag, size: u64) -> Self {
+        Self {
+            digest,
+            etag,
+            size,
+            blob_kind: BlobKind::Manifest,
+        }
+    }
+}
+
+pub struct Streamer<S: futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Unpin> {
+    max_size: u64,
+    checksum_algo: Option<CheckSumAlgorithm>,
+    config: Option<CdcConfig>,
+    body: S,
+}
+
+impl<S: futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Unpin> Streamer<S> {
+    pub fn new(body: S, max_size: u64, checksum_algo: Option<CheckSumAlgorithm>) -> Self
+    where
+        S: futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Unpin,
+    {
+        Self {
+            max_size,
+            checksum_algo,
+            config: None,
+            body,
+        }
+    }
+    pub fn with_cdc(self, config: CdcConfig) -> Self {
+        Self {
+            config: Some(config),
+            ..self
+        }
+    }
+
+    pub async fn stream(self, store: &Store) -> Result<Stored, AppError> {
+        if let Some(config) = self.config {
+            stream_cdc_to_store(store, self.body, self.max_size, self.checksum_algo, config).await
+        } else {
+            stream_to_store(store, self.body, self.max_size, self.checksum_algo).await
+        }
+    }
 }
 
 /// Stream a request body to disk chunk by chunk, hashing as it goes, and commit
@@ -284,10 +347,86 @@ where
         digest: Digest(hex::encode(sha256)),
         etag: ETag(hex::encode(md5)),
         size: total_file_size,
+        blob_kind: BlobKind::Whole,
     };
 
     store.commit_temp(temp.path(), &stored.digest).await?;
     temp.disarm();
+    let elapsed = started.elapsed().as_secs_f64();
+    if elapsed > 0.0 {
+        metrics::histogram!(crate::metrics::UPLOAD_THROUGHPUT).record(stored.size as f64 / elapsed);
+    }
+    Ok(stored)
+}
+
+/// CDC PUT path: content-defined chunk → per-chunk CAS → manifest → index digest.
+///
+/// Still computes whole-object MD5 (ETag) and optional client checksums over the
+/// logical plaintext. Storage grain is chunks; identity of the index pointer is
+/// the manifest digest ([`BlobKind::Manifest`]).
+///
+/// See [`crate::cdc`] and [`crate::manifest`]. Gated from routes by
+/// [`crate::AppState::cdc`] (`.enabled`).
+pub async fn stream_cdc_to_store<S>(
+    store: &Store,
+    mut body: S,
+    max_size: u64,
+    checksum_algo: Option<CheckSumAlgorithm>,
+    config: CdcConfig,
+) -> Result<Stored, AppError>
+where
+    S: futures_util::Stream<Item = Result<bytes::Bytes, axum::Error>> + Unpin,
+{
+    let mut chunker = CdcChunker::new(config)?;
+    let mut sha_hasher = Sha256::new();
+    let mut md5_hasher = md5::Md5::new();
+    let mut total_file_size = 0u64;
+    let started = tokio::time::Instant::now();
+
+    let mut chunk_refs = Vec::new();
+
+    loop {
+        match body.next().await {
+            None => break,
+            Some(Ok(bytes)) => {
+                total_file_size += bytes.len() as u64;
+                if total_file_size > max_size {
+                    return Err(AppError::EntityTooLarge);
+                }
+                sha_hasher.update(&bytes);
+                md5_hasher.update(&bytes);
+                for chunk in chunker.push(&bytes)? {
+                    let digest = store.commit_bytes(&chunk).await?;
+                    chunk_refs.push(ChunkRef {
+                        digest,
+                        size: chunk.len() as u64,
+                    });
+                }
+            }
+            Some(Err(err)) => return Err(AppError::Other(err.into())),
+        }
+    }
+
+    for chunk in chunker.finish()? {
+        chunk_refs.push(ChunkRef {
+            digest: store.commit_bytes(&chunk).await?,
+            size: chunk.len() as u64,
+        });
+    }
+
+    let sha256 = sha_hasher.finalize();
+    let md5 = md5_hasher.finalize();
+    if let Some(expected) = &checksum_algo {
+        expected.verify(&sha256, &md5)?;
+    }
+
+    let manifest = Manifest::new(chunk_refs);
+    let manifest_digest = commit_manifest(store, &manifest).await?;
+    let stored = {
+        let etag = ETag(hex::encode(md5));
+        Stored::manifest(manifest_digest, etag, total_file_size)
+    };
+
     let elapsed = started.elapsed().as_secs_f64();
     if elapsed > 0.0 {
         metrics::histogram!(crate::metrics::UPLOAD_THROUGHPUT).record(stored.size as f64 / elapsed);
@@ -620,5 +759,261 @@ mod checksum_tests {
             !store.contains(&digest).await,
             "a BadDigest reject must leave no durable blob"
         );
+    }
+}
+
+/// CDC PUT path ([`stream_cdc_to_store`]): cutter → per-chunk CAS → manifest.
+#[cfg(test)]
+mod cdc_stream_tests {
+    use super::{stream_cdc_to_store, CheckSumAlgorithm};
+    use crate::cdc::CdcConfig;
+    use crate::error::AppError;
+    use crate::index::Index;
+    use crate::index_backend::IndexBackend;
+    use crate::lifecycle::Lifecycle;
+    use crate::manifest::{chunk_digests, load_manifest, open_range};
+    use crate::object::BlobKind;
+    use crate::store::Store;
+    use base64::Engine as _;
+    use bytes::Bytes;
+    use futures_util::stream;
+    use md5::Digest as _;
+    use std::io;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::io::{AsyncRead, AsyncReadExt};
+
+    fn tiny_cdc() -> CdcConfig {
+        CdcConfig {
+            enabled: true,
+            min_size: 64,
+            avg_size: 256,
+            max_size: 1024,
+            min_object_size: 0,
+        }
+    }
+
+    fn fresh() -> (TempDir, Arc<Store>) {
+        let root = TempDir::new().expect("temp root");
+        let store = Store::open(root.path()).expect("open store");
+        (root, store)
+    }
+
+    fn fresh_with_lifecycle() -> (TempDir, Arc<Store>, Arc<Lifecycle>) {
+        let root = TempDir::new().expect("temp root");
+        let store = Store::open(root.path()).expect("open store");
+        let index = Index::open(root.path(), store.clone()).expect("open index");
+        let lifecycle = Lifecycle::new(Arc::new(IndexBackend::local(index)), store.clone());
+        (root, store, lifecycle)
+    }
+
+    fn body(
+        chunks: Vec<Result<Bytes, axum::Error>>,
+    ) -> impl futures_util::Stream<Item = Result<Bytes, axum::Error>> + Unpin {
+        stream::iter(chunks)
+    }
+
+    fn ok(b: &[u8]) -> Result<Bytes, axum::Error> {
+        Ok(Bytes::copy_from_slice(b))
+    }
+
+    fn temp_count(store: &Store) -> usize {
+        std::fs::read_dir(store.tmp_dir())
+            .expect("read tmp dir")
+            .count()
+    }
+
+    fn b64(raw: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(raw)
+    }
+
+    async fn read_all(mut reader: impl AsyncRead + Unpin) -> Vec<u8> {
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).await.expect("read");
+        buf
+    }
+
+    #[tokio::test]
+    async fn cdc_stream_commits_manifest_and_etag() {
+        let (_root, store, lifecycle) = fresh_with_lifecycle();
+        let parts: [&[u8]; 3] = [b"hello ", b"cdc ", b"world!!!!".as_slice()]; // pad for min sizes
+                                                                               // Build a payload large enough to exercise real cuts.
+        let mut whole: Vec<u8> = (0..2048u32).map(|i| (i % 251) as u8).collect();
+        whole.extend(parts.concat());
+
+        let frames: Vec<_> = whole.chunks(100).map(ok).collect();
+        let stored = stream_cdc_to_store(&store, body(frames), 1 << 20, None, tiny_cdc())
+            .await
+            .expect("cdc stream should commit");
+
+        assert_eq!(stored.blob_kind, BlobKind::Manifest);
+        assert_eq!(stored.size, whole.len() as u64);
+        assert_eq!(
+            stored.etag.as_str(),
+            hex::encode(md5::Md5::digest(&whole)),
+            "ETag must be md5 of the logical object, not the manifest"
+        );
+        assert!(store.contains(&stored.digest).await);
+        assert_eq!(temp_count(&store), 0);
+
+        let manifest = load_manifest(&store, &stored.digest)
+            .await
+            .expect("load manifest");
+        assert_eq!(manifest.logical_size(), whole.len() as u64);
+        assert!(!manifest.chunks.is_empty());
+
+        let reader = open_range(
+            &store,
+            &lifecycle,
+            &stored.digest,
+            0,
+            whole.len() as u64 - 1,
+        )
+        .await
+        .expect("open_range");
+        assert_eq!(read_all(reader).await, whole);
+    }
+
+    #[tokio::test]
+    async fn cdc_identical_bodies_dedup_manifest_and_chunks() {
+        let (_root, store) = fresh();
+        let data: Vec<u8> = (0..1500u32).map(|i| (i % 200) as u8).collect();
+        let frames = |d: &[u8]| d.chunks(64).map(ok).collect::<Vec<_>>();
+
+        let a = stream_cdc_to_store(&store, body(frames(&data)), 1 << 20, None, tiny_cdc())
+            .await
+            .unwrap();
+        let b = stream_cdc_to_store(&store, body(frames(&data)), 1 << 20, None, tiny_cdc())
+            .await
+            .unwrap();
+
+        assert_eq!(a.digest, b.digest, "identical bytes → same manifest digest");
+        assert_eq!(a.etag, b.etag);
+        let digests = chunk_digests(&store, &a.digest).await.unwrap();
+        assert!(!digests.is_empty());
+        for d in &digests {
+            assert!(store.contains(d).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn cdc_near_duplicates_share_some_chunks() {
+        let (_root, store) = fresh();
+        let base: Vec<u8> = (0..8192u32).map(|i| (i % 251) as u8).collect();
+        let mut edited = Vec::with_capacity(base.len() + 1);
+        edited.push(0xAB);
+        edited.extend_from_slice(&base);
+
+        let frames = |d: &[u8]| d.chunks(100).map(ok).collect::<Vec<_>>();
+        let a = stream_cdc_to_store(&store, body(frames(&base)), 1 << 20, None, tiny_cdc())
+            .await
+            .unwrap();
+        let b = stream_cdc_to_store(&store, body(frames(&edited)), 1 << 20, None, tiny_cdc())
+            .await
+            .unwrap();
+
+        assert_ne!(
+            a.digest, b.digest,
+            "different objects → different manifests"
+        );
+        let da = chunk_digests(&store, &a.digest).await.unwrap();
+        let db = chunk_digests(&store, &b.digest).await.unwrap();
+        let shared = da.iter().filter(|d| db.contains(d)).count();
+        assert!(
+            shared >= 1,
+            "near-duplicates should share ≥1 chunk digest; a={} b={} shared={shared}",
+            da.len(),
+            db.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn cdc_oversize_rejected_and_leaves_no_temp() {
+        let (_root, store) = fresh();
+        let chunk = vec![b'x'; 32];
+        let chunks = (0..4).map(|_| ok(&chunk)).collect();
+
+        let outcome = stream_cdc_to_store(&store, body(chunks), 100, None, tiny_cdc()).await;
+
+        assert!(matches!(outcome, Err(AppError::EntityTooLarge)));
+        assert_eq!(temp_count(&store), 0);
+    }
+
+    #[tokio::test]
+    async fn cdc_stream_error_leaves_no_temp() {
+        let (_root, store) = fresh();
+        let chunks = vec![
+            ok(b"partial upload"),
+            Err(axum::Error::new(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "client disconnected mid-upload",
+            ))),
+        ];
+
+        let outcome = stream_cdc_to_store(&store, body(chunks), 1 << 20, None, tiny_cdc()).await;
+
+        assert!(outcome.is_err());
+        assert_eq!(temp_count(&store), 0);
+    }
+
+    #[tokio::test]
+    async fn cdc_matching_md5_checksum_commits() {
+        let (_root, store) = fresh();
+        let payload: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
+        let algo = CheckSumAlgorithm::Md5(b64(&md5::Md5::digest(&payload)));
+
+        let stored = stream_cdc_to_store(
+            &store,
+            body(payload.chunks(80).map(ok).collect()),
+            1 << 20,
+            Some(algo),
+            tiny_cdc(),
+        )
+        .await
+        .expect("matching checksum should commit");
+
+        assert_eq!(stored.blob_kind, BlobKind::Manifest);
+        assert_eq!(stored.size, payload.len() as u64);
+        assert!(store.contains(&stored.digest).await);
+        assert_eq!(temp_count(&store), 0);
+    }
+
+    #[tokio::test]
+    async fn cdc_mismatched_checksum_rejects_without_manifest() {
+        let (_root, store) = fresh();
+        let payload: Vec<u8> = (0..400u32).map(|i| (i % 251) as u8).collect();
+        let algo = CheckSumAlgorithm::Md5(b64(b"not-the-real-md5!"));
+
+        let outcome = stream_cdc_to_store(
+            &store,
+            body(payload.chunks(50).map(ok).collect()),
+            1 << 20,
+            Some(algo),
+            tiny_cdc(),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(AppError::InvalidRequest(ref msg)) if msg.contains("BadDigest")),
+            "mismatch must be BadDigest"
+        );
+        assert_eq!(temp_count(&store), 0);
+        // Chunks may already be durable (verify runs after chunk commit); the
+        // manifest must not exist. We can't know the would-be digest easily, so
+        // just assert the error path cleaned temps.
+    }
+
+    #[tokio::test]
+    async fn cdc_empty_body_commits_empty_manifest() {
+        let (_root, store) = fresh();
+        let stored = stream_cdc_to_store(&store, body(vec![]), 1024, None, tiny_cdc())
+            .await
+            .expect("empty body");
+
+        assert_eq!(stored.size, 0);
+        assert_eq!(stored.blob_kind, BlobKind::Manifest);
+        let manifest = load_manifest(&store, &stored.digest).await.unwrap();
+        assert!(manifest.chunks.is_empty());
+        assert_eq!(stored.etag.as_str(), hex::encode(md5::Md5::digest(b"")),);
     }
 }

@@ -13,9 +13,10 @@ use std::sync::Arc;
 
 use crate::durable::TempEntry;
 use crate::error::AppError;
+use crate::index::{NewVersion, Precondition};
 use crate::index_backend::IndexBackend;
 use crate::naming::{Bucket, Key};
-use crate::object::{Digest, ETag, ObjectMeta};
+use crate::object::{BlobKind, Digest, ETag, ObjectMeta};
 use crate::store::Store;
 use futures_util::StreamExt;
 use md5::Md5;
@@ -352,19 +353,16 @@ impl Multipart {
         self.store.commit_temp(temp.path(), &digest).await?;
         temp.disarm();
 
+        let version = NewVersion {
+            digest,
+            etag,
+            size: total_size,
+            content_type: session.content_type,
+            blob_kind: BlobKind::Whole,
+        };
         let meta = self
             .index
-            .put(
-                &session.bucket,
-                &session.key,
-                crate::index::NewVersion {
-                    digest,
-                    etag,
-                    size: total_size,
-                    content_type: session.content_type,
-                },
-                crate::index::Precondition::None,
-            )
+            .put(&session.bucket, &session.key, version, Precondition::None)
             .await?;
         tfs::remove_dir_all(&staging_dir).await?;
 

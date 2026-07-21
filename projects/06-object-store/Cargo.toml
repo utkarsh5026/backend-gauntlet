@@ -35,11 +35,13 @@ parking_lot.workspace = true
 # `hex` encodes the digests for both the on-disk name and the ETag.
 # `base64` decodes client Content-MD5 / x-amz-checksum-* values for verify.
 # `hmac` + `sha2` sign/verify simplified presigned URLs (`src/auth.rs`).
+# `fastcdc` is the Gear-hash cutter behind `src/cdc.rs` (chunk-level dedup).
 sha2.workspace = true
 md-5.workspace = true
 hex.workspace = true
 base64.workspace = true
 hmac.workspace = true
+fastcdc.workspace = true
 
 uuid.workspace = true
 

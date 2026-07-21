@@ -129,6 +129,10 @@ sha2 = "0.10"
 md-5 = "0.10"
 hex = "0.4"
 base64 = "0.22"
+# Project 06 (object store) From-the-field: FastCDC / Gear-hash content-defined
+# chunking for chunk-level dedup (`src/cdc.rs`). Pure Rust; v2020 is the
+# recommended API. We wrap it behind a push/finish streaming cutter.
+fastcdc = "4"
 # S3 XML wire format (ListBucketResult, multipart init/complete, Error).
 quick-xml = { version = "0.37", features = ["serialize"] }
 # Arrow's S3 client — aliased in project 06 as `arrow-object-store` so it does
