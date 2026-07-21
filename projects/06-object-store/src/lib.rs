@@ -11,12 +11,14 @@
 
 pub mod auth;
 pub mod bucket;
+pub mod cdc;
 pub mod durable;
 pub mod error;
 pub mod index;
 pub mod index_backend;
 pub mod index_server;
 pub mod lifecycle;
+pub mod manifest;
 pub mod metrics;
 pub mod multipart;
 pub mod naming;
@@ -30,6 +32,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use auth::AuthConfig;
+use cdc::CdcConfig;
 use index::Index;
 use index_backend::IndexBackend;
 use lifecycle::Lifecycle;
@@ -50,6 +53,9 @@ pub struct AppState {
     pub lifecycle: Arc<Lifecycle>,
     pub max_object_size: u64,
     pub auth: Option<AuthConfig>,
+    /// CDC / chunk-level dedup settings. Defaults to disabled so tests and a
+    /// bare [`Self::open`] keep the whole-object PUT path.
+    pub cdc: CdcConfig,
 }
 
 impl AppState {
@@ -61,6 +67,10 @@ impl AppState {
     /// Auth starts as `None` (open API). Call [`Self::with_auth`] from `main`
     /// after [`AuthConfig::from_env_optional`] so unit/integration tests are not
     /// gated by a developer's shell `SECRET_ACCESS_KEY`.
+    ///
+    /// CDC starts as [`CdcConfig::default`] (disabled). Call [`Self::with_cdc`]
+    /// from `main` after [`CdcConfig::from_env`] so tests are not gated by a
+    /// developer's shell `CDC_ENABLED`.
     pub fn open(data_dir: impl AsRef<Path>, max_object_size: u64) -> anyhow::Result<Self> {
         let data_dir = data_dir.as_ref();
         let store = Store::open(data_dir)?;
@@ -74,12 +84,19 @@ impl AppState {
             lifecycle,
             max_object_size,
             auth: None,
+            cdc: CdcConfig::default(),
         })
     }
 
     /// Install (or clear) presigned-URL auth without reopening the store.
     pub fn with_auth(mut self, auth: Option<AuthConfig>) -> Self {
         self.auth = auth;
+        self
+    }
+
+    /// Install CDC settings without reopening the store.
+    pub fn with_cdc(mut self, cdc: CdcConfig) -> Self {
+        self.cdc = cdc;
         self
     }
 
