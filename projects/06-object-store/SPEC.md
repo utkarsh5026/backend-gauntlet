@@ -346,7 +346,8 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   compression applies to lifecycle-tiered blobs, not the hot tree)*
 - [~] Chunk-level dedup (content-defined chunking): two large objects differing
   by a small edit share most of their on-disk bytes — whole-object dedup only
-  ever shares identical files *(→ RESEARCH.md §Part 6)*
+  ever shares identical files *(→ RESEARCH.md §Part 6; teach-yourself:
+  [`docs/10-how-chunk-level-dedup-works.md`](docs/10-how-chunk-level-dedup-works.md))*
 
 ### Architecture labs
 
