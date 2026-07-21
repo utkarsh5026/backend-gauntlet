@@ -17,7 +17,7 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use crate::bucket::BucketMetadata;
 use crate::durable::TempEntry;
 use crate::error::AppError;
-use crate::naming::{encode_key, validate_bucket_name, validate_key};
+use crate::naming::{Bucket, Key};
 use crate::object::{Digest, ETag, ObjectMeta, ObjectRef, ResolvedObject};
 use crate::store::Store;
 
@@ -118,12 +118,9 @@ impl Index {
     ///
     /// # Errors
     ///
-    /// [`AppError::InvalidRequest`] if `bucket` fails S3 naming rules (see
-    /// [`validate_bucket_name`](crate::naming::validate_bucket_name)), or
     /// [`AppError::BucketAlreadyExists`] if the bucket is already present.
-    pub async fn create_bucket(&self, bucket: &str) -> Result<(), AppError> {
-        validate_bucket_name(bucket)?;
-        let bucket_path = self.root.join(bucket);
+    pub async fn create_bucket(&self, bucket: &Bucket) -> Result<(), AppError> {
+        let bucket_path = self.root.join(bucket.as_str());
         if tokio::fs::try_exists(&bucket_path).await? {
             return Err(AppError::BucketAlreadyExists);
         }
@@ -144,14 +141,12 @@ impl Index {
     }
 
     /// Error with [`AppError::NoSuchBucket`] when no bucket with that name exists.
-    ///
-    /// Validates the bucket name first (see [`validate_bucket_name`]).
-    pub async fn ensure_bucket(&self, bucket: &str) -> Result<PathBuf, AppError> {
-        validate_bucket_name(bucket)?;
-        if !tokio::fs::try_exists(self.root.join(bucket)).await? {
+    pub async fn ensure_bucket(&self, bucket: &Bucket) -> Result<PathBuf, AppError> {
+        let bucket_path = self.root.join(bucket.as_str());
+        if !tokio::fs::try_exists(&bucket_path).await? {
             return Err(AppError::NoSuchBucket);
         }
-        Ok(self.root.join(bucket))
+        Ok(bucket_path)
     }
 
     /// The per-key lock guarding `(bucket, key)`'s pointer, created on first use.
@@ -161,8 +156,8 @@ impl Index {
     /// `tokio::sync::Mutex` is the lock a writer then holds across its
     /// read→check→write critical section. Distinct keys get distinct locks, so
     /// writers to unrelated keys never wait on each other.
-    fn key_lock(&self, bucket: &str, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let map_key = format!("{bucket}/{key}");
+    fn key_lock(&self, bucket: &Bucket, key: &Key) -> Arc<tokio::sync::Mutex<()>> {
+        let map_key = format!("{}/{key}", bucket.as_str());
         self.key_locks.lock().entry(map_key).or_default().clone()
     }
 
@@ -186,8 +181,8 @@ impl Index {
     /// error writing the index entry.
     pub async fn put(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         version: NewVersion,
         pre: Precondition,
     ) -> Result<ObjectMeta, AppError> {
@@ -227,8 +222,8 @@ impl Index {
                 existing
             }
             None => ObjectMeta::new_live(
-                bucket.to_string(),
-                key.to_string(),
+                bucket.clone(),
+                key.clone(),
                 digest,
                 etag,
                 size,
@@ -252,8 +247,8 @@ impl Index {
     /// Used by GC tests that plant an in-flight `tmp/` entry, and by delete
     /// paths that rewrite history.
     async fn write_meta(&self, meta: &ObjectMeta) -> Result<(), AppError> {
-        let path = self.index_path(&meta.bucket, &meta.key)?;
-        let mut temp = TempEntry::unique_in(self.tmp_dir(&meta.bucket), &encode_key(&meta.key));
+        let path = self.index_path(&meta.bucket, &meta.key);
+        let mut temp = TempEntry::unique_in(self.tmp_dir(&meta.bucket), &meta.key.encode());
         crate::durable::atomic_write_json(temp.path(), &path, meta).await?;
         temp.disarm();
         Ok(())
@@ -265,11 +260,10 @@ impl Index {
     ///
     /// # Errors
     ///
-    /// [`AppError::InvalidRequest`] for a bad bucket name, or an I/O /
-    /// deserialization error if the pointer exists but can't be read as
+    /// An I/O / deserialization error if the pointer exists but can't be read as
     /// [`ObjectMeta`].
-    pub async fn get(&self, bucket: &str, key: &str) -> Result<Option<ObjectMeta>, AppError> {
-        let path = self.index_path(bucket, key)?;
+    pub async fn get(&self, bucket: &Bucket, key: &Key) -> Result<Option<ObjectMeta>, AppError> {
+        let path = self.index_path(bucket, key);
         if !tokio::fs::try_exists(&path).await? {
             return Ok(None);
         }
@@ -283,8 +277,8 @@ impl Index {
     /// surface as [`AppError::NoSuchKey`].
     pub async fn resolve(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         object_ref: ObjectRef,
     ) -> Result<ResolvedObject, AppError> {
         let meta = self.get(bucket, key).await?.ok_or(AppError::NoSuchKey)?;
@@ -302,17 +296,17 @@ impl Index {
     ///
     /// # Errors
     ///
-    /// [`AppError::NoSuchKey`] when deleting a specific version that isn't there;
-    /// [`AppError::InvalidRequest`] for a bad bucket name, or an I/O error.
+    /// [`AppError::NoSuchKey`] when deleting a specific version that isn't there,
+    /// or an I/O error.
     pub async fn delete(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         object_ref: ObjectRef,
     ) -> Result<(), AppError> {
         match object_ref {
             ObjectRef::Latest => {
-                let path = self.index_path(bucket, key)?;
+                let path = self.index_path(bucket, key);
                 if tokio::fs::try_exists(&path).await? {
                     tokio::fs::remove_file(&path).await?;
                 }
@@ -323,7 +317,7 @@ impl Index {
                     return Err(AppError::NoSuchKey);
                 }
                 if meta.versions.is_empty() {
-                    let path = self.index_path(bucket, key)?;
+                    let path = self.index_path(bucket, key);
                     tokio::fs::remove_file(&path).await?;
                 } else {
                     self.write_meta(&meta).await?;
@@ -345,18 +339,15 @@ impl Index {
     ///
     /// # Errors
     ///
-    /// [`AppError::InvalidRequest`] for a bad bucket name, or an I/O /
-    /// deserialization error reading an index entry.
+    /// An I/O / deserialization error reading an index entry.
     pub async fn list(
         &self,
-        bucket: &str,
+        bucket: &Bucket,
         prefix: &str,
         delimiter: Option<&str>,
         continuation: Option<&str>,
         max_keys: usize,
     ) -> Result<Listing, AppError> {
-        validate_bucket_name(bucket)?;
-
         let mut paths = Vec::new();
         Self::push_index_files(&mut paths, &self.objects_dir(bucket)).await?;
 
@@ -493,7 +484,8 @@ impl Index {
                 if !bucket.file_type().await?.is_dir() {
                     continue;
                 }
-                let bucket_name = bucket.file_name().to_string_lossy().into_owned();
+                let bucket_name =
+                    Bucket::from_trusted(bucket.file_name().to_string_lossy().into_owned());
                 Self::push_index_files(&mut committed, &self.objects_dir(&bucket_name)).await?;
                 Self::push_index_files(&mut tmp_files, &self.tmp_dir(&bucket_name)).await?;
             }
@@ -544,8 +536,7 @@ impl Index {
             .await
     }
 
-    pub async fn index_entries(&self, bucket: &str) -> Result<Vec<ObjectMeta>, AppError> {
-        validate_bucket_name(bucket)?;
+    pub async fn index_entries(&self, bucket: &Bucket) -> Result<Vec<ObjectMeta>, AppError> {
         let mut paths = Vec::new();
         Self::push_index_files(&mut paths, &self.objects_dir(bucket)).await?;
         let entries = Self::read_index_entries(paths).await?;
@@ -553,22 +544,19 @@ impl Index {
     }
 
     #[inline]
-    fn index_path(&self, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
-        validate_bucket_name(bucket)?;
-        validate_key(key)?;
-        Ok(self
-            .objects_dir(bucket)
-            .join(format!("{}.json", encode_key(key))))
+    fn index_path(&self, bucket: &Bucket, key: &Key) -> PathBuf {
+        self.objects_dir(bucket)
+            .join(format!("{}.json", key.encode()))
     }
 
     #[inline]
-    fn objects_dir(&self, bucket: &str) -> PathBuf {
-        self.root.join(bucket).join(Self::OBJECTS_DIR)
+    fn objects_dir(&self, bucket: &Bucket) -> PathBuf {
+        self.root.join(bucket.as_str()).join(Self::OBJECTS_DIR)
     }
 
     #[inline]
-    fn tmp_dir(&self, bucket: &str) -> PathBuf {
-        self.root.join(bucket).join(Self::TMP_DIR)
+    fn tmp_dir(&self, bucket: &Bucket) -> PathBuf {
+        self.root.join(bucket.as_str()).join(Self::TMP_DIR)
     }
 }
 
@@ -615,11 +603,19 @@ mod tests {
             .expect("storing bytes should succeed")
     }
 
+    fn b(name: &str) -> Bucket {
+        Bucket::from_trusted(name)
+    }
+
+    fn k(name: &str) -> Key {
+        Key::from_trusted(name)
+    }
+
     async fn put_stored(index: &Index, bucket: &str, key: &str, stored: &Stored) {
         index
             .put(
-                bucket,
-                key,
+                &b(bucket),
+                &k(key),
                 NewVersion {
                     digest: stored.digest.clone(),
                     etag: stored.etag.clone(),
@@ -635,8 +631,8 @@ mod tests {
     /// Fully-built meta for planting an in-flight `tmp/` JSON by hand.
     fn meta_for(bucket: &str, key: &str, stored: &Stored) -> ObjectMeta {
         ObjectMeta::new_live(
-            bucket.into(),
-            key.into(),
+            Bucket::from_trusted(bucket),
+            Key::from_trusted(key),
             stored.digest.clone(),
             stored.etag.clone(),
             stored.size,
@@ -648,76 +644,21 @@ mod tests {
     async fn create_bucket_accepts_a_valid_name() {
         let (_root, index) = fresh();
         index
-            .create_bucket("photos")
+            .create_bucket(&b("photos"))
             .await
             .expect("a valid S3 bucket name must succeed");
-    }
-
-    #[tokio::test]
-    async fn create_bucket_rejects_names_outside_length_bounds() {
-        let (_root, index) = fresh();
-        assert!(
-            matches!(
-                index.create_bucket("ab").await,
-                Err(AppError::InvalidRequest(_))
-            ),
-            "2 chars is below the 3-char minimum"
-        );
-        let too_long = "a".repeat(64);
-        assert!(
-            matches!(
-                index.create_bucket(&too_long).await,
-                Err(AppError::InvalidRequest(_))
-            ),
-            "64 chars is above the 63-char maximum"
-        );
-    }
-
-    /// The whitelist that also closes path traversal: anything with '/', '.',
-    /// '_', or uppercase can't name a bucket, so it can't escape the data dir.
-    #[tokio::test]
-    async fn create_bucket_rejects_illegal_chars_and_traversal() {
-        let (_root, index) = fresh();
-        for bad in ["Photos", "my_bucket", "a/b", "../etc", "my.bucket"] {
-            assert!(
-                matches!(
-                    index.create_bucket(bad).await,
-                    Err(AppError::InvalidRequest(_))
-                ),
-                "{bad:?} must be rejected as an invalid bucket name"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn create_bucket_rejects_leading_or_trailing_hyphen() {
-        let (_root, index) = fresh();
-        assert!(
-            matches!(
-                index.create_bucket("-photos").await,
-                Err(AppError::InvalidRequest(_))
-            ),
-            "a leading hyphen is not a valid S3 bucket name"
-        );
-        assert!(
-            matches!(
-                index.create_bucket("photos-").await,
-                Err(AppError::InvalidRequest(_))
-            ),
-            "a trailing hyphen is not a valid S3 bucket name"
-        );
     }
 
     #[tokio::test]
     async fn create_bucket_conflicts_on_duplicate() {
         let (_root, index) = fresh();
         index
-            .create_bucket("photos")
+            .create_bucket(&b("photos"))
             .await
             .expect("first create should succeed");
         assert!(
             matches!(
-                index.create_bucket("photos").await,
+                index.create_bucket(&b("photos")).await,
                 Err(AppError::BucketAlreadyExists)
             ),
             "creating an existing bucket must be a conflict, not a silent success"
@@ -729,8 +670,8 @@ mod tests {
     async fn put_sample(index: &Index, bucket: &str, key: &str, digest: &str) -> ObjectMeta {
         index
             .put(
-                bucket,
-                key,
+                &b(bucket),
+                &k(key),
                 NewVersion {
                     digest: Digest(digest.into()),
                     etag: ETag(format!("etag-{digest}")),
@@ -748,12 +689,12 @@ mod tests {
     #[tokio::test]
     async fn put_then_get_roundtrips_metadata() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         put_sample(&index, "photos", "vacation/beach.jpg", "a1b2c3").await;
 
         let got = index
-            .resolve("photos", "vacation/beach.jpg", ObjectRef::Latest)
+            .resolve(&b("photos"), &k("vacation/beach.jpg"), ObjectRef::Latest)
             .await
             .expect("resolve should not error");
         assert_eq!(got.key, "vacation/beach.jpg", "key round-trips");
@@ -765,10 +706,10 @@ mod tests {
     #[tokio::test]
     async fn get_is_none_for_a_missing_key() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         let got = index
-            .get("photos", "never-put.jpg")
+            .get(&b("photos"), &k("never-put.jpg"))
             .await
             .expect("get should not error");
         assert!(
@@ -782,13 +723,13 @@ mod tests {
     #[tokio::test]
     async fn put_overwrite_replaces_the_pointer() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         put_sample(&index, "photos", "beach.jpg", "aaaa").await;
         put_sample(&index, "photos", "beach.jpg", "bbbb").await;
 
         let got = index
-            .resolve("photos", "beach.jpg", ObjectRef::Latest)
+            .resolve(&b("photos"), &k("beach.jpg"), ObjectRef::Latest)
             .await
             .expect("the key must still resolve after overwrite");
         assert_eq!(
@@ -798,7 +739,7 @@ mod tests {
         );
 
         let prior = index
-            .resolve("photos", "beach.jpg", ObjectRef::Version(1))
+            .resolve(&b("photos"), &k("beach.jpg"), ObjectRef::Version(1))
             .await
             .expect("version 1 must still resolve");
         assert_eq!(
@@ -815,7 +756,7 @@ mod tests {
     #[tokio::test]
     async fn dedup_two_keys_share_one_blob() {
         let (_root, store, index) = fresh_full();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         let stored = store_bytes(&store, b"identical image bytes").await;
         put_stored(&index, "photos", "vacation/beach.jpg", &stored).await;
@@ -827,11 +768,11 @@ mod tests {
         );
         // Both pointers resolve, to the same digest.
         let a = index
-            .resolve("photos", "vacation/beach.jpg", ObjectRef::Latest)
+            .resolve(&b("photos"), &k("vacation/beach.jpg"), ObjectRef::Latest)
             .await
             .unwrap();
         let b = index
-            .resolve("photos", "backup/beach-copy.jpg", ObjectRef::Latest)
+            .resolve(&b("photos"), &k("backup/beach-copy.jpg"), ObjectRef::Latest)
             .await
             .unwrap();
         assert_eq!(a.digest, b.digest, "two keys, one digest");
@@ -842,23 +783,31 @@ mod tests {
     #[tokio::test]
     async fn deleting_one_of_two_keys_keeps_the_shared_blob() {
         let (_root, store, index) = fresh_full();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         let stored = store_bytes(&store, b"shared bytes").await;
         put_stored(&index, "photos", "a.jpg", &stored).await;
         put_stored(&index, "photos", "b.jpg", &stored).await;
 
         index
-            .delete("photos", "a.jpg", ObjectRef::Latest)
+            .delete(&b("photos"), &k("a.jpg"), ObjectRef::Latest)
             .await
             .unwrap();
 
         assert!(
-            index.get("photos", "a.jpg").await.unwrap().is_none(),
+            index
+                .get(&b("photos"), &k("a.jpg"))
+                .await
+                .unwrap()
+                .is_none(),
             "the deleted key is gone"
         );
         assert!(
-            index.get("photos", "b.jpg").await.unwrap().is_some(),
+            index
+                .get(&b("photos"), &k("b.jpg"))
+                .await
+                .unwrap()
+                .is_some(),
             "the surviving key still resolves"
         );
         assert!(
@@ -872,7 +821,7 @@ mod tests {
     #[tokio::test]
     async fn gc_reclaims_only_unreferenced_blobs() {
         let (_root, store, index) = fresh_full();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         let live = store_bytes(&store, b"still referenced").await;
         let orphan = store_bytes(&store, b"about to be orphaned").await;
@@ -881,7 +830,7 @@ mod tests {
 
         // Orphan the second blob by removing its only pointer.
         index
-            .delete("photos", "doomed.txt", ObjectRef::Latest)
+            .delete(&b("photos"), &k("doomed.txt"), ObjectRef::Latest)
             .await
             .unwrap();
 
@@ -909,7 +858,7 @@ mod tests {
     #[tokio::test]
     async fn gc_tolerates_a_corrupt_temp_entry() {
         let (root, store, index) = fresh_full();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         // A real, referenced object (also creates the bucket's tmp/ dir).
         let live = store_bytes(&store, b"keep me").await;
@@ -945,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn gc_keeps_a_blob_referenced_only_by_an_in_flight_temp() {
         let (root, store, index) = fresh_full();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
 
         // Blob is durable, but its only reference lives in tmp/ (not renamed).
         let stored = store_bytes(&store, b"committing right now").await;
@@ -984,7 +933,7 @@ mod tests {
     #[tokio::test]
     async fn list_delimiter_collapses_into_common_prefixes() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
         put_keys(
             &index,
             "photos",
@@ -993,7 +942,7 @@ mod tests {
         .await;
 
         let page = index
-            .list("photos", "a/", Some("/"), None, 100)
+            .list(&b("photos"), "a/", Some("/"), None, 100)
             .await
             .unwrap();
 
@@ -1020,7 +969,7 @@ mod tests {
     #[tokio::test]
     async fn list_without_delimiter_filters_by_prefix() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
         put_keys(
             &index,
             "photos",
@@ -1028,7 +977,10 @@ mod tests {
         )
         .await;
 
-        let page = index.list("photos", "a/", None, None, 100).await.unwrap();
+        let page = index
+            .list(&b("photos"), "a/", None, None, 100)
+            .await
+            .unwrap();
 
         let object_keys: Vec<&str> = page.objects.iter().map(|m| m.key.as_str()).collect();
         assert_eq!(
@@ -1044,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn list_pagination_walks_every_key_once() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
         let keys = ["k0", "k1", "k2", "k3", "k4", "k5", "k6"];
         put_keys(&index, "photos", &keys).await;
 
@@ -1052,11 +1004,11 @@ mod tests {
         let mut token: Option<String> = None;
         loop {
             let page = index
-                .list("photos", "", None, token.as_deref(), 3)
+                .list(&b("photos"), "", None, token.as_deref(), 3)
                 .await
                 .unwrap();
             assert!(page.objects.len() <= 3, "no page may exceed max_keys");
-            seen.extend(page.objects.iter().map(|m| m.key.clone()));
+            seen.extend(page.objects.iter().map(|m| m.key.to_string()));
             match page.next_continuation_token {
                 Some(t) => token = Some(t),
                 None => break,
@@ -1076,12 +1028,15 @@ mod tests {
     #[tokio::test]
     async fn list_delimiter_with_pagination_caps_common_prefixes() {
         let (_root, index) = fresh();
-        index.create_bucket("photos").await.unwrap();
+        index.create_bucket(&b("photos")).await.unwrap();
         put_keys(&index, "photos", &["a/1", "b/1", "c/1"]).await;
 
         // 3 folders (a/ b/ c/), max_keys=2 → the first page holds at most 2 of
         // them and must signal there's more.
-        let page = index.list("photos", "", Some("/"), None, 2).await.unwrap();
+        let page = index
+            .list(&b("photos"), "", Some("/"), None, 2)
+            .await
+            .unwrap();
 
         let on_page = page.objects.len() + page.common_prefixes.len();
         assert!(
@@ -1132,7 +1087,7 @@ mod tests {
                 .expect("build current-thread runtime");
             rt.block_on(async {
                 let (_root, store, index) = fresh_full();
-                index.create_bucket("photos").await.map_err(fail)?;
+                index.create_bucket(&b("photos")).await.map_err(fail)?;
 
                 let mut digest_of_group: std::collections::HashMap<u8, Digest> =
                     std::collections::HashMap::new();
@@ -1144,7 +1099,7 @@ mod tests {
                 for (key, (_, delete)) in &entries {
                     if *delete {
                         index
-                            .delete("photos", key, ObjectRef::Latest)
+                            .delete(&b("photos"), &k(key), ObjectRef::Latest)
                             .await
                             .map_err(fail)?;
                     }

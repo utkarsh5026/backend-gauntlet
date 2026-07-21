@@ -9,6 +9,7 @@
 //! [`IndexBackend::Local`]. Set `INDEX_URL=http://127.0.0.1:9106` →
 //! [`IndexBackend::Remote`] talking to `object-store-index` (shared `DATA_DIR`).
 
+pub mod auth;
 pub mod bucket;
 pub mod durable;
 pub mod error;
@@ -28,6 +29,7 @@ pub mod streaming;
 use std::path::Path;
 use std::sync::Arc;
 
+use auth::AuthConfig;
 use index::Index;
 use index_backend::IndexBackend;
 use lifecycle::Lifecycle;
@@ -47,6 +49,7 @@ pub struct AppState {
     pub multipart: Arc<Multipart>,
     pub lifecycle: Arc<Lifecycle>,
     pub max_object_size: u64,
+    pub auth: Option<AuthConfig>,
 }
 
 impl AppState {
@@ -54,6 +57,10 @@ impl AppState {
     /// - `INDEX_URL` empty/unset → local [`Index`] under `data_dir`
     /// - `INDEX_URL` set → [`RemoteIndex`](index_backend::RemoteIndex); blobs
     ///   still live under this process's `data_dir` (`objects/`)
+    ///
+    /// Auth starts as `None` (open API). Call [`Self::with_auth`] from `main`
+    /// after [`AuthConfig::from_env_optional`] so unit/integration tests are not
+    /// gated by a developer's shell `SECRET_ACCESS_KEY`.
     pub fn open(data_dir: impl AsRef<Path>, max_object_size: u64) -> anyhow::Result<Self> {
         let data_dir = data_dir.as_ref();
         let store = Store::open(data_dir)?;
@@ -66,7 +73,14 @@ impl AppState {
             multipart,
             lifecycle,
             max_object_size,
+            auth: None,
         })
+    }
+
+    /// Install (or clear) presigned-URL auth without reopening the store.
+    pub fn with_auth(mut self, auth: Option<AuthConfig>) -> Self {
+        self.auth = auth;
+        self
     }
 
     fn open_index(data_dir: &Path, store: Arc<Store>) -> anyhow::Result<IndexBackend> {

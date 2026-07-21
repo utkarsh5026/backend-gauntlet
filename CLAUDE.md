@@ -102,6 +102,9 @@ make status NN=02                  # drill into one project (verticals + open it
 make trophies                      # 🏆 achievements (auto-derived — never award by hand)
 make infra                         # web panel: per-project Docker deps, up/down, port conflicts
 make dev NN=01                     # one-window dev stack: deps + server + frontend (multi: NN="01 03")
+make hooks                         # once per clone: enable .githooks (fmt before commit/push)
+make preflight                     # cargo fmt --check (what CI fails on most often)
+make preflight-lint                # fmt --check + hakari (closer to CI lint job)
 
 cargo check --workspace            # fast type-check everything
 cargo clippy --workspace -- -D warnings

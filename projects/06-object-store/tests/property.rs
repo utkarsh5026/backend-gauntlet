@@ -28,7 +28,7 @@ use md5::Md5;
 use object_store::error::AppError;
 use object_store::index::{Index, NewVersion, Precondition};
 use object_store::multipart::{Multipart, PartETag};
-use object_store::naming::{encode_key, validate_bucket_name};
+use object_store::naming::{encode_key, Bucket, Key};
 use object_store::object::{Digest, ETag, ObjectRef};
 use object_store::store::Store;
 use object_store::streaming::{stream_to_store, Stored};
@@ -38,6 +38,13 @@ use sha2::{Digest as _, Sha256};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
+
+fn b(name: &str) -> Bucket {
+    Bucket::from_trusted(name)
+}
+fn k(name: &str) -> Key {
+    Key::from_trusted(name)
+}
 
 /// Run one async case to completion on a fresh current-thread runtime.
 ///
@@ -211,8 +218,8 @@ async fn put_stored(
 ) -> Result<(), AppError> {
     index
         .put(
-            bucket,
-            key,
+            &b(bucket),
+            &k(key),
             NewVersion {
                 digest: stored.digest.clone(),
                 etag: stored.etag.clone(),
@@ -230,8 +237,8 @@ async fn put_stored(
 async fn put_sample(index: &Index, bucket: &str, key: &str, seed: usize) -> Result<(), AppError> {
     index
         .put(
-            bucket,
-            key,
+            &b(bucket),
+            &k(key),
             NewVersion {
                 digest: Digest(format!("{seed:064x}")),
                 etag: ETag(format!("etag-{seed}")),
@@ -341,7 +348,7 @@ proptest! {
     #[test]
     fn validate_accepts_all_well_formed_bucket_names(name in valid_bucket()) {
         prop_assert!(
-            validate_bucket_name(&name).is_ok(),
+            Bucket::new(&name).is_ok(),
             "{name:?} is a well-formed S3 bucket name and must be accepted"
         );
     }
@@ -362,7 +369,7 @@ proptest! {
         // base is ≥2 chars, so after insertion length is ≥3 — the rejection is
         // due to the illegal char, not the length rule.
         prop_assert!(
-            matches!(validate_bucket_name(&name), Err(AppError::InvalidRequest(_))),
+            matches!(Bucket::new(&name), Err(AppError::InvalidRequest(_))),
             "{name:?} contains an illegal char and must be rejected"
         );
     }
@@ -488,16 +495,16 @@ proptest! {
     fn put_then_get_round_trips_any_key(key in fs_key(), seed in 0usize..1_000_000) {
         block_on(async {
             let (_dir, index) = fresh_index();
-            index.create_bucket("photos").await.map_err(fail)?;
+            index.create_bucket(&b("photos")).await.map_err(fail)?;
 
             put_sample(&index, "photos", &key, seed).await.map_err(fail)?;
 
             let got = index
-                .resolve("photos", &key, ObjectRef::Latest)
+                .resolve(&b("photos"), &k(&key), ObjectRef::Latest)
                 .await
                 .map_err(fail)?;
 
-            prop_assert_eq!(&got.key, &key, "key round-trips");
+            prop_assert_eq!(got.key.as_str(), key.as_str(), "key round-trips");
             prop_assert_eq!(got.digest, Digest(format!("{seed:064x}")), "digest round-trips");
             prop_assert_eq!(got.size, seed as u64, "size round-trips");
             prop_assert_eq!(got.content_type.as_str(), "application/octet-stream", "content type round-trips");
@@ -517,7 +524,7 @@ proptest! {
     ) {
         block_on(async {
             let (_dir, index) = fresh_index();
-            index.create_bucket("photos").await.map_err(fail)?;
+            index.create_bucket(&b("photos")).await.map_err(fail)?;
             for (i, key) in keys.iter().enumerate() {
                 put_sample(&index, "photos", key, i).await.map_err(fail)?;
             }
@@ -527,12 +534,12 @@ proptest! {
             let mut pages = 0usize;
             loop {
                 let page = index
-                    .list("photos", &prefix, None, token.as_deref(), max_keys)
+                    .list(&b("photos"), &prefix, None, token.as_deref(), max_keys)
                     .await
                     .map_err(fail)?;
                 prop_assert!(page.objects.len() <= max_keys, "no page may exceed max_keys");
                 prop_assert!(page.common_prefixes.is_empty(), "no delimiter → no common prefixes");
-                seen.extend(page.objects.iter().map(|m| m.key.clone()));
+                seen.extend(page.objects.iter().map(|m| m.key.to_string()));
 
                 pages += 1;
                 prop_assert!(pages <= keys.len() + 2, "pagination must terminate");
@@ -573,7 +580,7 @@ proptest! {
     ) {
         block_on(async {
             let (_dir, store, index) = fresh_full();
-            index.create_bucket("photos").await.map_err(fail)?;
+            index.create_bucket(&b("photos")).await.map_err(fail)?;
 
             for (key, (group, _)) in &entries {
                 let stored = store_bytes(&store, &group_bytes(*group)).await;
@@ -582,7 +589,7 @@ proptest! {
             for (key, (_, delete)) in &entries {
                 if *delete {
                     index
-                        .delete("photos", key, ObjectRef::Latest)
+                        .delete(&b("photos"), &k(key), ObjectRef::Latest)
                         .await
                         .map_err(fail)?;
                 }
@@ -596,7 +603,7 @@ proptest! {
                     continue;
                 }
                 let got = index
-                    .resolve("photos", key, ObjectRef::Latest)
+                    .resolve(&b("photos"), &k(key), ObjectRef::Latest)
                     .await
                     .map_err(fail)?;
                 let present = store.contains(&got.digest).await;
@@ -621,9 +628,9 @@ proptest! {
     fn multipart_assembles_in_order_with_the_s3_etag((parts, order) in multipart_case()) {
         block_on(async {
             let (_dir, store, index, mp) = fresh_multipart();
-            index.create_bucket("photos").await.map_err(fail)?;
+            index.create_bucket(&b("photos")).await.map_err(fail)?;
             let upload_id = mp
-                .initiate("photos", "big.bin", "application/octet-stream".into())
+                .initiate(&b("photos"), &k("big.bin"), "application/octet-stream".into())
                 .await
                 .map_err(fail)?;
 

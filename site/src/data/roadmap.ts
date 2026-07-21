@@ -18,8 +18,23 @@ export type Tier = {
   projects: Project[]
 }
 
+import { GENERATED_FOCUS } from './focus.generated'
+
 export const REPO_URL = 'https://github.com/utkarsh5026/backend-gauntlet'
-export const CURRENT_FOCUS = '01'
+
+/**
+ * Used only when generate-focus.ts couldn't determine a focus (e.g. a shallow
+ * checkout with no merge history, or before the script has ever run).
+ */
+const FALLBACK_FOCUS = '01'
+
+/**
+ * The project the last `GENERATED_FOCUS.window` merged branches (that touched
+ * a projects/ directory) were mostly about — see scripts/generate-focus.ts.
+ * Recomputed at build/dev time, not hardcoded, so it can't go stale the way a
+ * hand-edited "current focus" constant would.
+ */
+export const CURRENT_FOCUS = GENERATED_FOCUS?.id ?? FALLBACK_FOCUS
 
 export const tiers: Tier[] = [
   {

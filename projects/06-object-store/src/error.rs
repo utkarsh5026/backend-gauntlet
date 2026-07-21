@@ -42,6 +42,13 @@ pub enum AppError {
     #[error("precondition failed")]
     PreconditionFailed,
 
+    /// Auth failed: missing / expired / forged presigned URL (or later, bad
+    /// session / SigV4). Maps to HTTP 403 — S3's `AccessDenied`.
+    ///
+    /// Do not put secrets or signature material in this variant's message.
+    #[error("access denied")]
+    AccessDenied,
+
     /// A filesystem operation failed (the store *is* the filesystem).
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -64,6 +71,7 @@ impl IntoResponse for AppError {
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::EntityTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+            Self::AccessDenied => StatusCode::FORBIDDEN,
             Self::Io(_) | Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

@@ -18,13 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-/// A bucket name — the top-level container (like an S3 bucket).
-pub type Bucket = String;
-
-/// An object key: the full path within a bucket. It may contain `/`, but the
-/// keyspace is **flat** — the slashes are only meaningful to the prefix/delimiter
-/// listing in V3, never a real directory tree on disk.
-pub type Key = String;
+pub use crate::naming::{Bucket, Key};
 
 /// Opaque id of one version under a key. Monotonic per key; never reused.
 pub type VersionId = u64;
@@ -277,8 +271,8 @@ mod tests {
 
     fn live_meta() -> ObjectMeta {
         ObjectMeta::new_live(
-            "photos".into(),
-            "a.jpg".into(),
+            Bucket::from_trusted("photos"),
+            Key::from_trusted("a.jpg"),
             Digest("aaa".into()),
             ETag("etag-a".into()),
             10,
@@ -427,16 +421,16 @@ mod tests {
         ) {
             let (digest, etag, size, content_type) = sample_live(seed);
             let meta = ObjectMeta::new_live(
-                bucket.clone(),
-                key.clone(),
+                Bucket::from_trusted(bucket.clone()),
+                Key::from_trusted(key.clone()),
                 digest.clone(),
                 etag.clone(),
                 size,
                 content_type.clone(),
             );
 
-            prop_assert_eq!(&meta.bucket, &bucket);
-            prop_assert_eq!(&meta.key, &key);
+            prop_assert_eq!(meta.bucket.as_str(), bucket.as_str());
+            prop_assert_eq!(meta.key.as_str(), key.as_str());
             prop_assert_eq!(meta.latest, 1);
             prop_assert_eq!(meta.next_id, 2);
             prop_assert_eq!(meta.versions.len(), 1);
@@ -459,8 +453,8 @@ mod tests {
             delete_mask in any::<u16>(),
         ) {
             let mut meta = ObjectMeta::new_live(
-                "photos".into(),
-                "k".into(),
+                Bucket::from_trusted("photos"),
+                Key::from_trusted("k"),
                 Digest("d0".into()),
                 ETag("e0".into()),
                 0,
@@ -516,8 +510,8 @@ mod tests {
         ) {
             let (digest, etag, size, ct) = sample_live(seed);
             let mut meta = ObjectMeta::new_live(
-                "b".into(),
-                "k".into(),
+                Bucket::from_trusted("b"),
+                Key::from_trusted("k"),
                 digest,
                 etag,
                 size,
@@ -566,8 +560,8 @@ mod tests {
             remove_latest in any::<bool>(),
         ) {
             let mut meta = ObjectMeta::new_live(
-                "b".into(),
-                "k".into(),
+                Bucket::from_trusted("b"),
+                Key::from_trusted("k"),
                 Digest("d0".into()),
                 ETag("e0".into()),
                 0,
@@ -616,8 +610,8 @@ mod tests {
         #[test]
         fn prop_digests_skips_delete_markers(live_count in 1usize..8, marker_at in any::<prop::sample::Index>()) {
             let mut meta = ObjectMeta::new_live(
-                "b".into(),
-                "k".into(),
+                Bucket::from_trusted("b"),
+                Key::from_trusted("k"),
                 Digest("d0".into()),
                 ETag("e0".into()),
                 0,
@@ -649,8 +643,8 @@ mod tests {
         fn prop_object_meta_json_round_trip(seed in 0u64..1_000, overwrites in 0usize..6) {
             let (digest, etag, size, ct) = sample_live(seed);
             let mut meta = ObjectMeta::new_live(
-                "photos".into(),
-                format!("obj-{seed}"),
+                Bucket::from_trusted("photos"),
+                Key::from_trusted(format!("obj-{seed}")),
                 digest,
                 etag,
                 size,

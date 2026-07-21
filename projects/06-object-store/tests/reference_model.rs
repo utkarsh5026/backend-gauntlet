@@ -16,7 +16,7 @@ use futures_util::stream;
 use md5::Md5;
 use object_store::error::AppError;
 use object_store::index::{Index, Listing, NewVersion, Precondition};
-use object_store::naming::validate_bucket_name;
+use object_store::naming::{Bucket, Key};
 use object_store::object::{Digest, ETag, ObjectRef};
 use object_store::store::Store;
 use object_store::streaming::{stream_to_store, Stored};
@@ -25,6 +25,13 @@ use proptest::test_runner::TestCaseError;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
+
+fn b(name: &str) -> Bucket {
+    Bucket::from_trusted(name)
+}
+fn k(name: &str) -> Key {
+    Key::from_trusted(name)
+}
 
 // ── harness plumbing ──────────────────────────────────────────────────────────
 
@@ -164,7 +171,7 @@ impl Model {
     }
 
     fn create_bucket(&mut self, bucket: &str) -> Obs {
-        if validate_bucket_name(bucket).is_err() {
+        if Bucket::new(bucket).is_err() {
             return Obs::Err(ErrKind::InvalidRequest);
         }
         if !self.buckets.insert(bucket.to_string()) {
@@ -181,7 +188,7 @@ impl Model {
         content_type: &str,
         pre: Precondition,
     ) -> Obs {
-        if validate_bucket_name(bucket).is_err() || key.is_empty() {
+        if Bucket::new(bucket).is_err() || key.is_empty() {
             return Obs::Err(ErrKind::InvalidRequest);
         }
 
@@ -224,7 +231,7 @@ impl Model {
     }
 
     fn get(&self, bucket: &str, key: &str) -> Obs {
-        if validate_bucket_name(bucket).is_err() || key.is_empty() {
+        if Bucket::new(bucket).is_err() || key.is_empty() {
             return Obs::Err(ErrKind::InvalidRequest);
         }
         match self.live(bucket, key) {
@@ -240,7 +247,7 @@ impl Model {
     }
 
     fn delete(&mut self, bucket: &str, key: &str) -> Obs {
-        if validate_bucket_name(bucket).is_err() || key.is_empty() {
+        if Bucket::new(bucket).is_err() || key.is_empty() {
             return Obs::Err(ErrKind::InvalidRequest);
         }
         self.objects.remove(&(bucket.to_string(), key.to_string()));
@@ -256,7 +263,7 @@ impl Model {
         continuation: Option<&str>,
         max_keys: usize,
     ) -> Result<ListPageObs, ErrKind> {
-        if validate_bucket_name(bucket).is_err() {
+        if Bucket::new(bucket).is_err() {
             return Err(ErrKind::InvalidRequest);
         }
 
@@ -431,7 +438,7 @@ fn listing_to_page(listing: Listing) -> ListPageObs {
             .into_iter()
             .filter_map(|meta| {
                 let live = meta.latest_live()?;
-                Some((meta.key, live.etag.0, live.size))
+                Some((meta.key.into_string(), live.etag.0, live.size))
             })
             .collect(),
         common_prefixes: listing.common_prefixes,
@@ -503,7 +510,7 @@ async fn apply_real(
     match op {
         Op::CreateBucket { bucket_idx } => {
             let bucket = &buckets[*bucket_idx % buckets.len()];
-            match index.create_bucket(bucket).await {
+            match index.create_bucket(&b(bucket)).await {
                 Ok(()) => Ok(Obs::Ok),
                 Err(e) => Ok(Obs::Err(err_kind(&e)?)),
             }
@@ -524,8 +531,8 @@ async fn apply_real(
             };
             match index
                 .put(
-                    bucket,
-                    key,
+                    &b(bucket),
+                    &k(key),
                     NewVersion {
                         digest: stored.digest,
                         etag: stored.etag.clone(),
@@ -553,7 +560,7 @@ async fn apply_real(
         } => {
             let bucket = &buckets[*bucket_idx % buckets.len()];
             let key = &keys[*key_idx % keys.len()];
-            match index.resolve(bucket, key, ObjectRef::Latest).await {
+            match index.resolve(&b(bucket), &k(key), ObjectRef::Latest).await {
                 Ok(resolved) => {
                     let body = read_blob(store, &resolved.digest)
                         .await
@@ -576,7 +583,7 @@ async fn apply_real(
         } => {
             let bucket = &buckets[*bucket_idx % buckets.len()];
             let key = &keys[*key_idx % keys.len()];
-            match index.delete(bucket, key, ObjectRef::Latest).await {
+            match index.delete(&b(bucket), &k(key), ObjectRef::Latest).await {
                 Ok(()) => Ok(Obs::Ok),
                 Err(e) => Ok(Obs::Err(err_kind(&e)?)),
             }
@@ -597,7 +604,7 @@ async fn apply_real(
             loop {
                 let listing = match index
                     .list(
-                        bucket,
+                        &b(bucket),
                         prefix,
                         delimiter,
                         continuation.as_deref(),
@@ -630,7 +637,10 @@ fn assert_final_state(model: &Model, store: &Store, index: &Index) -> Result<(),
 
     for ((bucket, key), obj) in expected {
         let obs = block_on(async {
-            match index.resolve(&bucket, &key, ObjectRef::Latest).await {
+            match index
+                .resolve(&b(&bucket), &k(&key), ObjectRef::Latest)
+                .await
+            {
                 Ok(resolved) => {
                     let body = read_blob(store, &resolved.digest)
                         .await

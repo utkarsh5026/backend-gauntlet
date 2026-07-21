@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::durable::TempEntry;
 use crate::error::AppError;
 use crate::index_backend::IndexBackend;
-use crate::naming::validate_bucket_name;
+use crate::naming::{Bucket, Key};
 use crate::object::{Digest, ETag, ObjectMeta};
 use crate::store::Store;
 use futures_util::StreamExt;
@@ -31,20 +31,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// restarts between the two calls.
 #[derive(Debug, Serialize, Deserialize)]
 struct UploadSession {
-    bucket: String,
-    key: String,
+    bucket: Bucket,
+    key: Key,
     content_type: String,
 }
 
 impl UploadSession {
-    fn new(
-        bucket: impl Into<String>,
-        key: impl Into<String>,
-        content_type: impl Into<String>,
-    ) -> Self {
+    fn new(bucket: Bucket, key: Key, content_type: impl Into<String>) -> Self {
         Self {
-            bucket: bucket.into(),
-            key: key.into(),
+            bucket,
+            key,
             content_type: content_type.into(),
         }
     }
@@ -110,18 +106,17 @@ impl Multipart {
     )]
     pub async fn initiate(
         &self,
-        bucket: &str,
-        key: &str,
+        bucket: &Bucket,
+        key: &Key,
         content_type: String,
     ) -> Result<String, AppError> {
-        validate_bucket_name(bucket)?;
         self.index.ensure_bucket(bucket).await?;
 
         let upload_id = uuid::Uuid::new_v4().to_string();
         let staging_dir = self.root.join(&upload_id);
         tokio::fs::create_dir_all(&staging_dir).await?;
 
-        let session = UploadSession::new(bucket, key, content_type);
+        let session = UploadSession::new(bucket.clone(), key.clone(), content_type);
         tokio::fs::write(self.session_path(&upload_id), serde_json::to_vec(&session)?).await?;
 
         tracing::Span::current().record("upload_id", upload_id.as_str());
@@ -443,6 +438,13 @@ mod tests {
 
     const BUCKET: &str = "photos";
 
+    fn b(name: &str) -> Bucket {
+        Bucket::from_trusted(name)
+    }
+    fn k(name: &str) -> Key {
+        Key::from_trusted(name)
+    }
+
     /// A full V4 stack (store + index + multipart) over a throwaway data dir.
     /// The `TempDir` is returned so tests can peek at the on-disk staging layout
     /// and so the whole tree is wiped on drop.
@@ -504,7 +506,7 @@ mod tests {
         let (_root, _store, _index, mp) = fresh();
         // No bucket created — `ensure_bucket` must reject before a session exists.
         assert!(matches!(
-            mp.initiate("nope", "k", "text/plain".into()).await,
+            mp.initiate(&b("nope"), &k("k"), "text/plain".into()).await,
             Err(AppError::NoSuchBucket)
         ));
     }
@@ -512,8 +514,11 @@ mod tests {
     #[tokio::test]
     async fn upload_part_rejects_out_of_range_part_numbers() {
         let (_root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         for bad in [0, Multipart::MAX_PART_NUMBER + 1] {
             let outcome = mp.upload_part(&id, bad, body(b"x"), 1 << 20).await;
@@ -536,8 +541,11 @@ mod tests {
     #[tokio::test]
     async fn upload_part_etag_is_the_part_md5() {
         let (_root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         let bytes = b"one part's worth of bytes";
         let part = upload(&mp, &id, 1, bytes).await;
@@ -551,8 +559,11 @@ mod tests {
     #[tokio::test]
     async fn upload_part_over_the_cap_is_rejected_and_leaves_no_part_file() {
         let (root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         let outcome = mp.upload_part(&id, 1, body(&[b'x'; 100]), 50).await;
         assert!(
@@ -568,9 +579,9 @@ mod tests {
     #[tokio::test]
     async fn complete_assembles_out_of_order_parts_in_part_number_order() {
         let (_root, store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
         let id = mp
-            .initiate(BUCKET, "big.txt", "text/plain".into())
+            .initiate(&b(BUCKET), &k("big.txt"), "text/plain".into())
             .await
             .unwrap();
 
@@ -593,8 +604,11 @@ mod tests {
     #[tokio::test]
     async fn complete_computes_the_multipart_etag() {
         let (_root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         let a: &[u8] = b"aaaaaaaa";
         let b: &[u8] = b"bbbbbbbbbbbb";
@@ -623,9 +637,9 @@ mod tests {
     #[tokio::test]
     async fn complete_indexes_the_object_and_removes_the_session() {
         let (root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
         let id = mp
-            .initiate(BUCKET, "a/b.txt", "application/json".into())
+            .initiate(&b(BUCKET), &k("a/b.txt"), "application/json".into())
             .await
             .unwrap();
         let p1 = upload(&mp, &id, 1, b"hello ").await;
@@ -635,7 +649,7 @@ mod tests {
         let live = meta.latest_live().expect("completed object must be live");
 
         let indexed = index
-            .get(BUCKET, "a/b.txt")
+            .get(&b(BUCKET), &k("a/b.txt"))
             .await
             .unwrap()
             .expect("completed object must be indexed")
@@ -662,8 +676,11 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_a_client_etag_that_does_not_match_the_staged_part() {
         let (_root, store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         upload(&mp, &id, 1, b"real bytes").await;
 
         // Client claims a well-formed but wrong MD5 for part 1.
@@ -678,7 +695,7 @@ mod tests {
             "a part whose staged MD5 differs from the client's claim must be rejected"
         );
         assert!(
-            index.get(BUCKET, "k").await.unwrap().is_none(),
+            index.get(&b(BUCKET), &k("k")).await.unwrap().is_none(),
             "a rejected complete must not index a partial object"
         );
         // The half-assembled temp must be cleaned up, so no orphan blob lingers.
@@ -692,8 +709,11 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_a_part_that_was_never_staged() {
         let (_root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         let p1 = upload(&mp, &id, 1, b"only part one").await;
         // Fabricate a part 2 the server never received.
         let ghost = PartETag {
@@ -710,8 +730,11 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_an_empty_part_list() {
         let (_root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         assert!(matches!(
             mp.complete(&id, vec![]).await,
@@ -722,8 +745,11 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_duplicate_part_numbers() {
         let (_root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         let p1 = upload(&mp, &id, 1, b"first").await;
         let dup = PartETag {
             part_number: 1,
@@ -752,8 +778,11 @@ mod tests {
     #[tokio::test]
     async fn retrying_a_part_overwrites_the_previous_bytes() {
         let (_root, store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
 
         // First attempt at part 1 is superseded by a retry with new content.
         upload(&mp, &id, 1, b"STALE-first-try").await;
@@ -771,8 +800,11 @@ mod tests {
     #[tokio::test]
     async fn abort_reclaims_staged_parts_and_indexes_nothing() {
         let (root, _store, index, mp) = fresh();
-        index.create_bucket(BUCKET).await.unwrap();
-        let id = mp.initiate(BUCKET, "k", "text/plain".into()).await.unwrap();
+        index.create_bucket(&b(BUCKET)).await.unwrap();
+        let id = mp
+            .initiate(&b(BUCKET), &k("k"), "text/plain".into())
+            .await
+            .unwrap();
         upload(&mp, &id, 1, b"staged but never completed").await;
 
         mp.abort(&id).await.expect("abort");
@@ -782,7 +814,7 @@ mod tests {
             "abort must delete the staging dir"
         );
         assert!(
-            index.get(BUCKET, "k").await.unwrap().is_none(),
+            index.get(&b(BUCKET), &k("k")).await.unwrap().is_none(),
             "an aborted upload must never produce an index entry"
         );
         assert!(

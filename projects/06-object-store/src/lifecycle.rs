@@ -56,6 +56,7 @@ use tracing::{error, info};
 use crate::durable::{publish_temp, TempEntry};
 use crate::error::AppError;
 use crate::index_backend::IndexBackend;
+use crate::naming::{Bucket, Key};
 use crate::object::{Digest, ObjectRef};
 use crate::store::Store;
 
@@ -278,6 +279,7 @@ impl Lifecycle {
         let mut report = SweepReport::default();
 
         for bucket in self.index.buckets().await? {
+            let bucket = Bucket::from_trusted(bucket);
             let meta = self.index.load_bucket_metadata(&bucket).await?;
             let policy = &meta.lifecycle;
             let entries = self.index.index_entries(&bucket).await?;
@@ -293,7 +295,7 @@ impl Lifecycle {
             };
 
             // Keys whose latest live version matches an expire rule.
-            let to_expire: HashSet<String> = ruled_live()
+            let to_expire: HashSet<Key> = ruled_live()
                 .filter(|(_, rule, live)| {
                     rule.expire_after_days
                         .is_some_and(|days| Self::older_than_days(live.last_modified, now, days))

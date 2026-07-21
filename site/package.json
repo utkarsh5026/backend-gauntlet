@@ -5,8 +5,9 @@
   "type": "module",
   "description": "GitHub Pages lab site for backend-gauntlet — roadmap, method, and project notes",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "generate:focus": "bun run scripts/generate-focus.ts",
+    "dev": "bun run generate:focus && vite",
+    "build": "bun run generate:focus && tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -20,6 +20,7 @@ use crate::index_backend::{
     GcResponse, IndexErrorBody, ListQuery, ListingWire, ObjectRefBody, PutRequest,
     ResolvedObjectWire,
 };
+use crate::naming::{Bucket, Key};
 use crate::object::ObjectMeta;
 use crate::s3_xml::error_code;
 
@@ -48,6 +49,7 @@ impl IntoResponse for IndexApiError {
             AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             AppError::EntityTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+            AppError::AccessDenied => StatusCode::FORBIDDEN,
             AppError::Io(_) | AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
@@ -111,6 +113,7 @@ async fn create_bucket(
     State(state): State<IndexServiceState>,
     Path(bucket): Path<String>,
 ) -> Result<StatusCode, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
     state.index.create_bucket(&bucket).await?;
     Ok(StatusCode::OK)
 }
@@ -119,6 +122,7 @@ async fn ensure_bucket(
     State(state): State<IndexServiceState>,
     Path(bucket): Path<String>,
 ) -> Result<StatusCode, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
     state.index.ensure_bucket(&bucket).await?;
     Ok(StatusCode::OK)
 }
@@ -127,6 +131,7 @@ async fn get_bucket_metadata(
     State(state): State<IndexServiceState>,
     Path(bucket): Path<String>,
 ) -> Result<Json<BucketMetadata>, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
     let dir = state.index.ensure_bucket(&bucket).await?;
     Ok(Json(BucketMetadata::load(&dir).await?))
 }
@@ -136,6 +141,7 @@ async fn put_bucket_metadata(
     Path(bucket): Path<String>,
     Json(meta): Json<BucketMetadata>,
 ) -> Result<StatusCode, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
     let dir = state.index.ensure_bucket(&bucket).await?;
     meta.store(&dir).await?;
     Ok(StatusCode::OK)
@@ -146,6 +152,8 @@ async fn put_key(
     Path((bucket, key)): Path<(String, String)>,
     Json(body): Json<PutRequest>,
 ) -> Result<Json<ObjectMeta>, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
+    let key = Key::new(key)?;
     let (version, pre) = body.into_parts();
     Ok(Json(state.index.put(&bucket, &key, version, pre).await?))
 }
@@ -154,6 +162,8 @@ async fn get_key(
     State(state): State<IndexServiceState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Result<Json<Option<ObjectMeta>>, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
+    let key = Key::new(key)?;
     Ok(Json(state.index.get(&bucket, &key).await?))
 }
 
@@ -162,6 +172,8 @@ async fn delete_key(
     Path((bucket, key)): Path<(String, String)>,
     Json(body): Json<ObjectRefBody>,
 ) -> Result<StatusCode, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
+    let key = Key::new(key)?;
     state
         .index
         .delete(&bucket, &key, body.object_ref.into())
@@ -174,6 +186,8 @@ async fn resolve_key(
     Path((bucket, key)): Path<(String, String)>,
     Json(body): Json<ObjectRefBody>,
 ) -> Result<Json<ResolvedObjectWire>, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
+    let key = Key::new(key)?;
     let resolved = state
         .index
         .resolve(&bucket, &key, body.object_ref.into())
@@ -186,6 +200,7 @@ async fn list_objects(
     Path(bucket): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ListingWire>, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
     let listing = state
         .index
         .list(
@@ -203,6 +218,7 @@ async fn index_entries(
     State(state): State<IndexServiceState>,
     Path(bucket): Path<String>,
 ) -> Result<Json<Vec<ObjectMeta>>, IndexApiError> {
+    let bucket = Bucket::new(bucket)?;
     Ok(Json(state.index.index_entries(&bucket).await?))
 }
 

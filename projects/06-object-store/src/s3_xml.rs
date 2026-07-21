@@ -195,6 +195,7 @@ pub fn error_code(err: &AppError) -> &'static str {
         AppError::InvalidRequest(_) => "InvalidRequest",
         AppError::EntityTooLarge => "EntityTooLarge",
         AppError::PreconditionFailed => "PreconditionFailed",
+        AppError::AccessDenied => "AccessDenied",
         AppError::Io(_) | AppError::Other(_) => "InternalError",
     }
 }

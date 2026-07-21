@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Blocks commits that would fail CI's rustfmt step.
+# Install once: make hooks
+# Bypass (rare): SKIP_GIT_HOOKS=1 git commit ...
+set -euo pipefail
+
+if [[ "${SKIP_GIT_HOOKS:-}" == "1" ]]; then
+  echo "↷ skipping pre-commit (SKIP_GIT_HOOKS=1)"
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec "$ROOT/tools/preflight.sh"
