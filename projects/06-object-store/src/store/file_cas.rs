@@ -3,7 +3,7 @@
 //! Each distinct blob lives at `objects/<ab>/<cd>/<sha256>` and is published
 //! with the shared temp→fsync→rename dance in [`crate::durable`]. This is the
 //! layout [`super::Store`] used before packing was scaffolded; it remains
-//! the default behind [`super::BlobLayout::FileCas`].
+//! the default write policy ([`super::BlobLayoutKind::FileCas`]).
 //!
 //! See [`super::haystack`] for the append-only volume alternative and
 //! [`docs/11-how-haystack-packing-works.md`](../../docs/11-how-haystack-packing-works.md).
@@ -126,6 +126,25 @@ impl FileCas {
     pub async fn commit_temp(&self, temp: &Path, digest: &Digest) -> Result<(), AppError> {
         let blob_path = self.blob_path(digest);
         durable::publish_temp(temp, &blob_path).await
+    }
+
+    pub fn list_digests(&self) -> std::io::Result<Vec<Digest>> {
+        let mut digests = Vec::new();
+        let mut stack = vec![self.objects.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                if metadata.is_dir() {
+                    stack.push(entry.path());
+                } else if metadata.is_file() {
+                    if let Some(digest) = self.digest_from_path(&entry.path()) {
+                        digests.push(digest);
+                    }
+                }
+            }
+        }
+        Ok(digests)
     }
 
     /// Open a committed blob file (no quarantine check — [`super::Store`] owns that).
