@@ -62,10 +62,10 @@ for layout in {file_cas, haystack}:
 
 1. **Page cache.** Second-pass reads are often RAM. For disk-bound numbers use
    `DROP_CACHES=1` (passwordless sudo) or drop caches yourself between layouts.
-2. **`needles.json` rewrite.** Haystack persists the full live index on every
-   commit today. That can dominate **write** ops/s — do not claim “Haystack is
-   always faster on PUT” if the table shows otherwise. File count + **read**
-   latency are still the packing story.
+2. **`needles.log` + checkpoint.** Commits append a WAL line (cheap); a
+   background task rewrites `needles.json` and truncates the log. Write latency
+   should track append+fsync, not full JSON rewrite — unless the WAL grows
+   huge before checkpoint.
 3. **Volume soft-cap.** Default is 1 MiB (`DEFAULT_MAX_VOLUME_SIZE`). Set
    `HAYSTACK_MAX_VOLUME_SIZE=1073741824` (1 GiB, raw bytes) so thousands of
    4 KiB needles stay in one `.dat`. That `vol_n` column is part of the proof.

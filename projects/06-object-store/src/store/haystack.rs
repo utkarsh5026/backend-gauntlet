@@ -18,11 +18,13 @@
 //!
 //! ## Durable live index
 //!
-//! Live digests are persisted in `volumes/needles.json` (source of truth). Open
-//! loads that file; volume scans are recovery only (missing/corrupt JSON).
-//! [`Self::remove`] sets `deleted: true` (tombstone) and rewrites the file —
-//! the locator stays until compaction drops the entry. `quarantined` marks
-//! scrub failures so GET refuses the needle without deleting it.
+//! Mutations append one NDJSON record to `volumes/needles.log` (fsynced) and
+//! update the RAM map. A background (or explicit) **checkpoint** rewrites
+//! `volumes/needles.json` from RAM and truncates the log — JSON is a fast-boot
+//! snapshot, the log is the durability path. Open loads JSON (if any) then
+//! replays the log; volume scan is recovery only when both are missing.
+//! [`Self::remove`] / quarantine append tombstone ops; compaction still drops
+//! dead volume bytes later.
 //!
 //! ## Scaffold status
 //!
@@ -32,8 +34,10 @@
 //! select this layout with `BLOB_LAYOUT=haystack`.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom as SyncSeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom as SyncSeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -51,13 +55,17 @@ use crate::object::Digest;
 /// haystack policy.
 pub const DEFAULT_MAX_VOLUME_SIZE: u64 = 1024 * 1024;
 
+/// How often the Store-spawned task checkpoints when the WAL is dirty.
+pub const INDEX_CHECKPOINT_INTERVAL: Duration = Duration::from_millis(500);
+
 const VOLUME_EXT: &str = "dat";
 const INDEX_FILE: &str = "needles.json";
+const LOG_FILE: &str = "needles.log";
 const INDEX_VERSION: u32 = 1;
 /// Hex digest (`Digest::LEN`) + little-endian `u64` payload length.
 const NEEDLE_HEADER_LEN: u64 = Digest::LEN as u64 + std::mem::size_of::<u64>() as u64;
 
-/// On-disk shape of [`INDEX_FILE`] — inspectable JSON, same Path A rewrite as before.
+/// On-disk snapshot shape of [`INDEX_FILE`] — compacted checkpoint of the RAM map.
 #[derive(Debug, Serialize, Deserialize)]
 struct NeedleIndexFile {
     version: u32,
@@ -93,6 +101,100 @@ impl NeedleIndexEntry {
             deleted: record.deleted,
             quarantined: record.quarantined,
         }
+    }
+}
+
+/// One durable mutation in `needles.log` (NDJSON, one object per line).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum IndexLogOp {
+    Put {
+        digest: Digest,
+        volume_id: u32,
+        offset: u64,
+        size: u64,
+    },
+    Delete {
+        digest: Digest,
+    },
+    Quarantine {
+        digest: Digest,
+    },
+}
+
+impl IndexLogOp {
+    fn put(digest: &Digest, locator: NeedleLocator) -> Self {
+        Self::Put {
+            digest: digest.clone(),
+            volume_id: locator.volume_id.0,
+            offset: locator.offset,
+            size: locator.size,
+        }
+    }
+
+    fn apply_to(self, map: &mut HashMap<Digest, NeedleRecord>) {
+        match self {
+            Self::Put {
+                digest,
+                volume_id,
+                offset,
+                size,
+            } => {
+                map.insert(
+                    digest,
+                    NeedleRecord::live(NeedleLocator {
+                        volume_id: VolumeId(volume_id),
+                        offset,
+                        size,
+                    }),
+                );
+            }
+            Self::Delete { digest } => {
+                if let Some(rec) = map.get_mut(&digest) {
+                    rec.tombstone();
+                }
+            }
+            Self::Quarantine { digest } => {
+                if let Some(rec) = map.get_mut(&digest) {
+                    rec.quarantine();
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IndexWal {
+    file: std::fs::File,
+    len: u64,
+}
+
+impl IndexWal {
+    fn open(volumes_dir: &Path) -> std::io::Result<Self> {
+        let path = volumes_dir.join(LOG_FILE);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let len = file.metadata()?.len();
+        Ok(Self { file, len })
+    }
+
+    fn append_line(&mut self, line: &[u8]) -> std::io::Result<()> {
+        self.file.seek(SyncSeekFrom::Start(self.len))?;
+        self.file.write_all(line)?;
+        self.file.sync_all()?;
+        self.len += line.len() as u64;
+        Ok(())
+    }
+
+    fn truncate(&mut self) -> std::io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.sync_all()?;
+        self.len = 0;
+        Ok(())
     }
 }
 
@@ -181,6 +283,9 @@ pub struct Haystack {
     /// Soft cap on one `*.dat` file; captured from env at [`Self::open`].
     max_volume_size: u64,
     index: parking_lot::Mutex<HashMap<Digest, NeedleRecord>>,
+    wal: parking_lot::Mutex<IndexWal>,
+    /// Set when the WAL has records not yet covered by `needles.json`.
+    dirty: AtomicBool,
     active_file: tokio::sync::Mutex<Option<ActiveFile>>,
 }
 
@@ -191,13 +296,14 @@ impl Haystack {
     /// [`DEFAULT_MAX_VOLUME_SIZE`] if unset/invalid — that env key is the only
     /// knob; it is read once here and stored on the instance.
     ///
-    /// Prefer `volumes/needles.json`. If it is missing or corrupt, scan every
-    /// `*.dat` volume (recovery), truncate torn tails, then write a fresh index.
+    /// Boot: load `needles.json` (if present) then replay `needles.log`. If both
+    /// are absent/empty but `*.dat` volumes exist, scan volumes (recovery) and
+    /// checkpoint.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error if the directory cannot be created, the index cannot
-    /// be written, or a recovery volume scan / truncate fails.
+    /// Returns an I/O error if the directory cannot be created, the WAL cannot
+    /// be opened, or recovery / checkpoint fails.
     pub fn open(root: impl AsRef<Path>) -> std::io::Result<Self> {
         let max_volume_size = std::env::var("HAYSTACK_MAX_VOLUME_SIZE")
             .ok()
@@ -207,31 +313,17 @@ impl Haystack {
             .max(NEEDLE_HEADER_LEN + 1);
         let volumes_dir = root.as_ref().join("volumes");
         std::fs::create_dir_all(&volumes_dir)?;
+        let wal = IndexWal::open(&volumes_dir)?;
 
         let haystack = Self {
             volumes_dir,
             max_volume_size,
             index: parking_lot::Mutex::new(HashMap::new()),
+            wal: parking_lot::Mutex::new(wal),
+            dirty: AtomicBool::new(false),
             active_file: tokio::sync::Mutex::new(None),
         };
-        match haystack.load_index() {
-            Ok(map) => {
-                *haystack.index.lock() = map;
-            }
-            Err(err) => {
-                if err.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        error = %err,
-                        "haystack needles.json missing or unreadable; recovering via volume scan"
-                    );
-                }
-                haystack.rebuild_index()?;
-                haystack.persist_index().map_err(|e| match e {
-                    AppError::Io(io) => io,
-                    other => std::io::Error::other(other),
-                })?;
-            }
-        }
+        haystack.bootstrap_index()?;
         Ok(haystack)
     }
 
@@ -249,7 +341,58 @@ impl Haystack {
         self.volumes_dir.join(INDEX_FILE)
     }
 
-    fn load_index(&self) -> std::io::Result<HashMap<Digest, NeedleRecord>> {
+    #[inline]
+    fn log_path(&self) -> PathBuf {
+        self.volumes_dir.join(LOG_FILE)
+    }
+
+    fn bootstrap_index(&self) -> std::io::Result<()> {
+        let mut map = match self.load_snapshot() {
+            Ok(map) => map,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "haystack needles.json unreadable; starting from empty snapshot + log replay"
+                );
+                HashMap::new()
+            }
+        };
+        self.replay_log_into(&mut map)?;
+
+        let has_volumes = self.volume_dat_exists()?;
+        if map.is_empty() && has_volumes {
+            tracing::warn!("haystack index empty but volumes present; recovering via volume scan");
+            self.rebuild_index()?;
+            self.checkpoint().map_err(|e| match e {
+                AppError::Io(io) => io,
+                other => std::io::Error::other(other),
+            })?;
+            return Ok(());
+        }
+
+        *self.index.lock() = map;
+        // Ensure a snapshot exists for tooling even on an empty fresh store.
+        if !self.index_path().is_file() {
+            self.checkpoint().map_err(|e| match e {
+                AppError::Io(io) => io,
+                other => std::io::Error::other(other),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn volume_dat_exists(&self) -> std::io::Result<bool> {
+        for entry in std::fs::read_dir(&self.volumes_dir)? {
+            let entry = entry?;
+            if VolumeId::parse(entry.file_name().as_os_str()).is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn load_snapshot(&self) -> std::io::Result<HashMap<Digest, NeedleRecord>> {
         let file = std::fs::File::open(self.index_path())?;
         let parsed: NeedleIndexFile = serde_json::from_reader(file).map_err(|e| {
             std::io::Error::new(
@@ -291,12 +434,50 @@ impl Haystack {
         Ok(map)
     }
 
-    /// Atomically rewrite `volumes/needles.json` from the current RAM map.
+    fn replay_log_into(&self, map: &mut HashMap<Digest, NeedleRecord>) -> std::io::Result<()> {
+        let path = self.log_path();
+        if !path.is_file() {
+            return Ok(());
+        }
+        let file = std::fs::File::open(&path)?;
+        let reader = BufReader::new(file);
+        for (line_no, line) in reader.lines().enumerate() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<IndexLogOp>(line) {
+                Ok(op) => op.apply_to(map),
+                Err(err) => {
+                    // Torn last line after a crash — stop; earlier ops already applied.
+                    tracing::warn!(
+                        line = line_no + 1,
+                        error = %err,
+                        "haystack needles.log: stopping replay at unreadable line"
+                    );
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn append_wal(&self, op: IndexLogOp) -> Result<(), AppError> {
+        let mut line = serde_json::to_vec(&op)?;
+        line.push(b'\n');
+        let mut wal = self.wal.lock();
+        wal.append_line(&line)?;
+        self.dirty.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Rewrite `needles.json` from RAM and truncate `needles.log`.
     ///
-    /// Uses [`atomic_write_sibling_sync`] (temp → fsync → rename → fsync-dir),
-    /// same directory as volumes. Includes tombstoned / quarantined rows so
-    /// compaction can still find them.
-    fn persist_index(&self) -> Result<(), AppError> {
+    /// Holds the WAL lock so no append can sneak in between snapshot and truncate.
+    /// Safe to call from the background task or tests.
+    pub fn checkpoint(&self) -> Result<(), AppError> {
+        let mut wal = self.wal.lock();
         let file = {
             let guard = self.index.lock();
             let entries: Vec<NeedleIndexEntry> = guard
@@ -309,7 +490,14 @@ impl Haystack {
             }
         };
         let buf = serde_json::to_vec_pretty(&file)?;
-        atomic_write_sibling_sync(&self.index_path(), &buf)
+        atomic_write_sibling_sync(&self.index_path(), &buf)?;
+        wal.truncate()?;
+        self.dirty.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn is_index_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -426,16 +614,17 @@ impl Haystack {
 
     /// Append `temp`'s bytes as a framed needle and index `digest`.
     ///
-    /// Durability: header + payload are `sync_all`'d into the volume, then the
-    /// RAM map and `volumes/needles.json` advertise the digest. The staging
-    /// `temp` is removed on success (callers disarm their
+    /// Durability: header + payload are `sync_all`'d into the volume, then one
+    /// WAL record is appended to `needles.log` and the RAM map is updated. A
+    /// background checkpoint later rewrites `needles.json`. The staging `temp`
+    /// is removed on success (callers disarm their
     /// [`crate::durable::TempEntry`] afterward).
     ///
     /// # Errors
     ///
     /// Returns an I/O-backed [`AppError`] if the volume cannot be opened,
-    /// appended, synced, the durable index cannot be rewritten, or if `temp`
-    /// cannot be removed.
+    /// appended, synced, the WAL cannot be written, or if `temp` cannot be
+    /// removed.
     pub async fn commit_temp(&self, temp: &Path, digest: &Digest) -> Result<(), AppError> {
         let temp_size = tokio::fs::metadata(temp).await?.len();
         let needle_len = Self::needle_len(temp_size);
@@ -464,12 +653,13 @@ impl Haystack {
         tokio::io::copy(&mut src, &mut active.file).await?;
         active.file.sync_all().await?;
         active.current_offset = needle_start + needle_len;
+        drop(guard);
 
+        // Volume durable → WAL → RAM (reboot replays WAL if we crash after this).
+        self.append_wal(IndexLogOp::put(digest, locator))?;
         self.index
             .lock()
             .insert(digest.clone(), NeedleRecord::live(locator));
-        drop(guard);
-        self.persist_index()?;
 
         tokio::fs::remove_file(temp).await?;
         Ok(())
@@ -530,43 +720,46 @@ impl Haystack {
     /// Tombstone a digest (`deleted: true`); physical reclaim is compaction.
     ///
     /// Idempotent: missing or already-deleted digests return `Ok(None)`. The
-    /// locator stays in `needles.json` until compaction drops it. Volume bytes
-    /// are left in place.
+    /// locator stays until compaction; durability is a WAL `delete` record.
     pub async fn remove(&self, digest: &Digest) -> Result<Option<u64>, AppError> {
         let size = {
-            let mut guard = self.index.lock();
-            match guard.get_mut(digest) {
-                Some(rec) if !rec.deleted => {
-                    rec.tombstone();
-                    Some(rec.locator.size)
-                }
+            let guard = self.index.lock();
+            match guard.get(digest) {
+                Some(rec) if !rec.deleted => Some(rec.locator.size),
                 _ => None,
             }
         };
-        if size.is_some() {
-            self.persist_index()?;
+        let Some(size) = size else {
+            return Ok(None);
+        };
+        self.append_wal(IndexLogOp::Delete {
+            digest: digest.clone(),
+        })?;
+        if let Some(rec) = self.index.lock().get_mut(digest) {
+            rec.tombstone();
         }
-        Ok(size)
+        Ok(Some(size))
     }
 
     /// Mark a digest quarantined after a scrub mismatch; GET will refuse it.
     ///
-    /// No-op (returns `false`) if the digest is absent. Persists when the flag flips.
+    /// No-op (returns `false`) if the digest is absent. Appends a WAL record
+    /// when the flag flips.
     pub fn mark_quarantined(&self, digest: &Digest) -> Result<bool, AppError> {
-        let flipped = {
-            let mut guard = self.index.lock();
-            match guard.get_mut(digest) {
-                Some(rec) if !rec.quarantined => {
-                    rec.quarantine();
-                    true
-                }
-                _ => false,
-            }
+        let should = {
+            let guard = self.index.lock();
+            matches!(guard.get(digest), Some(rec) if !rec.quarantined)
         };
-        if flipped {
-            self.persist_index()?;
+        if !should {
+            return Ok(false);
         }
-        Ok(flipped)
+        self.append_wal(IndexLogOp::Quarantine {
+            digest: digest.clone(),
+        })?;
+        if let Some(rec) = self.index.lock().get_mut(digest) {
+            rec.quarantine();
+        }
+        Ok(true)
     }
 
     /// Re-hash every live needle; quarantine digests whose payload ≠ name.
@@ -625,15 +818,11 @@ impl Haystack {
 
     /// Scan every `*.dat` volume and rebuild the in-memory needle map.
     ///
-    /// **Recovery path** when `needles.json` is missing or corrupt — not the
-    /// default open path. Each volume is scanned on its own thread
-    /// ([`std::thread::scope`]). Incomplete trailing needles are not indexed;
-    /// that volume is truncated to the last complete needle. If the same digest
-    /// appears in two volumes (should not happen under normal dedup), a later
-    /// merge wins — order is unspecified.
-    ///
-    /// Callers that recover via this method should [`Self::persist_index`]
-    /// afterward so deletes stay durable on the next boot.
+    /// **Recovery path** when snapshot+log are empty but volumes exist. Each
+    /// volume is scanned on its own thread ([`std::thread::scope`]). Incomplete
+    /// trailing needles are not indexed; that volume is truncated to the last
+    /// complete needle. Callers should [`Self::checkpoint`] afterward (clears
+    /// the WAL and writes a fresh snapshot).
     fn rebuild_index(&self) -> std::io::Result<()> {
         let volumes = self.list_volume_files()?;
         let mut needles = HashMap::new();
@@ -937,8 +1126,9 @@ mod tests {
         }
         assert!(std::fs::metadata(&volume).unwrap().len() > good_len);
 
-        // Torn-tail truncate runs on the recovery path (missing/corrupt idx).
+        // Torn-tail truncate runs on the recovery path (no snapshot + no WAL).
         std::fs::remove_file(root.path().join("volumes").join(INDEX_FILE)).unwrap();
+        let _ = std::fs::remove_file(root.path().join("volumes").join(LOG_FILE));
 
         let hs = Haystack::open(root.path()).unwrap();
         assert!(hs.contains(&digest));
@@ -1107,7 +1297,8 @@ mod tests {
             hs.scan_occupancy().unwrap(),
             (1, expected_occupancy(&[bytes.len()]))
         );
-        // Tombstone retained in needles.json for compaction.
+        // Tombstone retained after checkpoint for compaction tooling.
+        hs.checkpoint().unwrap();
         let file: NeedleIndexFile =
             serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
         assert_eq!(file.entries.len(), 1);
@@ -1259,12 +1450,13 @@ mod tests {
         let hs = Haystack::open(root.path()).unwrap();
         assert!(
             !hs.contains(&digest),
-            "tombstone in needles.json must keep the digest unservable"
+            "WAL delete must keep the digest unservable after reopen"
         );
         assert!(matches!(
             hs.open_blob(&digest).await,
             Err(AppError::NoSuchKey)
         ));
+        hs.checkpoint().unwrap();
         let file: NeedleIndexFile =
             serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
         assert!(file.entries.iter().any(|e| e.digest == digest && e.deleted));
@@ -1293,6 +1485,7 @@ mod tests {
         );
         assert!(!hs.mark_quarantined(&digest).unwrap());
 
+        hs.checkpoint().unwrap();
         let file: NeedleIndexFile =
             serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
         assert_eq!(file.entries.len(), 1);
@@ -1381,7 +1574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_index_falls_back_to_volume_scan() {
+    async fn corrupt_snapshot_still_replays_wal() {
         let root = TempDir::new().unwrap();
         let bytes = b"recover-me";
         let digest = digest_of(bytes);
@@ -1390,6 +1583,7 @@ mod tests {
             hs.commit_temp(&stage(root.path(), "t.tmp", bytes).await, &digest)
                 .await
                 .unwrap();
+            // Leave the put in the WAL; do not checkpoint.
         }
         std::fs::write(
             root.path().join("volumes").join(INDEX_FILE),
@@ -1400,12 +1594,49 @@ mod tests {
         let hs = Haystack::open(root.path()).unwrap();
         assert!(hs.contains(&digest));
         assert_eq!(read_all(&hs, &digest).await, bytes);
-        // Recovery rewrote a valid JSON index.
+    }
+
+    #[tokio::test]
+    async fn missing_snapshot_and_wal_recovers_via_volume_scan() {
+        let root = TempDir::new().unwrap();
+        let bytes = b"recover-me";
+        let digest = digest_of(bytes);
+        {
+            let hs = Haystack::open(root.path()).unwrap();
+            hs.commit_temp(&stage(root.path(), "t.tmp", bytes).await, &digest)
+                .await
+                .unwrap();
+            hs.checkpoint().unwrap();
+        }
+        std::fs::remove_file(root.path().join("volumes").join(INDEX_FILE)).unwrap();
+        let _ = std::fs::remove_file(root.path().join("volumes").join(LOG_FILE));
+
+        let hs = Haystack::open(root.path()).unwrap();
+        assert!(hs.contains(&digest));
+        assert_eq!(read_all(&hs, &digest).await, bytes);
         let rewritten: NeedleIndexFile =
             serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
         assert_eq!(rewritten.version, INDEX_VERSION);
         assert_eq!(rewritten.entries.len(), 1);
         assert_eq!(rewritten.entries[0].digest, digest);
+    }
+
+    #[tokio::test]
+    async fn wal_survives_reopen_without_checkpoint() {
+        let root = TempDir::new().unwrap();
+        let bytes = b"wal-only";
+        let digest = digest_of(bytes);
+        {
+            let hs = Haystack::open(root.path()).unwrap();
+            hs.commit_temp(&stage(root.path(), "t.tmp", bytes).await, &digest)
+                .await
+                .unwrap();
+            assert!(hs.is_index_dirty());
+            // No checkpoint — only needles.log has the put.
+        }
+        let hs = Haystack::open(root.path()).unwrap();
+        assert!(hs.contains(&digest));
+        assert_eq!(read_all(&hs, &digest).await, bytes);
     }
 
     #[tokio::test]

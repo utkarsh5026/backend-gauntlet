@@ -139,14 +139,14 @@ impl Store {
             quarantine
         };
 
-        let store = Self {
+        let store = Arc::new(Self {
             file_cas,
             haystack,
             locations: parking_lot::Mutex::new(HashMap::new()),
             policy,
             tmp,
             scrubber: Scrubber::new(quarantine),
-        };
+        });
         store.rebuild_locations()?;
 
         let (_fc_count, fc_bytes) = store.file_cas.scan_occupancy()?;
@@ -154,7 +154,29 @@ impl Store {
         metrics::gauge!(crate::metrics::BLOB_COUNT).set(store.locations.lock().len() as f64);
         metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).set((fc_bytes + hs_bytes) as f64);
 
-        Ok(Arc::new(store))
+        store.spawn_haystack_checkpointer();
+        Ok(store)
+    }
+
+    fn spawn_haystack_checkpointer(self: &Arc<Self>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let store = Arc::clone(self);
+        handle.spawn(async move {
+            let mut ticker =
+                tokio::time::interval(crate::store::haystack::INDEX_CHECKPOINT_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                if !store.haystack.is_index_dirty() {
+                    continue;
+                }
+                if let Err(err) = store.haystack.checkpoint() {
+                    tracing::warn!(error = %err, "haystack index checkpoint failed");
+                }
+            }
+        });
     }
 
     /// Rebuild `digest → BlobLocation` from FileCas files + Haystack needle map.
