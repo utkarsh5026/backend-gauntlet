@@ -18,6 +18,7 @@ const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
 const DEFAULT_LIFECYCLE_SCAN_INTERVAL_SECS: u64 = 60;
 const DEFAULT_SCRUB_RESCAN_INTERVAL_SECS: u64 = 300;
+const DEFAULT_HAYSTACK_COMPACTION_INTERVAL_SECS: u64 = 300;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -86,6 +87,13 @@ async fn main() -> anyhow::Result<()> {
     ));
     let _scrubber = state.store.clone().spawn_scrubber(scrub_rescan_interval);
     info!(?scrub_rescan_interval, "blob scrubber started");
+
+    let compaction_interval = Duration::from_secs(common_config::parse_or(
+        "HAYSTACK_COMPACTION_INTERVAL_SECS",
+        DEFAULT_HAYSTACK_COMPACTION_INTERVAL_SECS,
+    ));
+    let _compaction = state.store.clone().spawn_compaction(compaction_interval);
+    info!(?compaction_interval, "haystack volume compaction started");
 
     let app = routes::router(state).merge(routes::metrics_router(metrics_handle));
 

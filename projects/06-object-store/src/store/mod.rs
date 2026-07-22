@@ -301,6 +301,32 @@ impl Store {
         }
     }
 
+    /// Spawn a background task that runs Haystack volume compaction on a timer.
+    ///
+    /// Each tick calls [`Haystack::compaction`] (no-op when nothing is dirty),
+    /// then rebuilds the store locator map so dropped tombstones stay consistent.
+    /// Interval is owned by the caller (see `HAYSTACK_COMPACTION_INTERVAL_SECS` in
+    /// `main`).
+    pub fn spawn_compaction(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                match self.haystack.compaction().await {
+                    Ok(()) => {
+                        if let Err(err) = self.rebuild_locations() {
+                            warn!(error = %err, "rebuild locations after compaction failed");
+                        }
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "haystack compaction pass failed");
+                    }
+                }
+            }
+        })
+    }
+
     /// Spawn the continuous scrubber.
     ///
     /// When the blob tree is empty the task parks on [`Notify`] (no busy loop)

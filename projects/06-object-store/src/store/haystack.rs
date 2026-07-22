@@ -28,12 +28,12 @@
 //!
 //! ## Scaffold status
 //!
-//! Commit, open, durable remove, recovery rebuild, and needle scrubbing are
-//! implemented. Compaction is still open. Default store boot stays on
+//! Commit, open, durable remove, recovery rebuild, needle scrubbing, and
+//! volume compaction are implemented. Default store boot stays on
 //! [`BlobLayoutKind::FileCas`](super::BlobLayoutKind::FileCas);
 //! select this layout with `BLOB_LAYOUT=haystack`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom as SyncSeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,7 +44,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 
-use crate::durable::atomic_write_sibling_sync;
+use crate::durable::{atomic_write_sibling_sync, publish_temp, TempEntry};
 use crate::error::AppError;
 use crate::object::Digest;
 
@@ -227,6 +227,16 @@ pub struct NeedleLocator {
     pub volume_id: VolumeId,
     pub offset: u64,
     pub size: u64,
+}
+
+impl NeedleLocator {
+    fn new(volume_id: VolumeId, offset: u64, size: u64) -> Self {
+        Self {
+            volume_id,
+            offset,
+            size,
+        }
+    }
 }
 
 /// One index row: locator plus tombstone / quarantine flags.
@@ -595,6 +605,109 @@ impl Haystack {
             }
         }
         Ok((file_count, total_bytes))
+    }
+
+    /// Rewrite volumes that hold tombstoned / quarantined needles, keeping live
+    /// payloads only. Same `volume_id`; offsets change. Peak disk ≈ old + live.
+    ///
+    /// Steps per dirty volume: copy live needles into a sibling temp →
+    /// [`publish_temp`] over the old `.dat` → update RAM locators and drop dead
+    /// rows for that volume → [`Self::checkpoint`]. Empty (all-dead) volumes are
+    /// unlinked after the index drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O-backed [`AppError`] if a volume cannot be read/written or
+    /// the checkpoint fails.
+    pub async fn compaction(&self) -> Result<(), AppError> {
+        let (live_by_volume, dirty_volumes) = {
+            let guard = self.index.lock();
+            let mut live_by_volume: HashMap<VolumeId, Vec<(Digest, NeedleLocator)>> =
+                HashMap::new();
+            let mut dirty_volumes = HashSet::new();
+            for (digest, rec) in guard.iter() {
+                let locator = rec.locator;
+                if !rec.is_live() {
+                    dirty_volumes.insert(locator.volume_id);
+                    continue;
+                }
+                live_by_volume
+                    .entry(locator.volume_id)
+                    .or_default()
+                    .push((digest.clone(), locator));
+            }
+            (live_by_volume, dirty_volumes)
+        };
+
+        for volume_id in dirty_volumes {
+            let live = live_by_volume.get(&volume_id).cloned().unwrap_or_default();
+            let old_path = self.volume_path(volume_id);
+
+            // if the Live needles are empty, we can remove the volume and drop the dead row from the index
+            if live.is_empty() {
+                {
+                    let mut guard = self.index.lock();
+                    guard.retain(|_, rec| rec.locator.volume_id != volume_id);
+                }
+                self.checkpoint()?;
+                let _ = tokio::fs::remove_file(&old_path).await;
+                self.clear_active_if(volume_id).await;
+                continue;
+            }
+
+            let mut temp = TempEntry::unique_in(&self.volumes_dir, "compact");
+            let mut out = tokio::fs::File::create(temp.path()).await?;
+            let mut src = tokio::fs::File::open(&old_path).await?;
+            let mut buffer = vec![0u8; 1024 * 1024];
+            let mut write_offset = 0u64;
+            let mut new_locs: Vec<(Digest, NeedleLocator)> = Vec::with_capacity(live.len());
+
+            for (digest, locator) in &live {
+                out.write_all(digest.as_str().as_bytes()).await?;
+                out.write_all(&locator.size.to_le_bytes()).await?;
+
+                src.seek(std::io::SeekFrom::Start(locator.offset)).await?;
+                let mut remaining = locator.size;
+                while remaining > 0 {
+                    let n = remaining.min(buffer.len() as u64) as usize;
+                    src.read_exact(&mut buffer[..n]).await?;
+                    out.write_all(&buffer[..n]).await?;
+                    remaining -= n as u64;
+                }
+
+                let locator =
+                    NeedleLocator::new(volume_id, Self::needle_len(write_offset), locator.size);
+                new_locs.push((digest.clone(), locator));
+                write_offset += Self::needle_len(locator.size);
+            }
+            out.sync_all().await?;
+            drop(out);
+
+            publish_temp(temp.path(), &old_path).await?;
+            temp.disarm();
+
+            // update the index with the new locators and drop the dead row from the index
+            {
+                let mut guard = self.index.lock();
+                guard.retain(|_, rec| rec.locator.volume_id != volume_id || rec.is_live());
+                for (digest, loc) in new_locs {
+                    if let Some(rec) = guard.get_mut(&digest) {
+                        rec.locator = loc;
+                    }
+                }
+            }
+            self.checkpoint()?;
+            self.clear_active_if(volume_id).await;
+        }
+
+        Ok(())
+    }
+
+    async fn clear_active_if(&self, volume_id: VolumeId) {
+        let mut active = self.active_file.lock().await;
+        if active.as_ref().is_some_and(|a| a.volume_id == volume_id) {
+            *active = None;
+        }
     }
 
     pub fn contains(&self, digest: &Digest) -> bool {
@@ -1519,6 +1632,234 @@ mod tests {
 
         // Already quarantined — not re-examined.
         assert_eq!(hs.scrub_once().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn compaction_drops_tombstoned_bytes_and_keeps_live() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let keep = digest_of(b"keep-me");
+        let drop = digest_of(b"drop-me");
+        hs.commit_temp(&stage(root.path(), "k.tmp", b"keep-me").await, &keep)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "d.tmp", b"drop-me").await, &drop)
+            .await
+            .unwrap();
+
+        let before = hs.scan_occupancy().unwrap().1;
+        assert!(hs.remove(&drop).await.unwrap().is_some());
+        assert_eq!(
+            hs.scan_occupancy().unwrap().1,
+            before,
+            "tombstone keeps bytes"
+        );
+
+        hs.compaction().await.unwrap();
+
+        assert!(hs.contains(&keep));
+        assert!(!hs.contains(&drop));
+        assert_eq!(read_all(&hs, &keep).await, b"keep-me");
+        let after = hs.scan_occupancy().unwrap().1;
+        assert!(
+            after < before,
+            "compaction should reclaim tombstone bytes: before={before} after={after}"
+        );
+        assert_eq!(after, expected_occupancy(&[b"keep-me".len()]));
+
+        // Dead row gone from the durable snapshot.
+        let file: NeedleIndexFile =
+            serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
+        assert_eq!(file.entries.len(), 1);
+        assert_eq!(file.entries[0].digest, keep);
+        assert!(!file.entries[0].deleted);
+    }
+
+    #[tokio::test]
+    async fn compaction_is_noop_when_nothing_is_dirty() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let a = digest_of(b"aaa");
+        let b = digest_of(b"bbb");
+        hs.commit_temp(&stage(root.path(), "a.tmp", b"aaa").await, &a)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "b.tmp", b"bbb").await, &b)
+            .await
+            .unwrap();
+
+        let loc_a = hs.locate(&a).unwrap();
+        let loc_b = hs.locate(&b).unwrap();
+        let before = hs.scan_occupancy().unwrap();
+
+        hs.compaction().await.unwrap();
+
+        assert_eq!(hs.locate(&a), Some(loc_a), "offsets must not move");
+        assert_eq!(hs.locate(&b), Some(loc_b));
+        assert_eq!(hs.scan_occupancy().unwrap(), before);
+        assert_eq!(read_all(&hs, &a).await, b"aaa");
+        assert_eq!(read_all(&hs, &b).await, b"bbb");
+    }
+
+    #[tokio::test]
+    async fn compaction_deletes_volume_when_all_needles_are_dead() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let digest = digest_of(b"all-dead");
+        hs.commit_temp(&stage(root.path(), "t.tmp", b"all-dead").await, &digest)
+            .await
+            .unwrap();
+        assert_eq!(hs.scan_occupancy().unwrap().0, 1);
+
+        hs.remove(&digest).await.unwrap();
+        hs.compaction().await.unwrap();
+
+        assert_eq!(hs.scan_occupancy().unwrap(), (0, 0));
+        assert!(!hs.volume_path(VolumeId(0)).exists());
+        let file: NeedleIndexFile =
+            serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
+        assert!(file.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compaction_reclaims_quarantined_needles() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let keep = digest_of(b"good");
+        let bad = digest_of(b"bad");
+        hs.commit_temp(&stage(root.path(), "g.tmp", b"good").await, &keep)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "b.tmp", b"bad").await, &bad)
+            .await
+            .unwrap();
+
+        assert!(hs.mark_quarantined(&bad).unwrap());
+        let before = hs.scan_occupancy().unwrap().1;
+
+        hs.compaction().await.unwrap();
+
+        assert!(hs.contains(&keep));
+        assert!(!hs.contains(&bad));
+        assert_eq!(read_all(&hs, &keep).await, b"good");
+        assert_eq!(
+            hs.scan_occupancy().unwrap().1,
+            expected_occupancy(&[b"good".len()])
+        );
+        assert!(hs.scan_occupancy().unwrap().1 < before);
+    }
+
+    #[tokio::test]
+    async fn compaction_keeps_neighbors_when_middle_is_tombstoned() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let left = digest_of(b"left");
+        let mid = digest_of(b"mid");
+        let right = digest_of(b"right");
+        hs.commit_temp(&stage(root.path(), "l.tmp", b"left").await, &left)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "m.tmp", b"mid").await, &mid)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "r.tmp", b"right").await, &right)
+            .await
+            .unwrap();
+
+        hs.remove(&mid).await.unwrap();
+        hs.compaction().await.unwrap();
+
+        assert_eq!(read_all(&hs, &left).await, b"left");
+        assert_eq!(read_all(&hs, &right).await, b"right");
+        assert!(!hs.contains(&mid));
+        assert_eq!(
+            hs.scan_occupancy().unwrap().1,
+            expected_occupancy(&[b"left".len(), b"right".len()])
+        );
+        // Live needles should be packed at the start of the volume.
+        assert_eq!(hs.locate(&left).unwrap().offset, NEEDLE_HEADER_LEN);
+        assert_eq!(
+            hs.locate(&right).unwrap().offset,
+            Haystack::needle_len(b"left".len() as u64) + NEEDLE_HEADER_LEN
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_survives_reopen() {
+        let root = TempDir::new().unwrap();
+        let keep = digest_of(b"survive");
+        let drop = digest_of(b"gone");
+        {
+            let hs = Haystack::open(root.path()).unwrap();
+            hs.commit_temp(&stage(root.path(), "k.tmp", b"survive").await, &keep)
+                .await
+                .unwrap();
+            hs.commit_temp(&stage(root.path(), "d.tmp", b"gone").await, &drop)
+                .await
+                .unwrap();
+            hs.remove(&drop).await.unwrap();
+            hs.compaction().await.unwrap();
+        }
+
+        let hs = Haystack::open(root.path()).unwrap();
+        assert!(hs.contains(&keep));
+        assert!(!hs.contains(&drop));
+        assert_eq!(read_all(&hs, &keep).await, b"survive");
+        assert_eq!(
+            hs.scan_occupancy().unwrap().1,
+            expected_occupancy(&[b"survive".len()])
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_allows_further_commits() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let first = digest_of(b"first");
+        let dead = digest_of(b"dead");
+        hs.commit_temp(&stage(root.path(), "f.tmp", b"first").await, &first)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "d.tmp", b"dead").await, &dead)
+            .await
+            .unwrap();
+        hs.remove(&dead).await.unwrap();
+        hs.compaction().await.unwrap();
+
+        let second = digest_of(b"second");
+        hs.commit_temp(&stage(root.path(), "s.tmp", b"second").await, &second)
+            .await
+            .unwrap();
+
+        assert_eq!(read_all(&hs, &first).await, b"first");
+        assert_eq!(read_all(&hs, &second).await, b"second");
+        assert_eq!(
+            hs.scan_occupancy().unwrap().1,
+            expected_occupancy(&[b"first".len(), b"second".len()])
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_second_pass_is_noop() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let keep = digest_of(b"once");
+        let drop = digest_of(b"twice");
+        hs.commit_temp(&stage(root.path(), "k.tmp", b"once").await, &keep)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "d.tmp", b"twice").await, &drop)
+            .await
+            .unwrap();
+        hs.remove(&drop).await.unwrap();
+        hs.compaction().await.unwrap();
+
+        let loc = hs.locate(&keep).unwrap();
+        let occ = hs.scan_occupancy().unwrap();
+        hs.compaction().await.unwrap();
+        assert_eq!(hs.locate(&keep), Some(loc));
+        assert_eq!(hs.scan_occupancy().unwrap(), occ);
+        assert_eq!(read_all(&hs, &keep).await, b"once");
     }
 
     #[tokio::test]
