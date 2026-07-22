@@ -59,13 +59,13 @@ async fn main() -> anyhow::Result<()> {
     }
     match state.store.layout_kind() {
         object_store::store::BlobLayoutKind::FileCas => {
-            info!("blob layout: file_cas (one file per digest under objects/)");
+            info!("blob write policy: file_cas (all commits under objects/)");
         }
         object_store::store::BlobLayoutKind::Haystack => {
-            warn!(
-                "blob layout: haystack (scaffold) — commit/open/remove/scrub are todo!(); \
-                 leave BLOB_LAYOUT unset until you fill src/store/haystack.rs"
-            );
+            info!("blob write policy: haystack (small → volumes/, oversized → objects/)");
+        }
+        object_store::store::BlobLayoutKind::Hybrid => {
+            info!("blob write policy: hybrid (small → volumes/, oversized → objects/)");
         }
     }
     info!(%data_dir, max_object_size, "object store opened");

@@ -81,7 +81,10 @@ impl AppState {
         Self::open_with_layout(data_dir, max_object_size, BlobLayoutKind::FileCas)
     }
 
-    /// Open with an explicit blob layout (`file_cas` or `haystack` scaffold).
+    /// Open with an explicit write policy (`file_cas`, `haystack`, or `hybrid`).
+    ///
+    /// Both physical backends are always opened; the policy only chooses where
+    /// new commits go. Reads use the rebuilt locator map.
     pub fn open_with_layout(
         data_dir: impl AsRef<Path>,
         max_object_size: u64,

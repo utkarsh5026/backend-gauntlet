@@ -227,7 +227,7 @@ and lose the packing win. Append-only volumes accept a different crash story:
 | Concern | One-file CAS (today) | Packed volume |
 | --- | --- | --- |
 | Mid-write crash | Temp discarded; final name absent or complete | Last needle may be torn; recover by scanning / truncating the bad tail |
-| Locator after reboot | Directory entries *are* the map | Rebuild needle map by walking volumes (or load a durable sidecar you design later) |
+| Locator after reboot | Directory entries *are* the map | Load durable `volumes/needles.json` (volume walk only if missing/corrupt) |
 | "Final name appears only when complete" | Enforced by rename | Enforced by "index only advertises complete needles" |
 
 Packing therefore adds a **new durability path** to reason about when you
@@ -248,9 +248,12 @@ Physical reclaim under packing is different from `unlink(blob_path)`:
 
 1. **GC mark** still starts from index roots (and manifests/chunks if CDC is
    on) — unmarked digests are dead.
-2. Dead digests become **dead needles**, not deleted files. Space returns only
-   when a volume is **compacted**: copy live needles to a new volume, swap the
-   locator map, delete the old volume file.
+2. Dead digests are **tombstoned** in the durable map (`deleted: true` in
+   `volumes/needles.json`) so they stay unservable after reopen while keeping
+   `(volume, offset, size)` for compaction accounting. Scrub failures set
+   `quarantined: true` (GET refuses). Volume bytes stay until a volume is
+   **compacted**: copy live needles only, rewrite JSON without tombstones /
+   quarantines, delete the old volume file.
 3. Until compaction, disk usage can include garbage. That is normal for
    append-only designs; measure live vs packed bytes when you prove the lab.
 
@@ -348,7 +351,7 @@ needles should locate **content**, not reinvent the namespace.
 | From-the-field acceptance line | [`SPEC.md`](../SPEC.md) § Storage-engine labs → Small-object packing |
 | **Scaffold — layout enum** | [`src/store/mod.rs`](../src/store/mod.rs) (`BlobLayout` / `BlobLayoutKind`) |
 | **Scaffold — FileCas (default)** | [`src/store/file_cas.rs`](../src/store/file_cas.rs) |
-| **Scaffold — Haystack** | [`src/store/haystack.rs`](../src/store/haystack.rs) (`todo!()` commit/open/remove/scrub) |
+| **Scaffold — Haystack** | [`src/store/haystack.rs`](../src/store/haystack.rs) (volumes + `needles.json`; scrub/compaction still open) |
 | **Scaffold — Store facade** | [`src/store/mod.rs`](../src/store/mod.rs) (`open_with_layout`, `layout_kind`) |
 | **Scaffold — boot** | [`AppState::open_with_layout`](../src/lib.rs); `main` → `BlobLayoutKind::from_env` |
 | One-file CAS today | [`src/store/file_cas.rs`](../src/store/file_cas.rs) / [`Store`](../src/store/mod.rs) |
@@ -363,9 +366,8 @@ needles should locate **content**, not reinvent the namespace.
 | Cold tier / hash-then-compress | [`src/lifecycle.rs`](../src/lifecycle.rs) |
 | Env knobs | [`.env.example`](../.env.example) (`BLOB_LAYOUT`) |
 
-**Scaffold status:** [`BlobLayout`](../src/store/mod.rs) swaps physical
-backends under [`Store`](../src/store/mod.rs). Default is
-[`FileCas`](../src/store/file_cas.rs) (one file per digest). [`Haystack`](../src/store/haystack.rs)
-opens `volumes/` and an empty needle map; append / open / remove / scrub are
-still `todo!()`. Boot with `BLOB_LAYOUT=haystack` only when you start filling
-those bodies — tests and default `AppState::open` stay on FileCas.
+**Scaffold status:** [`Store`](../src/store/mod.rs) opens both backends and routes
+via a locator map; write policy is [`BlobLayoutKind`](../src/store/mod.rs).
+[`Haystack`](../src/store/haystack.rs) persists live needles in
+`volumes/needles.json` (volume scan = recovery). Compaction / scrub still open.
+Default `AppState::open` stays FileCas; use `BLOB_LAYOUT=haystack|hybrid` to pack.
