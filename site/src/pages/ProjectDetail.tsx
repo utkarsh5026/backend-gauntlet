@@ -1,36 +1,35 @@
-import { Link, Navigate, useParams } from 'react-router-dom'
-import { getProject, projectLinks } from '@/data/projects'
-import { findProject } from '@/data/roadmap'
-import { StateBadge } from '@/components/StateBadge'
-import { AssetGallery } from '@/components/AssetGallery'
-import { Reveal } from '@/components/Reveal'
+import { Link, Navigate, useParams } from "react-router-dom";
+import { getProject, projectLinks } from "@/data/projects";
+import { findProject } from "@/data/roadmap";
+import { StateBadge } from "@/components/StateBadge";
+import { AssetGallery } from "@/components/AssetGallery";
+import { Reveal } from "@/components/Reveal";
 
 /** First sentence as the hook; the rest goes behind a disclosure. */
 function splitLead(text: string): [string, string] {
-  const match = text.match(/^.*?[.!?]["”')\]]*(?=\s|$)/)
-  if (!match) return [text, '']
-  return [match[0], text.slice(match[0].length).trim()]
+  const match = text.match(/^.*?[.!?]["”')\]]*(?=\s|$)/);
+  if (!match) return [text, ""];
+  return [match[0], text.slice(match[0].length).trim()];
 }
 
 export function ProjectDetail() {
-  const { id } = useParams<{ id: string }>()
-  const detail = id ? getProject(id) : undefined
-  const meta = id ? findProject(id) : undefined
+  const { id } = useParams<{ id: string }>();
+  const detail = id ? getProject(id) : undefined;
+  const meta = id ? findProject(id) : undefined;
 
   if (!detail) {
-    return <Navigate to="/" replace />
+    return <Navigate to="/" replace />;
   }
 
-  const links = projectLinks(detail)
-  const [problemLead, problemRest] = splitLead(detail.problem)
+  const links = projectLinks(detail);
+  const [problemLead, problemRest] = splitLead(detail.problem);
 
   return (
     <article className="space-y-14">
       <header className="max-w-2xl space-y-4">
         <p className="m-0 flex flex-wrap items-baseline gap-3 text-[0.85rem] text-fg-muted">
           <span>
-            <span className="text-accent">$</span> cat projects/{detail.id}-
-            {detail.slug}/SPEC.md
+            <span className="text-accent">$</span> cat projects/{detail.id}-{detail.slug}/SPEC.md
           </span>
           {meta && <StateBadge state={meta.state} />}
         </p>
@@ -83,11 +82,9 @@ export function ProjectDetail() {
         <div className="flex flex-wrap items-center gap-y-2">
           {detail.verticals.map((step, i) => (
             <div key={step.id} className="flex items-center">
-              <div className="border border-line bg-panel px-4 py-2.5">
+              <div className="rounded-md border border-line bg-panel px-4 py-2.5">
                 <p className="m-0 text-[0.7rem] text-accent">{step.id}</p>
-                <p className="m-0 mt-0.5 text-[0.85rem] font-medium text-fg">
-                  {step.title}
-                </p>
+                <p className="m-0 mt-0.5 text-[0.85rem] font-medium text-fg">{step.title}</p>
               </div>
               {i < detail.verticals.length - 1 && (
                 <span className="px-2 text-fg-muted" aria-hidden>
@@ -104,9 +101,7 @@ export function ProjectDetail() {
       <section className="space-y-5">
         <h2 className="rule-title m-0 text-[1rem] font-bold">
           verticals
-          <span className="text-[0.75rem] font-normal text-fg-muted">
-            concepts to internalize
-          </span>
+          <span className="text-[0.75rem] font-normal text-fg-muted">concepts to internalize</span>
         </h2>
         <ul className="m-0 list-none space-y-7 p-0">
           {detail.verticals.map((v) => (
@@ -117,9 +112,7 @@ export function ProjectDetail() {
               <span className="text-[0.85rem] text-accent">{v.id}</span>
               <div>
                 <h3 className="m-0 text-[0.95rem] font-bold">{v.title}</h3>
-                <p className="mb-0 mt-2 text-[0.9rem] leading-relaxed text-fg-muted">
-                  {v.concept}
-                </p>
+                <p className="mb-0 mt-2 text-[0.9rem] leading-relaxed text-fg-muted">{v.concept}</p>
               </div>
             </li>
           ))}
@@ -150,5 +143,5 @@ export function ProjectDetail() {
         </section>
       )}
     </article>
-  )
+  );
 }

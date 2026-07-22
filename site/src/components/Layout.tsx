@@ -1,12 +1,12 @@
-import { NavLink, Outlet } from 'react-router-dom'
-import { cn } from '@/lib/utils'
-import { REPO_URL } from '@/data/roadmap'
+import { NavLink, Outlet } from "react-router-dom";
+import { cn } from "@/lib/utils";
+import { REPO_URL } from "@/data/roadmap";
 
 const nav = [
-  { to: '/', label: 'home', end: true },
-  { to: '/method', label: 'method' },
-  { to: '/roadmap', label: 'projects' },
-]
+  { to: "/", label: "home", end: true },
+  { to: "/method", label: "method" },
+  { to: "/roadmap", label: "projects" },
+];
 
 export function Layout() {
   return (
@@ -17,7 +17,8 @@ export function Layout() {
             to="/"
             className="font-display text-[0.8rem] font-bold text-fg no-underline hover:text-accent"
           >
-            <span className="text-fg-muted">~/</span>backend-gauntlet
+            <span className="text-fg-muted">~/</span>
+            backend-gauntlet
           </NavLink>
           <nav className="flex items-center gap-1 text-[0.8rem]">
             {nav.map((item) => (
@@ -27,10 +28,8 @@ export function Layout() {
                 end={item.end}
                 className={({ isActive }) =>
                   cn(
-                    'px-2 py-1 no-underline',
-                    isActive
-                      ? 'bg-panel text-accent'
-                      : 'text-fg-muted hover:text-fg',
+                    "rounded-2xl px-2 py-1 no-underline",
+                    isActive ? "bg-panel text-accent" : "text-fg-muted hover:text-fg",
                   )
                 }
               >
@@ -56,12 +55,12 @@ export function Layout() {
       <footer className="border-t border-line py-6">
         <div className="mx-auto flex max-w-4xl flex-col gap-1 px-5 text-[0.75rem] text-fg-muted sm:flex-row sm:items-center sm:justify-between">
           <span>
-            <span className="text-accent-dim">[gauntlet]</span> built to learn —
-            one primitive at a time
+            <span className="text-accent-dim">[gauntlet]</span> built to learn — one primitive at a
+            time
           </span>
           <span>rust · tokio · axum</span>
         </div>
       </footer>
     </div>
-  )
+  );
 }
