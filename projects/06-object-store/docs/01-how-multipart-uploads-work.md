@@ -15,7 +15,7 @@
 >
 > Anchored to real code: `[src/multipart.rs](../src/multipart.rs)`,
 > `[src/routes.rs](../src/routes.rs)`, `[src/streaming.rs](../src/streaming.rs)`,
-> `[src/store.rs](../src/store.rs)`, `[src/index.rs](../src/index.rs)`,
+> `[src/store/mod.rs](../src/store/mod.rs)`, `[src/index.rs](../src/index.rs)`,
 > `[src/object.rs](../src/object.rs)`, `[SPEC.md](../SPEC.md)`.
 
 ---
@@ -159,7 +159,7 @@ std::fs::create_dir_all(&root)?;
 So the mental model is a directory tree: **one subdirectory per live session**,
 named by its `uploadId`, holding the staged parts plus a small record of the
 target. This mirrors exactly the pattern the rest of the project already uses —
-V1's `[tmp/](../src/store.rs)` staging dir and V3's per-bucket `[tmp/](../src/index.rs)`
+V1's `[tmp/](../src/store/mod.rs)` staging dir and V3's per-bucket `[tmp/](../src/index.rs)`
 dir. Nothing new conceptually: *in-flight things live in a staging area; finished
 things get atomically moved into their permanent home.*
 
@@ -338,7 +338,7 @@ digest are two different hashes serving two different purposes:**
 
 | Value               | Hash            | Computed over                        | Used for                             | Where in code                                  |
 | ------------------- | --------------- | ------------------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `Digest` (CAS name) | SHA-256         | the assembled object's raw bytes     | naming/deduping the blob on disk     | `[store.blob_path](../src/store.rs)` (V1)      |
+| `Digest` (CAS name) | SHA-256         | the assembled object's raw bytes     | naming/deduping the blob on disk     | `[store.blob_path](../src/store/mod.rs)` (V1)      |
 | `ETag` (wire tag)   | MD5-of-MD5s + N | the *parts'* MD5s                    | HTTP integrity / SDK compatibility   | `[object.rs](../src/object.rs)` (V4)           |
 
 `complete` computes **both** in one pass: it SHA-256-hashes the concatenated bytes
@@ -376,7 +376,7 @@ obligations. In plain terms:
    but the object is `part1 ++ part2 ++ … ++ partN`. Get the order wrong and you've
    assembled a corrupt file with a plausible-looking ETag.
 3. **Commit via V1.** Hand the assembled temp file to
-   `[store.commit_temp](../src/store.rs)` — the same atomic
+   `[store.commit_temp](../src/store/mod.rs)` — the same atomic
    temp→fsync→rename→fsync-dir dance every finished object goes through. Dedup is
    free: if those exact assembled bytes already exist, `commit_temp` drops the temp
    and keeps the one blob.
@@ -463,7 +463,7 @@ multipart is a *delivery mechanism*; the stored object is just an object.
 | Per-part return value (part# + MD5)        | `[PartETag](../src/multipart.rs)`                                          |
 | HTTP verb → method dispatch on query params| `[put_object](../src/routes.rs)`, `[post_object](../src/routes.rs)`, `[delete_object](../src/routes.rs)` |
 | The streaming loop a part reuses           | `[stream_to_store](../src/streaming.rs)` (V2)                             |
-| Atomic, dedup'd commit of the finished blob| `[Store::commit_temp](../src/store.rs)` (V1)                              |
+| Atomic, dedup'd commit of the finished blob| `[Store::commit_temp](../src/store/mod.rs)` (V1)                              |
 | The `(bucket,key) → blob` pointer + order  | `[Index::put](../src/index.rs)` (V3)                                       |
 | Both ETag formulas, spelled out            | `[ETag](../src/object.rs)` doc comment                                     |
 | The stored-object record `complete` returns| `[ObjectMeta](../src/object.rs)`                                           |

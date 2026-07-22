@@ -5,7 +5,7 @@
 > No prior knowledge of S3 or filesystems assumed.
 >
 > Every claim here is anchored to real code: `[src/routes.rs](../src/routes.rs)`,
-> `[src/index.rs](../src/index.rs)`, `[src/store.rs](../src/store.rs)`,
+> `[src/index.rs](../src/index.rs)`, `[src/store/mod.rs](../src/store/mod.rs)`,
 > `[src/object.rs](../src/object.rs)`.
 
 ---
@@ -268,7 +268,7 @@ From `[src/object.rs](../src/object.rs)`:
 pub struct Digest(pub String);
 ```
 
-And `[blob_path](../src/store.rs)` in `store.rs` turns that 64-hex-char digest into
+And `[blob_path](../src/store/mod.rs)` in `store.rs` turns that 64-hex-char digest into
 a path:
 
 ```rust
@@ -561,7 +561,7 @@ of that one decision.
 | How a URL becomes `(bucket, key)`  | `router()` and the handlers in `[src/routes.rs](../src/routes.rs)`      |
 | Why keys can hold slashes safely   | `encode_key` in `[src/index.rs](../src/index.rs)`                       |
 | Why buckets are locked down        | `validate_bucket_name` in `[src/index.rs](../src/index.rs)`             |
-| How content is addressed & sharded | `blob_path` / `digest_from_path` in `[src/store.rs](../src/store.rs)`   |
+| How content is addressed & sharded | `blob_path` / `digest_from_path` in `[src/store/mod.rs](../src/store/mod.rs)`   |
 | How the key→bytes link is stored   | `ObjectMeta` in `[src/object.rs](../src/object.rs)`, `Index::put`/`get` |
 | How folders are faked              | `Index::list` in `[src/index.rs](../src/index.rs)`                      |
 

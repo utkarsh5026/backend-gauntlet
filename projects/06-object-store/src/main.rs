@@ -37,7 +37,8 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = common_config::or_default("DATA_DIR", DEFAULT_DATA_DIR);
     let max_object_size: u64 = common_config::parse_or("MAX_OBJECT_SIZE", DEFAULT_MAX_OBJECT_SIZE);
 
-    let state = AppState::open(&data_dir, max_object_size)?
+    let layout = object_store::store::BlobLayoutKind::from_env();
+    let state = AppState::open_with_layout(&data_dir, max_object_size, layout)?
         .with_auth(object_store::auth::AuthConfig::from_env_optional())
         .with_cdc(object_store::cdc::CdcConfig::from_env());
     if state.auth.is_some() {
@@ -55,6 +56,17 @@ async fn main() -> anyhow::Result<()> {
         );
     } else {
         info!("CDC chunk-level dedup disabled — whole-object CAS on PUT");
+    }
+    match state.store.layout_kind() {
+        object_store::store::BlobLayoutKind::FileCas => {
+            info!("blob layout: file_cas (one file per digest under objects/)");
+        }
+        object_store::store::BlobLayoutKind::Haystack => {
+            warn!(
+                "blob layout: haystack (scaffold) — commit/open/remove/scrub are todo!(); \
+                 leave BLOB_LAYOUT unset until you fill src/store/haystack.rs"
+            );
+        }
     }
     info!(%data_dir, max_object_size, "object store opened");
 

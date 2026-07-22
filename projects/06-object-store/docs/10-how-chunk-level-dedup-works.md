@@ -15,7 +15,7 @@
 > format shipped here.
 >
 > Anchored to: [`SPEC.md`](../SPEC.md) (From the field → Chunk-level dedup),
-> [`src/store.rs`](../src/store.rs) (whole-object CAS today),
+> [`src/store/mod.rs`](../src/store/mod.rs) (whole-object CAS today),
 > [`src/lifecycle.rs`](../src/lifecycle.rs) (hash-then-compress — the unblocker),
 > [`docs/07-durability-review.md`](07-durability-review.md) Path C,
 > industry notes in [`RESEARCH.md`](../RESEARCH.md) §Part 6.
@@ -348,7 +348,7 @@ is the better tool), or data that never overlaps.
 
 ## 11. How this connects to other concepts
 
-- **V1 content-addressed store** ([`src/store.rs`](../src/store.rs)) — CDC
+- **V1 content-addressed store** ([`src/store/mod.rs`](../src/store/mod.rs)) — CDC
   reuses the same commit dance and dedup-by-name; only the blob grain changes.
 - **V3 GC / refcounting** ([`src/index.rs`](../src/index.rs)) — manifests become
   the roots that keep chunks alive; delete-is-pointer-drop still holds.
@@ -405,7 +405,7 @@ hash-then-chunk-then optionally compress each chunk's physical encoding.
 | **Scaffold — index grain** | [`BlobKind`](../src/object.rs) on `VersionKind::Live` / `NewVersion` |
 | **Scaffold — GET** | [`routes::stream_manifest_range`](../src/routes.rs) |
 | **Scaffold — GC expand** | [`Index::mark_meta_digests`](../src/index.rs) → `manifest::chunk_digests` |
-| Whole-object CAS today | [`src/store.rs`](../src/store.rs) |
+| Whole-object CAS today | [`src/store/mod.rs`](../src/store/mod.rs) |
 | Streaming PUT (network chunks) | [`src/streaming.rs`](../src/streaming.rs) |
 | Hash-then-compress rationale | [`src/lifecycle.rs`](../src/lifecycle.rs) module docs |
 | Cold-tier durability threats | [`docs/07-durability-review.md`](07-durability-review.md) Path C |

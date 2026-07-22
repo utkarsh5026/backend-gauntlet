@@ -13,7 +13,7 @@
         "docker-compose.yml",
         "src/main.rs",
         "src/lib.rs",
-        "src/store.rs",
+        "src/store/mod.rs",
         "src/index.rs",
         "src/multipart.rs",
         "src/lifecycle.rs",
@@ -34,7 +34,7 @@
         "src/routes.rs",
         "src/streaming.rs",
         "src/durable.rs",
-        "src/store.rs",
+        "src/store/mod.rs",
         "src/index.rs"
       ],
       "spec": [
@@ -53,7 +53,7 @@
       "description": "The core durability lesson of the project. A write moves through four phases — stream to a temp file, fsync, atomic rename, index entry — and the diagram shows exactly what a crash inside each phase leaves behind. Because the bytes become durable before any name points at them, the worst a crash can do is strand cheap-to-clean garbage; it can never create a key that serves half a file.",
       "depicts": [
         "src/durable.rs",
-        "src/store.rs",
+        "src/store/mod.rs",
         "src/index.rs"
       ],
       "spec": [

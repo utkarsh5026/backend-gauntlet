@@ -48,8 +48,38 @@ pub enum BlobKind {
 pub struct Digest(pub String);
 
 impl Digest {
+    /// Raw SHA-256 size in bytes (before hex encoding).
+    pub const BYTE_LEN: usize = 32;
+
+    /// Hex-encoded length of a digest string (`2 * BYTE_LEN` → 64 chars).
+    pub const LEN: usize = Self::BYTE_LEN * 2;
+
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Parse a hex digest string into a [`Digest`].
+    ///
+    /// Accepts upper- or lower-case hex; stores lowercase so on-disk needle
+    /// headers and path shards stay consistent with `hex::encode`.
+    ///
+    /// A well-formed digest is exactly [`Self::LEN`] ASCII hex digits
+    /// (`0-9`, `a-f`, `A-F`) — shape only, not a check that bytes hash here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::InvalidRequest`] if the string is malformed.
+    pub fn parse(s: impl AsRef<str>) -> Result<Self, AppError> {
+        let s = s.as_ref();
+        if s.len() != Self::LEN || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(AppError::InvalidRequest(format!(
+                "digest must be exactly {} ASCII hex characters, got len={} {:?}",
+                Self::LEN,
+                s.len(),
+                s.chars().take(16).collect::<String>()
+            )));
+        }
+        Ok(Self(s.to_ascii_lowercase()))
     }
 }
 
@@ -57,7 +87,7 @@ impl FromStr for Digest {
     type Err = AppError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_string()))
+        Self::parse(s)
     }
 }
 
@@ -346,6 +376,34 @@ mod tests {
             10,
             "image/jpeg".into(),
         )
+    }
+
+    #[test]
+    fn digest_parse_requires_exact_hex_len() {
+        assert!(Digest::parse("ab".repeat(32)).is_ok());
+        assert!(
+            Digest::parse("AB".repeat(32)).is_ok(),
+            "uppercase hex is ok"
+        );
+        assert!(Digest::parse("aaa").is_err());
+        assert!(Digest::parse("ag".repeat(32)).is_err(), "g is not hex");
+        assert!(Digest::parse(format!("{}x", "a".repeat(63))).is_err());
+    }
+
+    #[test]
+    fn digest_parse_normalizes_to_lowercase() {
+        let upper = "AB".repeat(32);
+        let d = Digest::parse(upper).unwrap();
+        assert_eq!(d.as_str(), "ab".repeat(32));
+    }
+
+    #[test]
+    fn digest_parse_rejects_malformed() {
+        assert!(matches!(
+            Digest::parse("not-a-digest"),
+            Err(AppError::InvalidRequest(_))
+        ));
+        assert!(Digest::parse("short").is_err());
     }
 
     /// A live payload for `append_live` / `new_live`, keyed by a small seed so

@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — Content addressing & the atomic durable commit *(V1 · `src/store.rs`)*
+## 🧠 Card 1 — Content addressing & the atomic durable commit *(V1 · `src/store/mod.rs`)*
 
 **The problem.** Two problems live here. First: the same bytes get uploaded endlessly (the same Docker layer, the same avatar) — name blobs by where the user put them and you store each copy again. Second, and deadlier: a crash mid-write. Write straight to `objects/<hash>` and lose power halfway, and the file *exists with the right name but half the bytes* — every future reader trusts a truncated blob. Filesystems don't give you transactions; you have to construct atomicity by hand.
 

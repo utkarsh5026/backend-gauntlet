@@ -9,7 +9,7 @@
 > This teaches the **concept** and how *this project's* scrubber is wired. It is
 > not a repair plane (no replicas / erasure coding here): detect, quarantine,
 > metric, refuse GET. Anchored to real code:
-> [`src/store.rs`](../src/store.rs) (the scrubber),
+> [`src/store/mod.rs`](../src/store/mod.rs) (the scrubber),
 > [`src/metrics.rs`](../src/metrics.rs) (the counters),
 > [`src/main.rs`](../src/main.rs) (spawn),
 > [`SPEC.md`](../SPEC.md) (From the field),
@@ -58,7 +58,7 @@ never lies."
 ## 2. Why CAS makes the check free
 
 A **content-addressed store (CAS)** names every blob by a cryptographic hash of
-its bytes — here, SHA-256 hex. V1 in [`src/store.rs`](../src/store.rs) does
+its bytes — here, SHA-256 hex. V1 in [`src/store/mod.rs`](../src/store/mod.rs) does
 exactly this: the on-disk path *is* the digest, sharded as
 `objects/<ab>/<cd>/<64-hex>`.
 
@@ -168,7 +168,7 @@ for a single-node CAS.
 
 ### 5.1 Pieces
 
-All of this lives on `Store` in [`src/store.rs`](../src/store.rs):
+All of this lives on `Store` in [`src/store/mod.rs`](../src/store/mod.rs):
 
 | Piece | Role |
 | --- | --- |
@@ -372,7 +372,7 @@ as a metric" bar is what you watch in a running process.
 - AWS / Andy Warfield talks on S3 durability — continuous auditors + durability
   reviews as threat modeling for storage.
 - This project's [`RESEARCH.md`](../RESEARCH.md) §Part 4 and the scrubber unit
-  tests in [`src/store.rs`](../src/store.rs) (`scrub_*`,
+  tests in [`src/store/mod.rs`](../src/store/mod.rs) (`scrub_*`,
   `commit_wakes_idle_scrubber_*`).
 
 ---

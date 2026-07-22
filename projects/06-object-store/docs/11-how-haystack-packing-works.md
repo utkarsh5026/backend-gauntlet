@@ -13,7 +13,7 @@
 > that stays yours. No volume format, no needle module, no `todo!()` fills.
 >
 > Anchored to: [`SPEC.md`](../SPEC.md) (From the field → Small-object packing),
-> [`src/store.rs`](../src/store.rs) (one-file-per-digest CAS today),
+> [`src/store/`](../src/store/) (CAS facade + FileCas / Haystack layouts),
 > [`src/durable.rs`](../src/durable.rs) (temp→fsync→rename),
 > [`docs/04-how-continuous-scrubbing-works.md`](04-how-continuous-scrubbing-works.md),
 > [`docs/07-durability-review.md`](07-durability-review.md) Path A,
@@ -134,7 +134,7 @@ flowchart LR
 | Map | Module today | Question it answers |
 | --- | --- | --- |
 | **Logical index** | [`index.rs`](../src/index.rs) — `index/<bucket>/objects/<key>.json` | What digest (and version history) does this S3 key point at? |
-| **Physical locator** | [`store.rs`](../src/store.rs) — `objects/ab/cd/<digest>` *is* the map | Where do those bytes live on disk? |
+| **Physical locator** | [`store/`](../src/store/) — FileCas `objects/ab/cd/<digest>` *is* the map today | Where do those bytes live on disk? |
 
 Today the filesystem *is* the physical locator: `blob_path(digest)` encodes
 location as a path. Under packing, that becomes an explicit structure:
@@ -190,7 +190,7 @@ layout** under CAS, not a replacement for it.
 ## 5. How to think about write and read paths
 
 Mental wiring only — no prescribed APIs. Callers stay digest-centric;
-[`Store`](../src/store.rs) hides whether a digest is a standalone file or a
+[`Store`](../src/store/mod.rs) hides whether a digest is a standalone file or a
 needle.
 
 ### PUT / commit
@@ -346,7 +346,12 @@ needles should locate **content**, not reinvent the namespace.
 | Subtopic | File / symbol |
 | --- | --- |
 | From-the-field acceptance line | [`SPEC.md`](../SPEC.md) § Storage-engine labs → Small-object packing |
-| One-file CAS today | [`src/store.rs`](../src/store.rs) (`blob_path`, `commit_temp`, `open_blob`) |
+| **Scaffold — layout enum** | [`src/store/mod.rs`](../src/store/mod.rs) (`BlobLayout` / `BlobLayoutKind`) |
+| **Scaffold — FileCas (default)** | [`src/store/file_cas.rs`](../src/store/file_cas.rs) |
+| **Scaffold — Haystack** | [`src/store/haystack.rs`](../src/store/haystack.rs) (`todo!()` commit/open/remove/scrub) |
+| **Scaffold — Store facade** | [`src/store/mod.rs`](../src/store/mod.rs) (`open_with_layout`, `layout_kind`) |
+| **Scaffold — boot** | [`AppState::open_with_layout`](../src/lib.rs); `main` → `BlobLayoutKind::from_env` |
+| One-file CAS today | [`src/store/file_cas.rs`](../src/store/file_cas.rs) / [`Store`](../src/store/mod.rs) |
 | Durable publish dance | [`src/durable.rs`](../src/durable.rs) (`publish_temp`, `TempEntry`) |
 | Streaming PUT / hash | [`src/streaming.rs`](../src/streaming.rs) |
 | Logical key→digest index | [`src/index.rs`](../src/index.rs) |
@@ -356,12 +361,11 @@ needles should locate **content**, not reinvent the namespace.
 | Index vs blob process split | [`docs/05-how-index-as-a-service-works.md`](05-how-index-as-a-service-works.md) |
 | Haystack / SeaweedFS notes | [`RESEARCH.md`](../RESEARCH.md) §Part 1 (inode cost), §Part 6 (SeaweedFS) |
 | Cold tier / hash-then-compress | [`src/lifecycle.rs`](../src/lifecycle.rs) |
+| Env knobs | [`.env.example`](../.env.example) (`BLOB_LAYOUT`) |
 
-**Scaffold status:** none for packing — unlike CDC, there is no volume module
-or env flag yet. That is intentional: this doc is the concept map; the lab is
-yours when you adopt it.
-
-When you are ready to implement: keep identity = plaintext digest, hide layout
-behind `Store`, pick a hybrid size threshold, invent a crash-recoverable
-append + scan story, then prove "many tiny objects / few volume files" with
-GETs that still round-trip.
+**Scaffold status:** [`BlobLayout`](../src/store/mod.rs) swaps physical
+backends under [`Store`](../src/store/mod.rs). Default is
+[`FileCas`](../src/store/file_cas.rs) (one file per digest). [`Haystack`](../src/store/haystack.rs)
+opens `volumes/` and an empty needle map; append / open / remove / scrub are
+still `todo!()`. Boot with `BLOB_LAYOUT=haystack` only when you start filling
+those bodies — tests and default `AppState::open` stay on FileCas.
