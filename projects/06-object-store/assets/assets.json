@@ -1,27 +1,29 @@
 {
   "project": "06-object-store",
-  "updatedAt": "2026-07-20",
+  "updatedAt": "2026-07-22",
   "assets": [
     {
       "id": "system-overview",
       "file": "system-overview.svg",
       "kind": "architecture",
       "title": "One process serves S3, one remembers names — the disk holds the truth",
-      "summary": "The web console, the S3 API server, the optional index service — and the plain directory that is the whole database.",
-      "description": "Every moving part of the store: any S3 client (even the real aws CLI) talks to one Rust server, which asks a small index service which blob a key points at, and reads or writes plain files on disk. There is deliberately no database — the lesson of this project is that an object store is a layout discipline over a directory, not a service you call. Two background workers ride along: one ages objects out or compresses cold ones, the other re-hashes stored blobs to catch silent disk corruption before a reader does.",
+      "summary": "The web console, the S3 API server, the optional index service — and the plain directory (whole blobs in objects/, packed small blobs in volumes/) that is the whole database.",
+      "description": "Every moving part of the store: any S3 client (even the real aws CLI) talks to one Rust server, which asks a small index service which blob a key points at, and reads or writes plain files on disk. There is deliberately no database — the lesson of this project is that an object store is a layout discipline over a directory, not a service you call. Blob bytes land two ways: whole files under objects/, or — when packing is enabled — many small objects packed as needles into shared volumes/ files. Two background workers ride along: one ages objects out or compresses cold ones, the other re-hashes stored blobs to catch silent disk corruption before a reader does.",
       "depicts": [
         "docker-compose.yml",
         "src/main.rs",
         "src/lib.rs",
         "src/store/mod.rs",
+        "src/store/haystack.rs",
+        "src/store/file_cas.rs",
         "src/index.rs",
         "src/multipart.rs",
         "src/lifecycle.rs",
         "src/bin/object_store_index.rs"
       ],
       "spec": [],
-      "sourceCommit": "8c64a52",
-      "updatedAt": "2026-07-20"
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
     },
     {
       "id": "put-request-flow",
@@ -41,8 +43,8 @@
         "V1",
         "V2"
       ],
-      "sourceCommit": "8c64a52",
-      "updatedAt": "2026-07-20"
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
     },
     {
       "id": "crash-safety",
@@ -60,8 +62,8 @@
         "V1",
         "V3"
       ],
-      "sourceCommit": "8c64a52",
-      "updatedAt": "2026-07-20"
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
     },
     {
       "id": "flat-namespace",
@@ -78,8 +80,47 @@
       "spec": [
         "V3"
       ],
-      "sourceCommit": "8c64a52",
-      "updatedAt": "2026-07-20"
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
+    },
+    {
+      "id": "chunk-dedup",
+      "file": "chunk-dedup.svg",
+      "kind": "data-flow",
+      "title": "How a one-byte edit re-uses most of a big file's bytes",
+      "summary": "Content-defined chunking cuts the upload at content-chosen boundaries, stores each chunk once by its hash, and records an ordered manifest — so near-identical files share every unchanged chunk.",
+      "description": "Whole-object dedup only ever shares byte-for-byte identical files, so a single changed byte costs a brand-new copy. With content-defined chunking (opt-in via CDC_ENABLED) the PUT body is split by a rolling hash of its own bytes — not at fixed offsets — so an edit shifts only the boundaries around it. Each chunk is SHA-256'd and committed once to the content-addressed store; an ordered manifest blob lists the chunk digests, and the index points the key at that manifest (the client still sees one object, with logical size, ETag, and Range). Upload a near-duplicate and only the edited chunk is new — every chunk after it keeps its digest and is shared on disk. GET reassembles the object by streaming its chunks back in order.",
+      "depicts": [
+        "src/cdc.rs",
+        "src/manifest.rs",
+        "src/streaming.rs",
+        "src/object.rs",
+        "src/routes.rs"
+      ],
+      "spec": [
+        "V1",
+        "V3"
+      ],
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
+    },
+    {
+      "id": "haystack-packing",
+      "file": "haystack-packing.svg",
+      "kind": "internals",
+      "title": "Thousands of tiny files, a handful of big ones — how packing works",
+      "summary": "Small blobs are appended as 'needles' into shared append-only volume files and found by a RAM map of (volume, offset, size) — one open file for many objects, not one inode each.",
+      "description": "The small-file problem: a million unique 4 KiB thumbnails means a million filesystem inodes and a metadata lookup on every read. Haystack packing (opt-in via BLOB_LAYOUT) turns the Store into a facade over two physical backends. Small blobs are appended back-to-back as framed 'needles' into append-only volumes/N.dat files, and each one is located through a compact in-RAM map (digest → volume, offset, size) kept durable by a write-ahead log plus a periodic snapshot — that map is what replaces the per-object inode. A GET is then one map lookup and one ranged read; blobs too big to pack still fall back to one-file-each under objects/. Reclaiming the space held by deleted needles needs a compaction pass that isn't built yet.",
+      "depicts": [
+        "src/store/mod.rs",
+        "src/store/haystack.rs",
+        "src/store/file_cas.rs"
+      ],
+      "spec": [
+        "V1"
+      ],
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
     },
     {
       "id": "multipart-etag",
@@ -94,8 +135,8 @@
       "spec": [
         "V4"
       ],
-      "sourceCommit": "8c64a52",
-      "updatedAt": "2026-07-20"
+      "sourceCommit": "90a80b4",
+      "updatedAt": "2026-07-22"
     }
   ]
 }

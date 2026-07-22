@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 632" role="img" aria-label="How small objects are packed into Haystack volume files">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#5fb8a1"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="632" fill="#0e1311"/>
+
+  <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">Thousands of tiny files become a handful of big ones</text>
+  <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">Small blobs are packed as “needles” into shared append-only volume files — one open file for many objects, not one inode each.</text>
+
+  <!-- decision row -->
+  <rect x="48" y="90" width="250" height="66" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="66" y="120" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#d3ddd6">one blob + its digest</text>
+  <text x="66" y="141" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">size known after streaming (V2)</text>
+
+  <line x1="298" y1="123" x2="356" y2="123" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="358" y="90" width="300" height="66" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="376" y="118" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700" fill="#5fb8a1">Store::choose_location(size)</text>
+  <text x="376" y="139" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">BLOB_LAYOUT packs small?  framed needle ≤ 1 MiB?</text>
+
+  <!-- branch arrows -->
+  <line x1="430" y1="156" x2="320" y2="212" stroke="#5fb8a1" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+  <rect x="300" y="176" width="96" height="16" fill="#0e1311"/>
+  <text x="348" y="188" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#5fb8a1" text-anchor="middle">small → pack</text>
+
+  <line x1="600" y1="156" x2="742" y2="212" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="636" y="176" width="96" height="16" fill="#0e1311"/>
+  <text x="684" y="188" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#7f8d84" text-anchor="middle">oversized</text>
+
+  <!-- volumes box (the star) -->
+  <rect x="48" y="214" width="560" height="168" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="68" y="242" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#5fb8a1">volumes/0.dat — append-only</text>
+  <text x="68" y="261" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">many needles packed back-to-back in one file</text>
+
+  <!-- needles packed in the volume -->
+  <rect x="68" y="278" width="132" height="46" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="134" y="299" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">needle A</text>
+  <text x="134" y="315" font-family="system-ui, sans-serif" font-size="9.5" fill="#7f8d84" text-anchor="middle">4 KiB photo</text>
+
+  <rect x="204" y="278" width="104" height="46" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="256" y="299" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">needle B</text>
+  <text x="256" y="315" font-family="system-ui, sans-serif" font-size="9.5" fill="#7f8d84" text-anchor="middle">2 KiB icon</text>
+
+  <rect x="312" y="278" width="150" height="46" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="387" y="299" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">needle C</text>
+  <text x="387" y="315" font-family="system-ui, sans-serif" font-size="9.5" fill="#7f8d84" text-anchor="middle">7 KiB thumb</text>
+
+  <rect x="466" y="278" width="120" height="46" rx="5" fill="#0e1311" stroke="#26302b" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="526" y="303" font-family="system-ui, sans-serif" font-size="10" fill="#7f8d84" text-anchor="middle">next append</text>
+  <text x="526" y="317" font-family="system-ui, sans-serif" font-size="10" fill="#7f8d84" text-anchor="middle">lands here →</text>
+
+  <text x="68" y="352" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#7f8d84">needle = [ 64-byte digest │ 8-byte size │ payload ]</text>
+  <text x="68" y="370" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">one sequential write + one fsync — no new inode per object</text>
+
+  <!-- objects fallback box -->
+  <rect x="628" y="214" width="284" height="168" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="648" y="242" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#d3ddd6">objects/ab/cd/&lt;digest&gt;</text>
+  <text x="648" y="261" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">one file per blob — classic CAS</text>
+
+  <rect x="648" y="278" width="244" height="46" rx="5" fill="#0e1311" stroke="#26302b" stroke-width="1.5"/>
+  <text x="770" y="306" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">one big blob = one file</text>
+
+  <text x="648" y="352" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">objects too big to pack skip</text>
+  <text x="648" y="370" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">Haystack and land here instead</text>
+
+  <!-- locator map -->
+  <rect x="48" y="408" width="560" height="98" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="435" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700" fill="#d3ddd6">the needle map — what replaces the inode</text>
+  <text x="68" y="461" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#5fb8a1">digest → (volume, offset, size)</text>
+  <text x="68" y="483" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">lives in RAM · made durable by needles.log (WAL, fsynced) + needles.json (snapshot)</text>
+  <text x="68" y="499" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">delete just tombstones the entry; dead bytes are reclaimed later by compaction <tspan fill="#ceac63">(planned)</tspan></text>
+
+  <!-- link map <-> volume -->
+  <line x1="328" y1="408" x2="328" y2="386" stroke="#5fb8a1" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+  <rect x="292" y="388" width="150" height="15" fill="#0e1311"/>
+  <text x="367" y="399" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84" text-anchor="middle">indexes each needle</text>
+
+  <!-- GET lane -->
+  <rect x="628" y="408" width="284" height="98" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="648" y="435" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700" fill="#5fb8a1">GET(digest)</text>
+  <text x="648" y="459" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">1. map lookup → (vol 0, offset, size)</text>
+  <text x="648" y="477" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">2. seek to offset in that volume</text>
+  <text x="648" y="495" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">3. read exactly size bytes</text>
+
+  <!-- footnote strip -->
+  <rect x="48" y="524" width="864" height="86" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="551" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700" fill="#d3ddd6">why it matters</text>
+  <text x="68" y="576" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">A million unique 4 KiB thumbnails used to mean a million files — a million inodes, a metadata lookup per GET.</text>
+  <text x="68" y="595" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">Packed into volumes they become a handful of <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#5fb8a1">.dat</tspan> files, and every GET is one map hit plus one ranged read.</text>
+</svg>

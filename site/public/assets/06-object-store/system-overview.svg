@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 630" role="img" aria-label="System overview of the object store">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 664" role="img" aria-label="System overview of the object store">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
@@ -8,7 +8,7 @@
     </marker>
   </defs>
 
-  <rect x="0" y="0" width="960" height="630" fill="#0e1311"/>
+  <rect x="0" y="0" width="960" height="664" fill="#0e1311"/>
 
   <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">One process serves S3, one remembers names — the disk holds the truth</text>
   <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">There is no database — the filesystem, used with discipline, is the store.</text>
@@ -59,15 +59,17 @@
   <text x="808" y="418" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#7f8d84">key files</text>
 
   <!-- data directory -->
-  <rect x="48" y="438" width="864" height="152" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <rect x="48" y="438" width="864" height="186" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
   <text x="72" y="468" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#d3ddd6">the data directory <tspan fill="#7f8d84" font-weight="400">— a plain folder, used with discipline</tspan></text>
 
   <text x="72" y="500" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#5fb8a1">objects/ab/cd/&lt;sha256&gt;</text>
-  <text x="262" y="500" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">blobs, stored once</text>
-  <text x="72" y="528" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">index/&lt;bucket&gt;/&lt;key&gt;.json</text>
-  <text x="262" y="528" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">key → blob pointers</text>
-  <text x="72" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">uploads/&lt;upload-id&gt;/</text>
-  <text x="262" y="556" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">multipart staging</text>
+  <text x="262" y="500" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">whole blobs, stored once</text>
+  <text x="72" y="528" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#5fb8a1">volumes/&lt;n&gt;.dat</text>
+  <text x="262" y="528" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">small blobs packed as needles (opt-in)</text>
+  <text x="72" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">index/&lt;bucket&gt;/&lt;key&gt;.json</text>
+  <text x="262" y="556" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">key → blob pointers</text>
+  <text x="72" y="584" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">uploads/&lt;upload-id&gt;/</text>
+  <text x="262" y="584" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">multipart staging</text>
 
   <text x="500" y="500" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" fill="#d3ddd6">tmp/</text>
   <text x="648" y="500" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">in-flight writes</text>
