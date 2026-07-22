@@ -58,17 +58,6 @@ impl Digest {
         &self.0
     }
 
-    /// Parse a hex digest string into a [`Digest`].
-    ///
-    /// Accepts upper- or lower-case hex; stores lowercase so on-disk needle
-    /// headers and path shards stay consistent with `hex::encode`.
-    ///
-    /// A well-formed digest is exactly [`Self::LEN`] ASCII hex digits
-    /// (`0-9`, `a-f`, `A-F`) — shape only, not a check that bytes hash here.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::InvalidRequest`] if the string is malformed.
     pub fn parse(s: impl AsRef<str>) -> Result<Self, AppError> {
         let s = s.as_ref();
         if s.len() != Self::LEN || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -80,6 +69,17 @@ impl Digest {
             )));
         }
         Ok(Self(s.to_ascii_lowercase()))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AppError> {
+        if bytes.len() != Self::BYTE_LEN {
+            return Err(AppError::InvalidRequest(format!(
+                "digest must be exactly {} bytes, got len={}",
+                Self::BYTE_LEN,
+                bytes.len()
+            )));
+        }
+        Ok(Self(hex::encode(bytes)))
     }
 }
 
