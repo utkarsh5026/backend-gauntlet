@@ -105,15 +105,21 @@ reviewer. For every diagram:
   answer ("How a click becomes a stats row", not "Async ingestion pipeline").
 - **Terse boxes, deep captions:** at most **2 short lines of prose per box** —
   the diagram is the skim layer. The full rationale lives in the manifest
-  `description`, which the site shows behind a `[+]` disclosure. Never wall-of-
-  text a diagram; give the saved space back as whitespace between elements.
+  `description` bullets, which the site shows behind a `[+] why this matters`
+  disclosure. Never wall-of-text a diagram; give the saved space back as
+  whitespace between elements.
 - Labels inside the SVG: short, concrete, jargon-free. "Remembers hot links so
   the DB isn't asked twice" beats "cache-aside layer". Port numbers and crate
   names only where they genuinely orient the reader.
-- The manifest `description` (2–4 sentences) explains what the viewer is
-  looking at and *why it's designed that way* — the tradeoff, in words a
-  non-backend person can follow. The `summary` is one card-sized line.
-- If a term can't be avoided (WAL, quorum), one clause defines it in place.
+- The manifest `description` is an **array of 3–5 short bullet points**, never a
+  paragraph — the site renders each as its own bullet. Its whole job is to make
+  the stakes legible to a curious **non-backend reader**: **name the problem
+  this piece faces, then how the design solves it** — the trap first, the fix
+  second. One idea per bullet, everyday words, short sentences; read it back and
+  cut anything that sounds like a Rust reviewer wrote it. The `summary` stays
+  one card-sized line (a plain string, not bullets).
+- If a term can't be avoided (WAL, quorum), define it in the same bullet in
+  plain words the first time it appears.
 
 ## 6. SVG style guide — the site's visual language
 
@@ -183,7 +189,11 @@ keep them in lockstep if you change it):
       "kind": "architecture",
       "title": "What answers a click, and what it leans on",
       "summary": "The three moving parts: the axum server, Redis in front, Postgres behind.",
-      "description": "2–4 plain-language sentences: what you're looking at and why it's shaped this way.",
+      "description": [
+        "Every redirect is a read, so a handful of popular links get looked up thousands of times a second.",
+        "Redis sits in front as a cache, so those repeat lookups are answered from memory and never touch the database.",
+        "Postgres stays the source of truth — wipe the cache and it refills from Postgres, so a cache crash loses speed, never links."
+      ],
       "depicts": ["src/main.rs", "src/routes.rs", "docker-compose.yml"],
       "spec": ["V1", "V2"],
       "sourceCommit": "8c64a52",
@@ -194,6 +204,10 @@ keep them in lockstep if you change it):
 ```
 
 - `kind`: `architecture | request-flow | data-flow | internals | data-model | infra`.
+- `description`: a JSON **array of 3–5 plain-language bullet strings** (see step
+  5) — the problem this piece faces and how the design answers it, one idea per
+  string. It is an array, not a paragraph; the site renders each string as a
+  bullet. `summary` stays a single plain string.
 - `depicts`: paths **relative to the project dir** — this is the staleness
   contract (step 2 diffs exactly these). List every file whose change could
   make the picture lie; don't pad it with files the diagram ignores.

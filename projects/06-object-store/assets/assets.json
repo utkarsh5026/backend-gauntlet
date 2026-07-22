@@ -8,7 +8,12 @@
       "kind": "architecture",
       "title": "One process serves S3, one remembers names — the disk holds the truth",
       "summary": "The web console, the S3 API server, the optional index service — and the plain directory (whole blobs in objects/, packed small blobs in volumes/) that is the whole database.",
-      "description": "Every moving part of the store: any S3 client (even the real aws CLI) talks to one Rust server, which asks a small index service which blob a key points at, and reads or writes plain files on disk. There is deliberately no database — the lesson of this project is that an object store is a layout discipline over a directory, not a service you call. Blob bytes land two ways: whole files under objects/, or — when packing is enabled — many small objects packed as needles into shared volumes/ files. Two background workers ride along: one ages objects out or compresses cold ones, the other re-hashes stored blobs to catch silent disk corruption before a reader does.",
+      "description": [
+        "You'd expect a big database behind an S3-style store. There isn't one — the whole 'database' is just plain files sitting in a directory on disk.",
+        "One Rust server speaks the S3 language to any client (even Amazon's own aws tool); a small side service simply remembers which file each name points to.",
+        "Bytes are stored two ways: large objects land as whole files, while thousands of tiny objects are packed together into a few shared files so they don't each waste space.",
+        "Two workers run in the background to keep the data trustworthy — one ages out or compresses cold objects, the other re-checks stored bytes for silent disk rot before a reader ever hits it."
+      ],
       "depicts": [
         "docker-compose.yml",
         "src/main.rs",
@@ -31,7 +36,12 @@
       "kind": "request-flow",
       "title": "Uploading a file: six steps from first byte to durable object",
       "summary": "The PUT hot path — streamed chunk by chunk, hashed twice on the fly, committed with an atomic rename.",
-      "description": "What happens between a client sending a file and the store answering 200 OK. The body is never held in memory — each chunk is written to a temp file and fed to two hashes as it passes, so a 5 GB upload costs the same RAM as a 10 KB one. The object only appears in the final atomic rename, which is what makes a half-finished upload invisible instead of a corrupt file.",
+      "description": [
+        "A 5 GB upload can't be held in memory — do that and a single big file crashes the whole server.",
+        "So the body is streamed straight to a temporary file on disk, a small chunk at a time; a 5 GB upload uses the same tiny amount of memory as a 10 KB one.",
+        "As the bytes flow past, two fingerprints of the content are computed on the fly, so the file is verified without ever reading it a second time.",
+        "The object stays invisible until the final step renames it into place in one instant move — a dropped connection leaves only a stray temp file, never a broken, half-written object someone could download."
+      ],
       "depicts": [
         "src/routes.rs",
         "src/streaming.rs",
@@ -52,7 +62,12 @@
       "kind": "internals",
       "title": "Kill the power at any moment — what does a reader see afterwards?",
       "summary": "The four write phases and their crash outcomes: the whole object or a 404, never a truncated file.",
-      "description": "The core durability lesson of the project. A write moves through four phases — stream to a temp file, fsync, atomic rename, index entry — and the diagram shows exactly what a crash inside each phase leaves behind. Because the bytes become durable before any name points at them, the worst a crash can do is strand cheap-to-clean garbage; it can never create a key that serves half a file.",
+      "description": [
+        "The scary question for any storage system: if the power dies mid-upload, can someone later download a half-written, corrupt file?",
+        "Here every write follows the same fixed order — write to a temp file, force it onto the physical disk, rename it into place, then record the name.",
+        "The whole trick is that the bytes are made permanent before any name points at them.",
+        "So the worst a crash can do is leave behind some junk that's cheap to sweep up later — it can never expose a key that serves half a file."
+      ],
       "depicts": [
         "src/durable.rs",
         "src/store/mod.rs",
@@ -71,7 +86,12 @@
       "kind": "internals",
       "title": "No folders, no copies — a key is only a pointer",
       "summary": "The flat keyspace: listings fake the folders, identical content is stored once, delete just drops a pointer.",
-      "description": "S3's keyspace is flat — photos/2024/beach.jpg is one opaque string, and the folder view is computed on the fly by collapsing keys that share a prefix. Because blobs are named by the hash of their content, two keys with identical bytes share one blob on disk. That is why delete only removes the pointer: the bytes must survive until nothing references them, and a background garbage collector reclaims them later.",
+      "description": [
+        "A key like photos/2024/beach.jpg looks like it lives in nested folders — but the store has no real folders at all.",
+        "The folder view is faked on demand by grouping keys that share the same prefix, so 'browsing folders' is really just a filtered listing.",
+        "Objects are named by a fingerprint of their own contents, so if two keys hold the exact same bytes, they quietly share a single copy on disk.",
+        "That's why a delete only drops the pointer, not the bytes: the data has to survive until nothing points to it, and a background cleaner frees it later."
+      ],
       "depicts": [
         "src/index.rs",
         "src/object.rs",
@@ -89,7 +109,12 @@
       "kind": "data-flow",
       "title": "How a one-byte edit re-uses most of a big file's bytes",
       "summary": "Content-defined chunking cuts the upload at content-chosen boundaries, stores each chunk once by its hash, and records an ordered manifest — so near-identical files share every unchanged chunk.",
-      "description": "Whole-object dedup only ever shares byte-for-byte identical files, so a single changed byte costs a brand-new copy. With content-defined chunking (opt-in via CDC_ENABLED) the PUT body is split by a rolling hash of its own bytes — not at fixed offsets — so an edit shifts only the boundaries around it. Each chunk is SHA-256'd and committed once to the content-addressed store; an ordered manifest blob lists the chunk digests, and the index points the key at that manifest (the client still sees one object, with logical size, ETag, and Range). Upload a near-duplicate and only the edited chunk is new — every chunk after it keeps its digest and is shared on disk. GET reassembles the object by streaming its chunks back in order.",
+      "description": [
+        "If you only avoid storing identical whole files, changing a single byte in a huge file forces a brand-new full copy — a big waste of space.",
+        "Instead each upload is cut into chunks at boundaries the content itself picks (via a rolling fingerprint), not at fixed positions — so an edit only shifts the chunks right around it.",
+        "Every chunk is fingerprinted and stored just once; a small ordered list records which chunks, in what order, make up the file.",
+        "Re-upload a barely-changed file and only the edited chunk is new — every untouched chunk is shared on disk. To the client it's still one ordinary object, reassembled chunk by chunk on download."
+      ],
       "depicts": [
         "src/cdc.rs",
         "src/manifest.rs",
@@ -110,7 +135,12 @@
       "kind": "internals",
       "title": "Thousands of tiny files, a handful of big ones — how packing works",
       "summary": "Small blobs are appended as 'needles' into shared append-only volume files and found by a RAM map of (volume, offset, size) — one open file for many objects, not one inode each.",
-      "description": "The small-file problem: a million unique 4 KiB thumbnails means a million filesystem inodes and a metadata lookup on every read. Haystack packing (opt-in via BLOB_LAYOUT) turns the Store into a facade over two physical backends. Small blobs are appended back-to-back as framed 'needles' into append-only volumes/N.dat files, and each one is located through a compact in-RAM map (digest → volume, offset, size) kept durable by a write-ahead log plus a periodic snapshot — that map is what replaces the per-object inode. A GET is then one map lookup and one ranged read; blobs too big to pack still fall back to one-file-each under objects/. Reclaiming the space held by deleted needles needs a compaction pass that isn't built yet.",
+      "description": [
+        "Store a million tiny 4 KB thumbnails as a million separate files and you get a million filesystem entries — plus a slow metadata lookup on every single read.",
+        "So small blobs are appended back-to-back into a few big shared files (called volumes), instead of each one getting its own file and inode.",
+        "Each packed blob is found through a compact in-memory map — fingerprint to (which volume, where in it, how big) — kept safe by a running log plus periodic snapshots. That map is what replaces the per-file overhead.",
+        "A read becomes just one map lookup and one seek into a volume; blobs too big to pack still get their own file, and a separate compaction pass later reclaims the space left by deleted blobs."
+      ],
       "depicts": [
         "src/store/mod.rs",
         "src/store/haystack.rs",
@@ -128,7 +158,12 @@
       "kind": "internals",
       "title": "How a 5 GB upload survives a flaky network",
       "summary": "Multipart: parallel, out-of-order, retryable parts — and the deliberately weird ETag that proves S3 compatibility.",
-      "description": "Big uploads are split into parts that arrive in parallel, in any order, and can be retried individually — a dropped connection costs one part, not the whole file. Completion validates every part against the client's MD5 receipts, stitches them together in order, and commits through the same atomic path as a normal upload. The resulting ETag follows S3's odd hash-of-hashes-plus-part-count formula — matching it exactly is what makes real AWS tools accept this store as S3.",
+      "description": [
+        "Pushing one 5 GB file down a shaky network is fragile — if the connection drops at 90%, you'd have to start the whole thing over.",
+        "So the file is split into parts that upload in parallel and in any order, each retryable on its own — a dropped connection costs one small part, not the entire upload.",
+        "When the client says it's done, every part is checked against the receipts it sent, then the parts are stitched together in order and committed through the same crash-safe path as a normal upload.",
+        "The final identifier (ETag) copies S3's quirky 'fingerprint of the parts' fingerprints, plus the part count' formula — matching it exactly is what lets real Amazon tools treat this store as the genuine article."
+      ],
       "depicts": [
         "src/multipart.rs"
       ],
