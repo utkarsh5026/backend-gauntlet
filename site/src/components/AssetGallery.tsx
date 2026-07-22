@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Reveal } from "@/components/Reveal";
+import { FileChip } from "@/components/FileChip";
+import { REPO_URL } from "@/data/roadmap";
 
 type ProjectAsset = {
   id: string;
@@ -10,6 +12,8 @@ type ProjectAsset = {
   /** Plain-language points (problem → fix). Legacy manifests may still use a
    *  single prose string, which we split into sentence bullets. */
   description: string[] | string;
+  /** Source files the diagram is drawn from, relative to the project dir. */
+  depicts?: string[];
 };
 
 type AssetManifest = {
@@ -63,6 +67,8 @@ export function AssetGallery({ projectDir }: { projectDir: string }) {
   if (!manifest) return null;
 
   const base = `${import.meta.env.BASE_URL}assets/${projectDir}/`;
+  const fileHref = (path: string) =>
+    `${REPO_URL}/blob/master/projects/${projectDir}/${path}`;
 
   return (
     <section className="space-y-8">
@@ -126,6 +132,17 @@ export function AssetGallery({ projectDir }: { projectDir: string }) {
                 </ul>
               </Reveal>
             </div>
+
+            {asset.depicts && asset.depicts.length > 0 && (
+              <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="mr-1 text-[0.7rem] uppercase tracking-[0.15em] text-fg-muted">
+                  source
+                </span>
+                {asset.depicts.map((path) => (
+                  <FileChip key={path} path={path} href={fileHref(path)} />
+                ))}
+              </div>
+            )}
           </figure>
         ))}
       </div>
