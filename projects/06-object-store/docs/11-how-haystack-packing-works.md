@@ -365,6 +365,7 @@ needles should locate **content**, not reinvent the namespace.
 | Haystack / SeaweedFS notes | [`RESEARCH.md`](../RESEARCH.md) §Part 1 (inode cost), §Part 6 (SeaweedFS) |
 | Cold tier / hash-then-compress | [`src/lifecycle.rs`](../src/lifecycle.rs) |
 | Env knobs | [`.env.example`](../.env.example) (`BLOB_LAYOUT`) |
+| **Bench — small objects** | [`bench/haystack_small/`](../bench/haystack_small/README.md) (`make bench-haystack`) |
 
 **Scaffold status:** [`Store`](../src/store/mod.rs) opens both backends and routes
 via a locator map; write policy is [`BlobLayoutKind`](../src/store/mod.rs).

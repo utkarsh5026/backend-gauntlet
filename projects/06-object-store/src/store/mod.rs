@@ -49,7 +49,8 @@ pub enum BlobLayoutKind {
     /// Every commit goes to [`FileCas`].
     #[default]
     FileCas,
-    /// Pack into Haystack when the framed needle fits [`haystack::MAX_VOLUME_SIZE`];
+    /// Pack into Haystack when the framed needle fits the volume soft-cap
+    /// ([`haystack::DEFAULT_MAX_VOLUME_SIZE`] or `HAYSTACK_MAX_VOLUME_SIZE`);
     /// otherwise fall back to FileCas.
     Haystack,
     /// Same packing rule as [`Self::Haystack`] (explicit hybrid name for ops).
@@ -186,11 +187,16 @@ impl Store {
     }
 
     fn choose_location(&self, payload_len: u64) -> BlobLocation {
-        if self.policy.packs_small() && Haystack::fits_in_volume(payload_len) {
+        if self.policy.packs_small() && self.haystack.fits_in_volume(payload_len) {
             BlobLocation::Haystack
         } else {
             BlobLocation::FileCas
         }
+    }
+
+    /// Haystack volume soft-cap in effect for this store (`HAYSTACK_MAX_VOLUME_SIZE`).
+    pub fn haystack_max_volume_size(&self) -> u64 {
+        self.haystack.max_volume_size()
     }
 
     /// Return the directory where V2 stages in-flight writes.
@@ -569,8 +575,8 @@ mod tests {
         assert_eq!(store.location(&small_digest), Some(BlobLocation::Haystack));
         assert!(!store.blob_path(&small_digest).exists());
 
-        // Framed needle must exceed MAX_VOLUME_SIZE so choose_location falls back.
-        let big_len = (haystack::MAX_VOLUME_SIZE as usize) + 1;
+        // Framed needle must exceed this store's volume soft-cap so choose_location falls back.
+        let big_len = (store.haystack_max_volume_size() as usize) + 1;
         let big = vec![0xABu8; big_len];
         let big_digest = block_on(store.commit_bytes(&big)).unwrap();
         assert_eq!(store.location(&big_digest), Some(BlobLocation::FileCas));

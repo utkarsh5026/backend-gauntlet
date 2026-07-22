@@ -44,9 +44,13 @@ use crate::durable::atomic_write_sibling_sync;
 use crate::error::AppError;
 use crate::object::Digest;
 
-/// Soft volume capacity: needles that fit are packed; larger payloads fall back
-/// to [`crate::store::FileCas`] under hybrid / haystack placement policy.
-pub const MAX_VOLUME_SIZE: u64 = 1024 * 1024;
+/// Soft volume capacity default when `HAYSTACK_MAX_VOLUME_SIZE` is unset (1 MiB).
+///
+/// Override at boot with a raw byte count, e.g. `HAYSTACK_MAX_VOLUME_SIZE=1073741824`.
+/// Needles that do not fit fall back to [`crate::store::FileCas`] under hybrid /
+/// haystack policy.
+pub const DEFAULT_MAX_VOLUME_SIZE: u64 = 1024 * 1024;
+
 const VOLUME_EXT: &str = "dat";
 const INDEX_FILE: &str = "needles.json";
 const INDEX_VERSION: u32 = 1;
@@ -174,12 +178,18 @@ impl ActiveFile {
 #[derive(Debug)]
 pub struct Haystack {
     volumes_dir: PathBuf,
+    /// Soft cap on one `*.dat` file; captured from env at [`Self::open`].
+    max_volume_size: u64,
     index: parking_lot::Mutex<HashMap<Digest, NeedleRecord>>,
     active_file: tokio::sync::Mutex<Option<ActiveFile>>,
 }
 
 impl Haystack {
     /// Create `volumes/` under `root` and load the durable needle index.
+    ///
+    /// Volume soft-cap is `HAYSTACK_MAX_VOLUME_SIZE` (raw bytes), or
+    /// [`DEFAULT_MAX_VOLUME_SIZE`] if unset/invalid — that env key is the only
+    /// knob; it is read once here and stored on the instance.
     ///
     /// Prefer `volumes/needles.json`. If it is missing or corrupt, scan every
     /// `*.dat` volume (recovery), truncate torn tails, then write a fresh index.
@@ -189,11 +199,18 @@ impl Haystack {
     /// Returns an I/O error if the directory cannot be created, the index cannot
     /// be written, or a recovery volume scan / truncate fails.
     pub fn open(root: impl AsRef<Path>) -> std::io::Result<Self> {
+        let max_volume_size = std::env::var("HAYSTACK_MAX_VOLUME_SIZE")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_VOLUME_SIZE)
+            .max(NEEDLE_HEADER_LEN + 1);
         let volumes_dir = root.as_ref().join("volumes");
         std::fs::create_dir_all(&volumes_dir)?;
 
         let haystack = Self {
             volumes_dir,
+            max_volume_size,
             index: parking_lot::Mutex::new(HashMap::new()),
             active_file: tokio::sync::Mutex::new(None),
         };
@@ -216,6 +233,11 @@ impl Haystack {
             }
         }
         Ok(haystack)
+    }
+
+    /// Soft cap for one volume file (bytes), including needle headers.
+    pub fn max_volume_size(&self) -> u64 {
+        self.max_volume_size
     }
 
     fn volume_path(&self, volume_id: VolumeId) -> PathBuf {
@@ -296,8 +318,8 @@ impl Haystack {
     }
 
     /// Whether a payload of `payload_len` bytes fits in one volume (header included).
-    pub fn fits_in_volume(payload_len: u64) -> bool {
-        Self::needle_len(payload_len) <= MAX_VOLUME_SIZE
+    pub fn fits_in_volume(&self, payload_len: u64) -> bool {
+        Self::needle_len(payload_len) <= self.max_volume_size
     }
 
     /// Digests that are currently servable (not deleted, not quarantined).
@@ -317,7 +339,7 @@ impl Haystack {
         size_to_append: u64,
     ) -> Result<(), AppError> {
         if let Some(file) = active.as_ref() {
-            if file.current_offset + size_to_append <= MAX_VOLUME_SIZE {
+            if file.current_offset + size_to_append <= self.max_volume_size {
                 return Ok(());
             }
         }
@@ -333,7 +355,7 @@ impl Haystack {
             next_id = next_id.max(volume_id.next());
             let metadata = entry.metadata().await?;
             if metadata.is_file()
-                && metadata.len() + size_to_append <= MAX_VOLUME_SIZE
+                && metadata.len() + size_to_append <= self.max_volume_size
                 && candidate.is_none()
             {
                 candidate = Some((volume_id, metadata.len()));
@@ -1123,8 +1145,9 @@ mod tests {
     async fn commit_rolls_to_next_volume_when_full() {
         let root = TempDir::new().unwrap();
         let hs = Haystack::open(root.path()).unwrap();
+        let max = hs.max_volume_size();
 
-        let big_len = (MAX_VOLUME_SIZE - NEEDLE_HEADER_LEN) as usize;
+        let big_len = (max - NEEDLE_HEADER_LEN) as usize;
         let big = vec![b'x'; big_len];
         let small = b"y";
         let d_big = digest_of(&big);
