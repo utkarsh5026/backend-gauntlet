@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" role="img" aria-label="How content-defined chunking dedups near-identical files">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#7f8d84"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#5fb8a1"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="640" fill="#0e1311"/>
+
+  <text x="40" y="44" font-family="system-ui, sans-serif" font-size="17" font-weight="700" fill="#d3ddd6">A one-byte edit shouldn’t rewrite a whole 2 GB file</text>
+  <text x="40" y="66" font-family="system-ui, sans-serif" font-size="12" fill="#7f8d84">Content-defined chunking cuts the body at content-chosen boundaries, stores each chunk once by its hash, and records an ordered manifest.</text>
+
+  <!-- band 1: cut -->
+  <rect x="48" y="92" width="140" height="60" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="118" y="118" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700" fill="#d3ddd6" text-anchor="middle">PUT body</text>
+  <text x="118" y="137" font-family="system-ui, sans-serif" font-size="10" fill="#7f8d84" text-anchor="middle">one large object</text>
+
+  <line x1="188" y1="122" x2="234" y2="122" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="236" y="92" width="300" height="60" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="254" y="116" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700" fill="#5fb8a1">FastCDC cutter (Gear hash)</text>
+  <text x="254" y="136" font-family="system-ui, sans-serif" font-size="10" fill="#7f8d84">boundary picked by the bytes · avg 64 · min 8 · max 256 KiB</text>
+
+  <line x1="536" y1="122" x2="582" y2="122" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- chunks out of the cutter (content-defined widths) -->
+  <text x="586" y="100" font-family="system-ui, sans-serif" font-size="10" fill="#7f8d84">chunks (content-defined sizes)</text>
+  <rect x="586" y="106" width="64" height="40" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="618" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#d3ddd6" text-anchor="middle">c1</text>
+  <rect x="654" y="106" width="98" height="40" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="703" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#d3ddd6" text-anchor="middle">c2</text>
+  <rect x="756" y="106" width="72" height="40" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="792" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#d3ddd6" text-anchor="middle">c3</text>
+  <rect x="832" y="106" width="80" height="40" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="872" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#d3ddd6" text-anchor="middle">c4</text>
+
+  <!-- band 2: store once + manifest -->
+  <rect x="48" y="176" width="430" height="120" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="203" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700" fill="#d3ddd6">every chunk stored once, by its hash</text>
+  <text x="68" y="227" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">SHA-256(chunk) → objects/&lt;d&gt;</text>
+  <text x="68" y="252" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">identical chunk bytes collapse to one blob —</text>
+  <text x="68" y="268" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">the same content-address free dedup V1 already gives whole objects.</text>
+  <text x="68" y="288" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">Chunks are made durable <tspan font-style="italic">before</tspan> the manifest that names them.</text>
+
+  <line x1="478" y1="236" x2="524" y2="236" stroke="#7f8d84" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="526" y="176" width="386" height="120" rx="8" fill="#141a17" stroke="#5fb8a1" stroke-width="1.5"/>
+  <text x="546" y="203" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700" fill="#5fb8a1">the manifest — the recipe</text>
+  <text x="546" y="227" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6">[ (d1,s1) (d2,s2) (d3,s3) (d4,s4) ]</text>
+  <text x="546" y="249" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">committed as its own CAS blob; the index points</text>
+  <text x="546" y="265" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#d3ddd6">(bucket,key) → manifest digest <tspan font-family="system-ui, sans-serif" fill="#7f8d84">(BlobKind::Manifest)</tspan></text>
+  <text x="546" y="287" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">the client still sees ONE object — size, ETag, Range are logical.</text>
+
+  <!-- band 3: the payoff -->
+  <rect x="48" y="316" width="864" height="300" rx="8" fill="#141a17" stroke="#26302b" stroke-width="1.5"/>
+  <text x="68" y="343" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#d3ddd6">the payoff — a near-duplicate upload shares almost everything</text>
+
+  <!-- v1 row -->
+  <text x="68" y="384" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700" fill="#d3ddd6">v1</text>
+  <rect x="150" y="366" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="225" y="388" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">A</text>
+  <rect x="304" y="366" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="379" y="388" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">B</text>
+  <rect x="458" y="366" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="533" y="388" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">C</text>
+  <rect x="612" y="366" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="687" y="388" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">D</text>
+
+  <!-- v2 row -->
+  <text x="68" y="432" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700" fill="#d3ddd6">v2</text>
+  <text x="68" y="449" font-family="system-ui, sans-serif" font-size="9.5" fill="#7f8d84">small edit</text>
+  <rect x="150" y="414" width="150" height="34" rx="5" fill="#0e1311" stroke="#ceac63" stroke-width="1.5"/>
+  <text x="225" y="436" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#ceac63" text-anchor="middle">A′ (new)</text>
+  <rect x="304" y="414" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="379" y="436" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">B</text>
+  <rect x="458" y="414" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="533" y="436" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">C</text>
+  <rect x="612" y="414" width="150" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="687" y="436" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#d3ddd6" text-anchor="middle">D</text>
+
+  <text x="784" y="388" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">unchanged</text>
+  <text x="784" y="402" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">chunks keep</text>
+  <text x="784" y="416" font-family="system-ui, sans-serif" font-size="10.5" fill="#7f8d84">their digests</text>
+  <text x="784" y="440" font-family="system-ui, sans-serif" font-size="10.5" fill="#5fb8a1">↑ shared</text>
+
+  <!-- on disk -->
+  <text x="68" y="506" font-family="system-ui, sans-serif" font-size="11.5" font-weight="700" fill="#d3ddd6">on disk, both versions together:</text>
+  <rect x="150" y="522" width="92" height="34" rx="5" fill="#0e1311" stroke="#ceac63" stroke-width="1.5"/>
+  <text x="196" y="544" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#ceac63" text-anchor="middle">A</text>
+  <rect x="250" y="522" width="92" height="34" rx="5" fill="#0e1311" stroke="#ceac63" stroke-width="1.5"/>
+  <text x="296" y="544" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#ceac63" text-anchor="middle">A′</text>
+  <rect x="350" y="522" width="92" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="396" y="544" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#5fb8a1" text-anchor="middle">B</text>
+  <rect x="450" y="522" width="92" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="496" y="544" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#5fb8a1" text-anchor="middle">C</text>
+  <rect x="550" y="522" width="92" height="34" rx="5" fill="#0e1311" stroke="#3e7f70" stroke-width="1.5"/>
+  <text x="596" y="544" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#5fb8a1" text-anchor="middle">D</text>
+  <text x="662" y="544" font-family="system-ui, sans-serif" font-size="11" fill="#d3ddd6">5 chunk blobs for two files, not 8</text>
+
+  <text x="68" y="590" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">The edit moves one boundary region; every chunk after it keeps its digest. Whole-object CAS would store two full copies —</text>
+  <text x="68" y="607" font-family="system-ui, sans-serif" font-size="11" fill="#7f8d84">it only ever shares <tspan font-style="italic">identical</tspan> files, so a single changed byte costs a brand-new blob.</text>
+</svg>

@@ -18,6 +18,7 @@ const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
 const DEFAULT_LIFECYCLE_SCAN_INTERVAL_SECS: u64 = 60;
 const DEFAULT_SCRUB_RESCAN_INTERVAL_SECS: u64 = 300;
+const DEFAULT_HAYSTACK_COMPACTION_INTERVAL_SECS: u64 = 300;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,7 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = common_config::or_default("DATA_DIR", DEFAULT_DATA_DIR);
     let max_object_size: u64 = common_config::parse_or("MAX_OBJECT_SIZE", DEFAULT_MAX_OBJECT_SIZE);
 
-    let state = AppState::open(&data_dir, max_object_size)?
+    let layout = object_store::store::BlobLayoutKind::from_env();
+    let state = AppState::open_with_layout(&data_dir, max_object_size, layout)?
         .with_auth(object_store::auth::AuthConfig::from_env_optional())
         .with_cdc(object_store::cdc::CdcConfig::from_env());
     if state.auth.is_some() {
@@ -55,6 +57,17 @@ async fn main() -> anyhow::Result<()> {
         );
     } else {
         info!("CDC chunk-level dedup disabled — whole-object CAS on PUT");
+    }
+    match state.store.layout_kind() {
+        object_store::store::BlobLayoutKind::FileCas => {
+            info!("blob write policy: file_cas (all commits under objects/)");
+        }
+        object_store::store::BlobLayoutKind::Haystack => {
+            info!("blob write policy: haystack (small → volumes/, oversized → objects/)");
+        }
+        object_store::store::BlobLayoutKind::Hybrid => {
+            info!("blob write policy: hybrid (small → volumes/, oversized → objects/)");
+        }
     }
     info!(%data_dir, max_object_size, "object store opened");
 
@@ -74,6 +87,13 @@ async fn main() -> anyhow::Result<()> {
     ));
     let _scrubber = state.store.clone().spawn_scrubber(scrub_rescan_interval);
     info!(?scrub_rescan_interval, "blob scrubber started");
+
+    let compaction_interval = Duration::from_secs(common_config::parse_or(
+        "HAYSTACK_COMPACTION_INTERVAL_SECS",
+        DEFAULT_HAYSTACK_COMPACTION_INTERVAL_SECS,
+    ));
+    let _compaction = state.store.clone().spawn_compaction(compaction_interval);
+    info!(?compaction_interval, "haystack volume compaction started");
 
     let app = routes::router(state).merge(routes::metrics_router(metrics_handle));
 

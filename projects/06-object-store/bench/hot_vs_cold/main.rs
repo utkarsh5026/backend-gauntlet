@@ -18,6 +18,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use http_body_util::BodyExt;
 use object_store::index_backend::IndexBackend;
 use object_store::lifecycle::{Encoding, Lifecycle, LifecyclePolicy, LifecycleRule};
+use object_store::naming::{Bucket, Key};
 use object_store::object::ObjectRef;
 use object_store::{routes, AppState, DEFAULT_MAX_OBJECT_SIZE};
 use serde::Serialize;
@@ -222,9 +223,11 @@ impl Harness {
     }
 
     async fn encoding_of(&self, bucket: &str, key: &str) -> Encoding {
+        let bucket = Bucket::from_trusted(bucket);
+        let key = Key::from_trusted(key);
         let resolved = self
             .index
-            .resolve(bucket, key, ObjectRef::Latest)
+            .resolve(&bucket, &key, ObjectRef::Latest)
             .await
             .expect("resolve");
         self.lifecycle
@@ -235,9 +238,11 @@ impl Harness {
     }
 
     async fn on_disk_bytes(&self, bucket: &str, key: &str) -> u64 {
+        let bucket = Bucket::from_trusted(bucket);
+        let key = Key::from_trusted(key);
         let resolved = self
             .index
-            .resolve(bucket, key, ObjectRef::Latest)
+            .resolve(&bucket, &key, ObjectRef::Latest)
             .await
             .expect("resolve");
         let physical = self

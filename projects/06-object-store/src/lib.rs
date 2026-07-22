@@ -37,7 +37,7 @@ use index::Index;
 use index_backend::IndexBackend;
 use lifecycle::Lifecycle;
 use multipart::Multipart;
-use store::Store;
+use store::{BlobLayoutKind, Store};
 
 /// S3's single-PUT ceiling (5 GiB). The real enforcement is in the V2 stream
 /// loop; axum's own 2 MB body limit is disabled in the router.
@@ -59,10 +59,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Open the store stack. Index placement:
+    /// Open the store stack with the default physical layout ([`BlobLayoutKind::FileCas`]).
+    ///
+    /// Index placement:
     /// - `INDEX_URL` empty/unset → local [`Index`] under `data_dir`
     /// - `INDEX_URL` set → [`RemoteIndex`](index_backend::RemoteIndex); blobs
-    ///   still live under this process's `data_dir` (`objects/`)
+    ///   still live under this process's `data_dir`
     ///
     /// Auth starts as `None` (open API). Call [`Self::with_auth`] from `main`
     /// after [`AuthConfig::from_env_optional`] so unit/integration tests are not
@@ -71,9 +73,25 @@ impl AppState {
     /// CDC starts as [`CdcConfig::default`] (disabled). Call [`Self::with_cdc`]
     /// from `main` after [`CdcConfig::from_env`] so tests are not gated by a
     /// developer's shell `CDC_ENABLED`.
+    ///
+    /// For Haystack packing, use [`Self::open_with_layout`] with
+    /// [`BlobLayoutKind::from_env`] — default [`Self::open`] stays FileCas so
+    /// tests keep today's one-file-per-digest behaviour.
     pub fn open(data_dir: impl AsRef<Path>, max_object_size: u64) -> anyhow::Result<Self> {
+        Self::open_with_layout(data_dir, max_object_size, BlobLayoutKind::FileCas)
+    }
+
+    /// Open with an explicit write policy (`file_cas`, `haystack`, or `hybrid`).
+    ///
+    /// Both physical backends are always opened; the policy only chooses where
+    /// new commits go. Reads use the rebuilt locator map.
+    pub fn open_with_layout(
+        data_dir: impl AsRef<Path>,
+        max_object_size: u64,
+        layout: BlobLayoutKind,
+    ) -> anyhow::Result<Self> {
         let data_dir = data_dir.as_ref();
-        let store = Store::open(data_dir)?;
+        let store = Store::open_with_layout(data_dir, layout)?;
         let index = Arc::new(Self::open_index(data_dir, store.clone())?);
         let multipart = Multipart::open(data_dir, store.clone(), index.clone())?;
         let lifecycle = Lifecycle::new(index.clone(), store.clone());

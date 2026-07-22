@@ -9,19 +9,24 @@
 //! Entry points, depending on where the bytes are and who owns the temp:
 //!   - [`TempEntry`] — RAII guard that unlinks a staged temp on drop unless
 //!     [`disarm`](TempEntry::disarm)ed after a successful publish.
-//!   - [`publish_temp`] — the temp file already exists (a blob streamed in, or a
-//!     cold blob just compressed). Publish it under `dest`.
-//!   - [`atomic_write`] / [`atomic_write_json`] — bytes are in memory; the caller
-//!     chooses the staging path (e.g. the index's per-bucket `tmp/` so GC can
-//!     see in-flight digests), then this writes + publishes.
-//!   - [`atomic_write_sibling`] — same, but picks a sibling temp under `dest`'s
-//!     parent for you (same directory ⇒ same filesystem).
+//!   - [`publish_temp`] / [`publish_temp_sync`] — the temp file already exists
+//!     (a blob streamed in, or a cold blob just compressed). Publish it under
+//!     `dest`.
+//!   - [`atomic_write`] / [`atomic_write_json`] / [`atomic_write_sync`] — bytes
+//!     are in memory; the caller chooses the staging path (e.g. the index's
+//!     per-bucket `tmp/` so GC can see in-flight digests), then this writes +
+//!     publishes.
+//!   - [`atomic_write_sibling`] / [`atomic_write_sibling_sync`] — same, but
+//!     picks a sibling temp under `dest`'s parent for you (same directory ⇒
+//!     same filesystem). Sync variants exist for boot/recovery paths that are
+//!     not on a tokio runtime (e.g. haystack `needles.json` during `open`).
 //!
 //! **Same-filesystem invariant:** `rename` is only atomic *within* one
 //! filesystem. Callers of [`publish_temp`] / [`atomic_write`] must pass a temp
 //! on the same filesystem as `dest` (the per-bucket `tmp/` dirs already are;
 //! [`atomic_write_sibling`] guarantees it by construction).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -122,6 +127,20 @@ pub async fn publish_temp(temp: &Path, dest: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Sync counterpart of [`publish_temp`] for callers not on a tokio runtime.
+///
+/// # Panics
+///
+/// Panics if `dest` has no parent directory.
+pub fn publish_temp_sync(temp: &Path, dest: &Path) -> Result<(), AppError> {
+    std::fs::File::open(temp)?.sync_all()?;
+    let parent = dest.parent().expect("dest has a parent directory");
+    std::fs::create_dir_all(parent)?;
+    std::fs::rename(temp, dest)?;
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 /// Write `bytes` to an existing staging path `temp`, then durably publish at `dest`.
 ///
 /// The caller chooses `temp` (sibling of `dest`, a per-bucket `tmp/` entry, …)
@@ -143,6 +162,23 @@ pub async fn atomic_write(temp: &Path, dest: &Path, bytes: &[u8]) -> Result<(), 
     publish_temp(temp, dest).await
 }
 
+/// Sync counterpart of [`atomic_write`].
+///
+/// # Panics
+///
+/// Panics if `dest` has no parent directory (via [`publish_temp_sync`]).
+pub fn atomic_write_sync(temp: &Path, dest: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    if let Some(parent) = temp.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    {
+        let mut file = std::fs::File::create(temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    publish_temp_sync(temp, dest)
+}
+
 /// Atomically write `bytes` to `dest` via a sibling temp.
 ///
 /// Stages at `<dest>.tmp-<nonce>` (same directory ⇒ same filesystem), guarded by
@@ -156,6 +192,24 @@ pub async fn atomic_write_sibling(dest: &Path, bytes: &[u8]) -> Result<(), AppEr
     let mut temp = TempEntry::unique_in(parent, &format!("{file_name}.tmp"));
 
     atomic_write(temp.path(), dest, bytes).await?;
+    temp.disarm();
+    Ok(())
+}
+
+/// Sync counterpart of [`atomic_write_sibling`].
+///
+/// # Panics
+///
+/// Panics if `dest` has no parent directory / file name.
+pub fn atomic_write_sibling_sync(dest: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let parent = dest.parent().expect("dest has a parent directory");
+    let file_name = dest
+        .file_name()
+        .expect("dest has a file name")
+        .to_string_lossy();
+    let mut temp = TempEntry::unique_in(parent, &format!("{file_name}.tmp"));
+
+    atomic_write_sync(temp.path(), dest, bytes)?;
     temp.disarm();
     Ok(())
 }
@@ -273,6 +327,27 @@ mod tests {
         assert!(
             leftovers.is_empty(),
             "no sibling temps should remain after a successful publish: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn atomic_write_sibling_sync_publishes_without_leaving_tmp_files() {
+        let root = fresh_root();
+        let dest = root.path().join("meta").join("needles.json");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+
+        atomic_write_sibling_sync(&dest, b"sync-v1").expect("sibling sync write");
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"sync-v1");
+
+        let leftovers: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n.to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no sibling temps should remain after a successful sync publish: {leftovers:?}"
         );
     }
 

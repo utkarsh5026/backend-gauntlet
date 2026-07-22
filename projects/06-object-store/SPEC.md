@@ -53,7 +53,7 @@ blocked-on: ~            # free text, or ~ for none
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. The content-addressed blob store — *the durable, dedup'd CAS, from scratch*
-In `src/store.rs`, build the layer that turns bytes into a durably-stored,
+In `src/store/mod.rs`, build the layer that turns bytes into a durably-stored,
 content-named blob. This is the foundation everything else writes through.
 - **Name a blob by its content, not its key.** The blob's filename is the
   SHA-256 of its bytes (hex). Two different keys with identical content resolve
@@ -338,7 +338,13 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   result and its assumptions in the bench doc *(→ RESEARCH.md §Part 3)*
 - [~] Small-object packing (Haystack "needles"): thousands of tiny objects
   occupy a handful of append-only volume files instead of one file each, and
-  GET still streams each one correctly *(→ RESEARCH.md §Part 6)*
+  GET still streams each one correctly
+  *(→ RESEARCH.md §Part 6; teach-yourself:
+  [`docs/11-how-haystack-packing-works.md`](docs/11-how-haystack-packing-works.md);
+  scaffold: `src/store/mod.rs` (`BlobLayout` / `BlobLayoutKind`) +
+  `src/store/{file_cas,haystack}.rs`,
+  default `BlobLayoutKind::FileCas`, `BLOB_LAYOUT=haystack` selects the
+  packing backend whose commit/open are still `todo!()`)*
 - [✔] Transparent compression: blobs are Zstd-compressed at rest with dedup
   intact, and the design doc states the hash-then-compress vs compress-then-hash
   choice and why *(→ RESEARCH.md §Part 6; proof: cold-tier zstd in
@@ -373,7 +379,7 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
 - [✔] Continuous scrubbing: a background auditor re-hashes stored blobs; a
   deliberately flipped byte on disk is detected, quarantined, and surfaced as a
   metric before any reader is served the corrupt bytes *(→ RESEARCH.md §Part 4;
-  proof: `src/store.rs` `Scrubber` + quarantine gate on reads; teach-yourself:
+  proof: `src/store/mod.rs` `Scrubber` + quarantine gate on reads; teach-yourself:
   [`docs/04-how-continuous-scrubbing-works.md`](docs/04-how-continuous-scrubbing-works.md))*
 - [~] A crash-injection harness: property tests kill the commit sequence at
   every step boundary (not one hand-picked `kill -9`) and assert every reachable

@@ -330,6 +330,32 @@ def bench_tier() -> None:
     runner.ok("see bench/results/ and docs/06-benchmarks.md")
 
 
+@runner.task(
+    "bench-haystack",
+    "📊",
+    "Bench",
+    "FileCas vs Haystack small-object microbench (release; writes bench/results/)",
+)
+def bench_haystack() -> None:
+    runner.require("cargo", "Install Rust: https://rustup.rs")
+    runner.step("📊", "haystack_small (release + bench-tools)…")
+    runner.run(
+        [
+            "cargo",
+            "run",
+            "--release",
+            "-p",
+            runner.crate,
+            "--features",
+            "bench-tools",
+            "--bin",
+            "haystack_small",
+        ],
+        cwd=PROJECT_DIR,
+    )
+    runner.ok("see bench/results/ and docs/06-benchmarks.md")
+
+
 @runner.task("smoke", "🔥", "Run", "Hit /healthz on the backend (server must be running)")
 def smoke() -> None:
     runner.require("curl", "Install curl to use this target.")

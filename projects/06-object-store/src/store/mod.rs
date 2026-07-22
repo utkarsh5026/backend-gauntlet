@@ -1,17 +1,27 @@
 //! V1 — The content-addressed blob store (CAS): the durable, dedup'd foundation.
 //!
 //! This is the layer you'd normally get from S3/MinIO. Every distinct piece of
-//! content lives exactly once under `objects/`, named by the SHA-256 of its
-//! bytes. V1 owns only "given finished bytes and their digest, store them safely
-//! and idempotently" — the `(bucket,key) → digest` mapping is V3's job.
+//! content lives exactly once, named by the SHA-256 of its bytes. V1 owns only
+//! "given finished bytes and their digest, store them safely and idempotently"
+//! — the `(bucket,key) → digest` mapping is V3's job.
 //!
-//! The trap is the durable write. You cannot write straight to `objects/<hash>`:
-//! a crash mid-write leaves a file with the right name but truncated contents,
-//! and every future reader trusts it. The fix is the temp→fsync→rename→fsync-dir
-//! dance — `rename` within a filesystem is atomic, so the final name only ever
-//! appears once the bytes are fully there.
+//! **Physical placement** is owned here, not by the S3 index. Both backends are
+//! always opened under the data dir:
+//! - [`file_cas::FileCas`] — one file under `objects/`
+//! - [`haystack::Haystack`] — needles in `volumes/`
+//!
+//! A process-local [`BlobLocation`] map records `digest → FileCas | Haystack` so
+//! GET/contains/remove never guess. [`BlobLayoutKind`] only chooses the **write
+//! policy** (always FileCas, or pack-when-small). See
+//! [`docs/11-how-haystack-packing-works.md`](../../docs/11-how-haystack-packing-works.md).
 
-use std::collections::HashSet;
+pub mod file_cas;
+pub mod haystack;
+
+pub use file_cas::FileCas;
+pub use haystack::{Haystack, NeedleLocator, VolumeId};
+
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,35 +33,101 @@ use tracing::{error, info, warn};
 use crate::error::AppError;
 use crate::object::Digest;
 
-/// Store committed blobs and in-flight writes in separate on-disk trees.
+/// Where a digest's bytes live on disk. The S3 index never sees this — only
+/// [`Store`]'s locator map does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobLocation {
+    /// Standalone file under `objects/ab/cd/<digest>`.
+    FileCas,
+    /// Needle inside a Haystack volume (`volumes/<uuid>.dat`).
+    Haystack,
+}
+
+/// Write-placement policy. Default is [`Self::FileCas`] (tests / classic CAS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlobLayoutKind {
+    /// Every commit goes to [`FileCas`].
+    #[default]
+    FileCas,
+    /// Pack into Haystack when the framed needle fits the volume soft-cap
+    /// ([`haystack::DEFAULT_MAX_VOLUME_SIZE`] or `HAYSTACK_MAX_VOLUME_SIZE`);
+    /// otherwise fall back to FileCas.
+    Haystack,
+    /// Same packing rule as [`Self::Haystack`] (explicit hybrid name for ops).
+    Hybrid,
+}
+
+impl BlobLayoutKind {
+    /// Parse `BLOB_LAYOUT` once at boot. Missing / unknown → [`Self::FileCas`].
+    ///
+    /// | Value | Kind |
+    /// | --- | --- |
+    /// | unset, `file_cas`, `files`, `cas` | [`Self::FileCas`] |
+    /// | `haystack`, `needles`, `volumes` | [`Self::Haystack`] |
+    /// | `hybrid` | [`Self::Hybrid`] |
+    pub fn from_env() -> Self {
+        match std::env::var("BLOB_LAYOUT") {
+            Ok(v) => match v.to_ascii_lowercase().as_str() {
+                "haystack" | "needles" | "volumes" => Self::Haystack,
+                "hybrid" => Self::Hybrid,
+                "file_cas" | "files" | "cas" | "" => Self::FileCas,
+                other => {
+                    tracing::warn!(
+                        blob_layout = %other,
+                        "unknown BLOB_LAYOUT; defaulting to file_cas"
+                    );
+                    Self::FileCas
+                }
+            },
+            Err(_) => Self::FileCas,
+        }
+    }
+
+    /// Stable name for logs / metrics labels.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FileCas => "file_cas",
+            Self::Haystack => "haystack",
+            Self::Hybrid => "hybrid",
+        }
+    }
+
+    /// Whether this policy may pack small objects into Haystack volumes.
+    fn packs_small(self) -> bool {
+        matches!(self, Self::Haystack | Self::Hybrid)
+    }
+}
+
+/// Store committed blobs and in-flight writes.
 ///
-/// Owns the `objects/` tree (committed, content-named
-/// blobs) and the `tmp/` tree (in-flight writes, before they're atomically
-/// renamed into place). A background [`Scrubber`] re-hashes committed blobs
-/// and refuses to open any that fail the content-address check.
+/// Owns both physical backends, a unified [`BlobLocation`] map, the `tmp/` tree,
+/// and a background [`Scrubber`]. The S3 index only stores digests; this facade
+/// answers where those digests live.
 pub struct Store {
-    objects: PathBuf,
+    file_cas: FileCas,
+    haystack: Haystack,
+    /// `digest →` which backend holds the bytes. Rebuilt at open; updated on
+    /// commit/remove. Source of truth for contains / open / remove routing.
+    locations: parking_lot::Mutex<HashMap<Digest, BlobLocation>>,
+    policy: BlobLayoutKind,
     tmp: PathBuf,
     scrubber: Scrubber,
 }
 
 impl Store {
-    /// Open the blob store under `root`, creating its directory trees if needed.
-    ///
-    /// Returns the store behind an [`Arc`] because request handlers and the
-    /// index share the same filesystem layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error if either the `objects/` or `tmp/` directory cannot
-    /// be created.
+    /// Open with the default write policy ([`BlobLayoutKind::FileCas`]).
     pub fn open(root: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
+        Self::open_with_layout(root, BlobLayoutKind::FileCas)
+    }
+
+    /// Open both backends under `root` and rebuild the locator map from disk.
+    pub fn open_with_layout(
+        root: impl AsRef<Path>,
+        policy: BlobLayoutKind,
+    ) -> std::io::Result<Arc<Self>> {
         let root = root.as_ref();
-        let objects = {
-            let objects = root.join("objects");
-            std::fs::create_dir_all(&objects)?;
-            objects
-        };
+        let file_cas = FileCas::open(root)?;
+        let haystack = Haystack::open(root)?;
         let tmp = {
             let tmp = root.join("tmp");
             std::fs::create_dir_all(&tmp)?;
@@ -62,49 +138,102 @@ impl Store {
             std::fs::create_dir_all(&quarantine)?;
             quarantine
         };
-        let (blob_count, total_bytes) = Self::scan_occupancy(&objects)?;
-        metrics::gauge!(crate::metrics::BLOB_COUNT).set(blob_count as f64);
-        metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).set(total_bytes as f64);
-        Ok(Arc::new(Self {
-            objects,
+
+        let store = Arc::new(Self {
+            file_cas,
+            haystack,
+            locations: parking_lot::Mutex::new(HashMap::new()),
+            policy,
             tmp,
             scrubber: Scrubber::new(quarantine),
-        }))
+        });
+        store.rebuild_locations()?;
+
+        let (_fc_count, fc_bytes) = store.file_cas.scan_occupancy()?;
+        let (_hs_count, hs_bytes) = store.haystack.scan_occupancy()?;
+        metrics::gauge!(crate::metrics::BLOB_COUNT).set(store.locations.lock().len() as f64);
+        metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).set((fc_bytes + hs_bytes) as f64);
+
+        store.spawn_haystack_checkpointer();
+        Ok(store)
     }
 
-    fn scan_occupancy(objects: &Path) -> std::io::Result<(u64, u64)> {
-        let mut blob_count = 0u64;
-        let mut total_bytes = 0u64;
-        let mut stack = vec![objects.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let metadata = entry.metadata()?;
-                if metadata.is_dir() {
-                    stack.push(entry.path());
-                } else if metadata.is_file() {
-                    blob_count += 1;
-                    total_bytes += metadata.len();
+    fn spawn_haystack_checkpointer(self: &Arc<Self>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let store = Arc::clone(self);
+        handle.spawn(async move {
+            let mut ticker =
+                tokio::time::interval(crate::store::haystack::INDEX_CHECKPOINT_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                if !store.haystack.is_index_dirty() {
+                    continue;
+                }
+                if let Err(err) = store.haystack.checkpoint() {
+                    tracing::warn!(error = %err, "haystack index checkpoint failed");
                 }
             }
+        });
+    }
+
+    /// Rebuild `digest → BlobLocation` from FileCas files + Haystack needle map.
+    ///
+    /// Boot / reopen only. Do **not** call after compaction — a full-map replace
+    /// races with [`Self::commit_temp`] inserts. Use [`Self::compact_haystack`]
+    /// which patches dropped digests instead.
+    fn rebuild_locations(&self) -> std::io::Result<()> {
+        let mut map = HashMap::new();
+        for digest in self.file_cas.list_digests()? {
+            map.insert(digest, BlobLocation::FileCas);
         }
-        Ok((blob_count, total_bytes))
+        for digest in self.haystack.indexed_digests() {
+            if let Some(prev) = map.insert(digest.clone(), BlobLocation::Haystack) {
+                tracing::warn!(
+                    digest = %digest.as_str(),
+                    ?prev,
+                    "digest present in both FileCas and Haystack; preferring Haystack"
+                );
+            }
+        }
+        *self.locations.lock() = map;
+        Ok(())
+    }
+
+    /// Write policy selected at open (`file_cas` / `haystack` / `hybrid`).
+    pub fn layout_kind(&self) -> BlobLayoutKind {
+        self.policy
+    }
+
+    /// Where `digest` currently lives, if committed.
+    pub fn location(&self, digest: &Digest) -> Option<BlobLocation> {
+        self.locations.lock().get(digest).copied()
+    }
+
+    fn choose_location(&self, payload_len: u64) -> BlobLocation {
+        if self.policy.packs_small() && self.haystack.fits_in_volume(payload_len) {
+            BlobLocation::Haystack
+        } else {
+            BlobLocation::FileCas
+        }
+    }
+
+    /// Haystack volume soft-cap in effect for this store (`HAYSTACK_MAX_VOLUME_SIZE`).
+    pub fn haystack_max_volume_size(&self) -> u64 {
+        self.haystack.max_volume_size()
     }
 
     /// Return the directory where V2 stages in-flight writes.
-    ///
-    /// A temp file here
-    /// is renamed onto its final `blob_path` only once fully written + fsync'd.
-    /// Pair with [`TempEntry::unique_in`](crate::durable::TempEntry::unique_in)
-    /// to stage a guarded path in this tree.
     pub fn tmp_dir(&self) -> &Path {
         &self.tmp
     }
 
-    /// Map a digest to its sharded on-disk blob path.
+    /// Map a digest to its sharded FileCas on-disk path (`objects/ab/cd/…`).
     ///
-    /// Paths are fanned out by the leading hash bytes
-    /// (`objects/ab/cd/abcd…`) so no single directory holds millions of entries.
+    /// Prefer [`Self::location`] + open APIs for reads; this is for lifecycle /
+    /// tooling that still reason about the FileCas tree.
     ///
     /// # Panics
     ///
@@ -112,62 +241,20 @@ impl Store {
     /// offsets are not UTF-8 character boundaries. Valid hex digests satisfy
     /// both requirements.
     pub fn blob_path(&self, digest: &Digest) -> PathBuf {
-        self.objects
-            .join(&digest.as_str()[0..2])
-            .join(&digest.as_str()[2..4])
-            .join(digest.as_str())
+        self.file_cas.blob_path(digest)
     }
 
-    /// Recover a digest from a path in the sharded blob layout.
-    ///
-    /// This is the inverse of [`Self::blob_path`] for a path under
-    /// `objects/` when it matches the sharded layout (`ab/cd/<64-hex>`).
-    /// Returns `None` for paths outside the blob tree or with the wrong shape.
+    /// Recover a digest from a path in the sharded FileCas layout.
     pub fn digest_from_path(&self, path: &Path) -> Option<Digest> {
-        let rel = path.strip_prefix(&self.objects).ok()?;
-        let parts: Vec<&str> = rel
-            .components()
-            .map(|c| c.as_os_str().to_str())
-            .collect::<Option<_>>()?;
-
-        let [shard_a, shard_b, name] = parts.as_slice() else {
-            return None;
-        };
-        if shard_a.len() != 2 || shard_b.len() != 2 || name.len() != 64 {
-            return None;
-        }
-        if !name.chars().all(|c| c.is_ascii_hexdigit()) {
-            return None;
-        }
-        Some(Digest(name.to_string()))
+        self.file_cas.digest_from_path(path)
     }
 
-    /// Report whether a committed blob exists for the digest.
-    ///
-    /// This is the dedup check —
-    /// if it does, identical bytes are already stored and we skip the write.
-    /// Filesystem lookup errors are treated as “not found”.
+    /// Report whether a committed blob exists for the digest (locator map).
     pub async fn contains(&self, digest: &Digest) -> bool {
-        tokio::fs::try_exists(self.blob_path(digest))
-            .await
-            .unwrap_or(false)
+        self.locations.lock().contains_key(digest)
     }
 
-    /// Commit a fully written temporary file durably and atomically.
-    ///
-    /// This is the heart of V1: the file is synced, renamed to the
-    /// content-addressed path, and followed by a directory sync. If the digest
-    /// already exists, the duplicate temporary file is removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AppError`] if the temporary file cannot be removed or
-    /// synced, the destination tree cannot be created, the rename fails, or
-    /// the destination directory cannot be synced.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the path produced by [`Self::blob_path`] has no parent.
+    /// Commit a fully written temporary file and record its [`BlobLocation`].
     pub async fn commit_temp(&self, temp: &Path, digest: &Digest) -> Result<(), AppError> {
         if self.contains(digest).await {
             tokio::fs::remove_file(temp).await?;
@@ -175,25 +262,19 @@ impl Store {
             return Ok(());
         }
         let size = tokio::fs::metadata(temp).await?.len();
-        let blob_path = self.blob_path(digest);
-        crate::durable::publish_temp(temp, &blob_path).await?;
+        let location = self.choose_location(size);
+        match location {
+            BlobLocation::FileCas => self.file_cas.commit_temp(temp, digest).await?,
+            BlobLocation::Haystack => self.haystack.commit_temp(temp, digest).await?,
+        }
+        self.locations.lock().insert(digest.clone(), location);
         metrics::gauge!(crate::metrics::BLOB_COUNT).increment(1.0);
         metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).increment(size as f64);
-        // Wake an idle scrubber that parked because `objects/` was empty.
         self.scrubber.notify.notify_one();
         Ok(())
     }
 
-    /// Stage in-memory `bytes` under `tmp/` and [`commit_temp`] them at their
-    /// SHA-256 content address.
-    ///
-    /// Convenience for callers that already hold the full blob (CDC chunks,
-    /// manifest JSON) rather than streaming into a temp file themselves.
-    /// Dedup, metrics, and scrubber wake all go through [`Self::commit_temp`].
-    ///
-    /// # Errors
-    ///
-    /// Propagates I/O errors staging the temp file or from [`Self::commit_temp`].
+    /// Stage in-memory `bytes` under `tmp/` and [`commit_temp`] them.
     pub async fn commit_bytes(&self, bytes: &[u8]) -> Result<Digest, AppError> {
         let digest = Digest(hex::encode(Sha256::digest(bytes)));
         let mut temp = crate::durable::TempEntry::unique_in(self.tmp_dir(), "bytes");
@@ -203,25 +284,65 @@ impl Store {
         Ok(digest)
     }
 
-    /// Open a committed blob for asynchronous reading.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::NoSuchKey`] when the digest is not committed, an
-    /// integrity error when the scrubber has quarantined the digest, or an
-    /// I/O-backed [`AppError`] when checking or opening the file fails.
-    pub async fn open_blob(&self, digest: &Digest) -> Result<tokio::fs::File, AppError> {
+    /// Open a committed blob for asynchronous reading (capped to blob length).
+    pub async fn open_blob(
+        &self,
+        digest: &Digest,
+    ) -> Result<tokio::io::Take<tokio::fs::File>, AppError> {
         if self.scrubber.is_quarantined(digest) {
             return Err(AppError::Other(anyhow::anyhow!(
                 "blob failed integrity check"
             )));
         }
-        let path = self.blob_path(digest);
-        if !tokio::fs::try_exists(&path).await? {
-            return Err(AppError::NoSuchKey);
+        let location = self.location(digest).ok_or(AppError::NoSuchKey)?;
+        match location {
+            BlobLocation::FileCas => {
+                let file = self.file_cas.open_blob(digest).await?;
+                let len = file.metadata().await?.len();
+                Ok(file.take(len))
+            }
+            BlobLocation::Haystack => self.haystack.open_blob(digest).await,
         }
+    }
 
-        Ok(tokio::fs::File::open(path).await?)
+    /// Run one Haystack compaction pass and patch the routing map.
+    ///
+    /// Live digests stay [`BlobLocation::Haystack`] (only needle offsets change).
+    /// Digests dropped from the needle index are removed from `locations` —
+    /// never a full-map rebuild, which can clobber a concurrent
+    /// [`Self::commit_temp`] insert.
+    ///
+    /// Locations are patched *after* the haystack index lock is released: Store
+    /// `remove` takes `locations` then `index`, so holding both here would
+    /// deadlock. A brief "Haystack in map, gone from index" window is safe
+    /// (open fails cleanly); wiping an unrelated insert is not.
+    pub async fn compact_haystack(&self) -> Result<Vec<Digest>, AppError> {
+        let dropped = self.haystack.compaction().await?;
+        if !dropped.is_empty() {
+            let mut locations = self.locations.lock();
+            for digest in &dropped {
+                locations.remove(digest);
+            }
+        }
+        Ok(dropped)
+    }
+
+    /// Spawn a background task that runs Haystack volume compaction on a timer.
+    ///
+    /// Each tick calls [`Self::compact_haystack`] (no-op when nothing is dirty).
+    /// Interval is owned by the caller (see `HAYSTACK_COMPACTION_INTERVAL_SECS` in
+    /// `main`).
+    pub fn spawn_compaction(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                if let Err(err) = self.compact_haystack().await {
+                    warn!(error = %err, "haystack compaction pass failed");
+                }
+            }
+        })
     }
 
     /// Spawn the continuous scrubber.
@@ -262,13 +383,24 @@ impl Store {
         }
     }
 
-    /// One full walk of `objects/`: re-hash every committed blob and quarantine
-    /// any whose bytes no longer match their content address.
+    /// One full integrity pass over committed blobs; quarantine mismatches.
+    ///
+    /// Currently scrubs FileCas objects (`rehash == path`). Haystack needle
+    /// scrubbing is still a lab `todo!()` on [`Haystack::scrub_once`].
     ///
     /// Returns the number of blobs examined (verified + corrupted).
     async fn scrub_once(&self) -> Result<u64, AppError> {
         let started = Instant::now();
-        let mut stack = vec![self.objects.clone()];
+        let examined = self.scrub_file_cas().await?;
+        metrics::counter!(crate::metrics::SCRUB_PASSES_TOTAL).increment(1);
+        metrics::histogram!(crate::metrics::SCRUB_PASS_DURATION)
+            .record(started.elapsed().as_secs_f64());
+        Ok(examined)
+    }
+
+    async fn scrub_file_cas(&self) -> Result<u64, AppError> {
+        let objects = self.file_cas.objects_root().to_path_buf();
+        let mut stack = vec![objects];
         let mut buffer = vec![0u8; 1024 * 1024];
         let mut examined = 0u64;
 
@@ -320,14 +452,12 @@ impl Store {
             }
         }
 
-        metrics::counter!(crate::metrics::SCRUB_PASSES_TOTAL).increment(1);
-        metrics::histogram!(crate::metrics::SCRUB_PASS_DURATION)
-            .record(started.elapsed().as_secs_f64());
         Ok(examined)
     }
 
     async fn quarantine_blob(&self, path: &Path, digest: &Digest) -> Result<(), AppError> {
         self.scrubber.mark_quarantined(digest);
+        self.locations.lock().remove(digest);
         let dest = self.scrubber.quarantine_dir.join(digest.as_str());
         match tokio::fs::rename(path, &dest).await {
             Ok(()) => {
@@ -359,50 +489,52 @@ impl Store {
     ///
     /// Returns [`AppError::NoSuchKey`] if the blob is missing,
     /// [`AppError::InvalidRequest`] if `start > end` or `end` is outside the
-    /// file, and an I/O-backed [`AppError`] if metadata lookup or seeking fails.
+    /// blob, and an I/O-backed [`AppError`] if metadata lookup or seeking fails.
     pub async fn open_blob_range(
         &self,
         digest: &Digest,
         start: u64,
         end: u64,
     ) -> Result<tokio::io::Take<tokio::fs::File>, AppError> {
-        let mut file = self.open_blob(digest).await?;
-        let file_len = file.metadata().await?.len();
-
-        if start > end || end >= file_len {
-            return Err(AppError::InvalidRequest(format!(
-                "invalid range: start={start} end={end} file_len={file_len}"
+        if self.scrubber.is_quarantined(digest) {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "blob failed integrity check"
             )));
         }
-
-        file.seek(std::io::SeekFrom::Start(start)).await?;
-        let len = end - start + 1;
-        Ok(file.take(len))
-    }
-
-    /// Return the root directory containing committed blobs.
-    pub fn objects_root(&self) -> &Path {
-        &self.objects
-    }
-
-    /// Remove a committed blob if it exists.
-    ///
-    /// The operation is idempotent: removing a missing blob succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O-backed [`AppError`] if the existence check or removal
-    /// fails.
-    pub async fn remove(&self, digest: &Digest) -> Result<(), AppError> {
-        use tokio::fs as tfs;
-        let path = self.blob_path(digest);
-        if !tfs::try_exists(&path).await? {
-            return Ok(());
+        let location = self.location(digest).ok_or(AppError::NoSuchKey)?;
+        match location {
+            BlobLocation::FileCas => {
+                let mut file = self.file_cas.open_blob(digest).await?;
+                let file_len = file.metadata().await?.len();
+                if start > end || end >= file_len {
+                    return Err(AppError::InvalidRequest(format!(
+                        "invalid range: start={start} end={end} file_len={file_len}"
+                    )));
+                }
+                file.seek(std::io::SeekFrom::Start(start)).await?;
+                Ok(file.take(end - start + 1))
+            }
+            BlobLocation::Haystack => self.haystack.open_blob_range(digest, start, end).await,
         }
-        let size = tfs::metadata(&path).await?.len();
-        tfs::remove_file(path).await?;
-        metrics::gauge!(crate::metrics::BLOB_COUNT).decrement(1.0);
-        metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).decrement(size as f64);
+    }
+
+    /// Return the root directory containing committed FileCas blobs.
+    pub fn objects_root(&self) -> &Path {
+        self.file_cas.objects_root()
+    }
+
+    /// Remove a committed blob if it exists (uses the locator map).
+    pub async fn remove(&self, digest: &Digest) -> Result<(), AppError> {
+        let location = self.locations.lock().remove(digest);
+        let size = match location {
+            Some(BlobLocation::FileCas) => self.file_cas.remove(digest).await?,
+            Some(BlobLocation::Haystack) => self.haystack.remove(digest).await?,
+            None => None,
+        };
+        if let Some(size) = size {
+            metrics::gauge!(crate::metrics::BLOB_COUNT).decrement(1.0);
+            metrics::gauge!(crate::metrics::TOTAL_BYTES_STORED).decrement(size as f64);
+        }
         Ok(())
     }
 }
@@ -465,6 +597,114 @@ mod tests {
         let root = TempDir::new().expect("create temp root");
         let store = Store::open(root.path()).expect("open store");
         (root, store)
+    }
+
+    #[test]
+    fn open_defaults_to_file_cas_layout() {
+        let (_root, store) = fresh_store();
+        assert_eq!(store.layout_kind(), BlobLayoutKind::FileCas);
+    }
+
+    #[test]
+    fn blob_layout_kind_defaults_to_file_cas() {
+        assert_eq!(BlobLayoutKind::default(), BlobLayoutKind::FileCas);
+    }
+
+    #[test]
+    fn open_always_creates_objects_and_volumes_trees() {
+        let root = TempDir::new().unwrap();
+        let store = Store::open_with_layout(root.path(), BlobLayoutKind::FileCas).unwrap();
+        assert_eq!(store.layout_kind(), BlobLayoutKind::FileCas);
+        assert!(root.path().join("objects").is_dir());
+        assert!(root.path().join("volumes").is_dir());
+        assert!(root.path().join("tmp").is_dir());
+    }
+
+    #[test]
+    fn open_with_haystack_policy_still_opens_both_backends() {
+        let root = TempDir::new().expect("create temp root");
+        let store = Store::open_with_layout(root.path(), BlobLayoutKind::Haystack)
+            .expect("open haystack store");
+        assert_eq!(store.layout_kind(), BlobLayoutKind::Haystack);
+        assert!(root.path().join("volumes").is_dir());
+        assert!(root.path().join("objects").is_dir());
+        assert!(root.path().join("tmp").is_dir());
+    }
+
+    #[test]
+    fn hybrid_packs_small_into_haystack_and_large_into_file_cas() {
+        let root = TempDir::new().unwrap();
+        let store = Store::open_with_layout(root.path(), BlobLayoutKind::Hybrid).unwrap();
+
+        let small = b"tiny";
+        let small_digest = block_on(store.commit_bytes(small)).unwrap();
+        assert_eq!(store.location(&small_digest), Some(BlobLocation::Haystack));
+        assert!(!store.blob_path(&small_digest).exists());
+
+        // Framed needle must exceed this store's volume soft-cap so choose_location falls back.
+        let big_len = (store.haystack_max_volume_size() as usize) + 1;
+        let big = vec![0xABu8; big_len];
+        let big_digest = block_on(store.commit_bytes(&big)).unwrap();
+        assert_eq!(store.location(&big_digest), Some(BlobLocation::FileCas));
+        assert!(store.blob_path(&big_digest).is_file());
+
+        // Locator rebuilds after reopen.
+        drop(store);
+        let store = Store::open_with_layout(root.path(), BlobLayoutKind::Hybrid).unwrap();
+        assert_eq!(store.location(&small_digest), Some(BlobLocation::Haystack));
+        assert_eq!(store.location(&big_digest), Some(BlobLocation::FileCas));
+
+        let mut got = Vec::new();
+        block_on(async {
+            store
+                .open_blob(&small_digest)
+                .await
+                .unwrap()
+                .read_to_end(&mut got)
+                .await
+                .unwrap();
+        });
+        assert_eq!(got, small);
+    }
+
+    #[tokio::test]
+    async fn compact_haystack_patches_drops_without_clobbering_locations() {
+        let root = TempDir::new().unwrap();
+        let store = Store::open_with_layout(root.path(), BlobLayoutKind::Haystack).unwrap();
+
+        let keep = store.commit_bytes(b"keep-alive").await.unwrap();
+        let dead = store.commit_bytes(b"dead-weight").await.unwrap();
+        store.remove(&dead).await.unwrap();
+        assert!(store.location(&dead).is_none());
+
+        // Simulate a concurrent commit_temp insert that a full rebuild_locations
+        // snapshot would miss (digest not in haystack index / file_cas yet).
+        let concurrent = digest_of(b"committed-during-compact");
+        store
+            .locations
+            .lock()
+            .insert(concurrent.clone(), BlobLocation::Haystack);
+
+        let dropped = store.compact_haystack().await.expect("compact");
+        assert!(
+            dropped.iter().any(|d| d == &dead),
+            "compaction should report the tombstoned digest as dropped"
+        );
+
+        // Patch removes only drops — must not replace the whole map.
+        assert_eq!(store.location(&keep), Some(BlobLocation::Haystack));
+        assert_eq!(store.location(&concurrent), Some(BlobLocation::Haystack));
+        assert!(store.location(&dead).is_none());
+
+        let mut got = Vec::new();
+        store
+            .open_blob(&keep)
+            .await
+            .unwrap()
+            .read_to_end(&mut got)
+            .await
+            .unwrap();
+        assert_eq!(got, b"keep-alive");
     }
 
     /// The real content address: hex-encoded SHA-256 of the bytes.

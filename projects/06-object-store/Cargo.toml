@@ -69,12 +69,17 @@ http-body-util = { workspace = true, optional = true }
 
 [features]
 default = []
-# In-process hot-vs-cold tier bench (see bench/hot_vs_cold/README.md).
+# In-process hot-vs-cold tier + haystack small-object benches (see bench/*/README.md).
 bench-tools = ["dep:tempfile", "dep:tower", "dep:http-body-util"]
 
 [[bin]]
 name = "hot_vs_cold"
 path = "bench/hot_vs_cold/main.rs"
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "haystack_small"
+path = "bench/haystack_small/main.rs"
 required-features = ["bench-tools"]
 
 # From-the-field: metadata microservice (see docs/05-how-index-as-a-service-works.md).

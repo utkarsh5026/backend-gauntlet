@@ -53,3 +53,33 @@ Harness: `make bench-tier` → [`bench/hot_vs_cold/`](../bench/hot_vs_cold/READM
   before quoting GET cost in a design doc.
 - Transparent round-trip held for every sample (byte-exact plaintext after
   tiering).
+
+## Haystack vs FileCas (small objects)
+
+Small-object packing: one file per digest (`objects/`) vs needles in a handful
+of `volumes/*.dat`. Harness: `make bench-haystack` →
+[`bench/haystack_small/`](../bench/haystack_small/README.md).
+
+### Method
+
+- Host: WSL2 Linux, `cargo run --release -p object-store --features bench-tools --bin haystack_small`
+- In-process [`Store`](../src/store/mod.rs) only (`commit_bytes` / `open_blob`)
+- `COUNT=10000` · `SIZE=4K` · `WARMUP=100` · `DROP_CACHES=0` · `HAYSTACK_MAX_VOLUME_SIZE=1073741824`
+- Unique payloads (no CAS dedup short-circuit); Haystack index = WAL + background JSON checkpoint
+- Raw JSON: `bench/results/haystack_small-20260722-060718.json` (2026-07-22)
+
+### Results
+
+| layout | w ops/s | w p50 | w p99 | r ops/s | r p50 | r p99 | obj files | vol files |
+|--------|--------:|------:|------:|--------:|------:|------:|----------:|----------:|
+| file_cas | 60.6 | 16.6 ms | 30.5 ms | 2347 | 0.38 ms | 0.90 ms | 10100 | 0 |
+| haystack | 63.9 | 13.2 ms | 48.5 ms | 3898 | 0.25 ms | 0.41 ms | 0 | 1 |
+
+### Takeaways
+
+- **Packing wins on footprint.** 10k × 4 KiB → **1 volume** vs ~10k FileCas files.
+- **Reads are faster under Haystack** (~1.7× ops/s, lower p50/p99) with a warm
+  page cache.
+- **Writes are competitive after the WAL** (~64 vs ~61 ops/s; Haystack p50 even
+  a bit lower). Background checkpoint keeps `needles.json` from dominating PUT.
+- Soft-cap via `HAYSTACK_MAX_VOLUME_SIZE` (raw bytes; see `.env.example`).
