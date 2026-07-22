@@ -128,7 +128,7 @@ the bytes?" Packing only replaces the *physical* half.
 flowchart LR
   Client -->|"bucket, key"| S3Index["Index JSON\nkey to digest"]
   S3Index -->|digest| NeedleMap["Needle index\ndigest to vol, off, size"]
-  NeedleMap --> Volume["volumes/N.dat\nappend-only needles"]
+  NeedleMap --> Volume["volumes/uuid.dat\nappend-only needles"]
 ```
 
 | Map | Module today | Question it answers |
@@ -140,7 +140,7 @@ Today the filesystem *is* the physical locator: `blob_path(digest)` encodes
 location as a path. Under packing, that becomes an explicit structure:
 
 ```
-digest → (volume_id, offset, size)
+digest → (volume_id, payload_offset, size)
 ```
 
 often held in RAM (and rebuildable by scanning volumes after a crash — see §5).
@@ -252,8 +252,8 @@ Physical reclaim under packing is different from `unlink(blob_path)`:
    `volumes/needles.json`) so they stay unservable after reopen while keeping
    `(volume, offset, size)` for compaction accounting. Scrub failures set
    `quarantined: true` (GET refuses). Volume bytes stay until a volume is
-   **compacted**: copy live needles only, rewrite JSON without tombstones /
-   quarantines, delete the old volume file.
+   **compacted**: copy live needles into a **new** volume id, remap the durable
+   index, then unlink the old `*.dat` (never rewrite a closed volume in place).
 3. Until compaction, disk usage can include garbage. That is normal for
    append-only designs; measure live vs packed bytes when you prove the lab.
 

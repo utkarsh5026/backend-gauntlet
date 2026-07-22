@@ -39,7 +39,7 @@ use crate::object::Digest;
 pub enum BlobLocation {
     /// Standalone file under `objects/ab/cd/<digest>`.
     FileCas,
-    /// Needle inside a Haystack volume (`volumes/N.dat`).
+    /// Needle inside a Haystack volume (`volumes/<uuid>.dat`).
     Haystack,
 }
 
@@ -180,6 +180,10 @@ impl Store {
     }
 
     /// Rebuild `digest → BlobLocation` from FileCas files + Haystack needle map.
+    ///
+    /// Boot / reopen only. Do **not** call after compaction — a full-map replace
+    /// races with [`Self::commit_temp`] inserts. Use [`Self::compact_haystack`]
+    /// which patches dropped digests instead.
     fn rebuild_locations(&self) -> std::io::Result<()> {
         let mut map = HashMap::new();
         for digest in self.file_cas.list_digests()? {
@@ -301,10 +305,31 @@ impl Store {
         }
     }
 
+    /// Run one Haystack compaction pass and patch the routing map.
+    ///
+    /// Live digests stay [`BlobLocation::Haystack`] (only needle offsets change).
+    /// Digests dropped from the needle index are removed from `locations` —
+    /// never a full-map rebuild, which can clobber a concurrent
+    /// [`Self::commit_temp`] insert.
+    ///
+    /// Locations are patched *after* the haystack index lock is released: Store
+    /// `remove` takes `locations` then `index`, so holding both here would
+    /// deadlock. A brief "Haystack in map, gone from index" window is safe
+    /// (open fails cleanly); wiping an unrelated insert is not.
+    pub async fn compact_haystack(&self) -> Result<Vec<Digest>, AppError> {
+        let dropped = self.haystack.compaction().await?;
+        if !dropped.is_empty() {
+            let mut locations = self.locations.lock();
+            for digest in &dropped {
+                locations.remove(digest);
+            }
+        }
+        Ok(dropped)
+    }
+
     /// Spawn a background task that runs Haystack volume compaction on a timer.
     ///
-    /// Each tick calls [`Haystack::compaction`] (no-op when nothing is dirty),
-    /// then rebuilds the store locator map so dropped tombstones stay consistent.
+    /// Each tick calls [`Self::compact_haystack`] (no-op when nothing is dirty).
     /// Interval is owned by the caller (see `HAYSTACK_COMPACTION_INTERVAL_SECS` in
     /// `main`).
     pub fn spawn_compaction(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
@@ -313,15 +338,8 @@ impl Store {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
-                match self.haystack.compaction().await {
-                    Ok(()) => {
-                        if let Err(err) = self.rebuild_locations() {
-                            warn!(error = %err, "rebuild locations after compaction failed");
-                        }
-                    }
-                    Err(err) => {
-                        warn!(error = %err, "haystack compaction pass failed");
-                    }
+                if let Err(err) = self.compact_haystack().await {
+                    warn!(error = %err, "haystack compaction pass failed");
                 }
             }
         })
@@ -647,6 +665,46 @@ mod tests {
                 .unwrap();
         });
         assert_eq!(got, small);
+    }
+
+    #[tokio::test]
+    async fn compact_haystack_patches_drops_without_clobbering_locations() {
+        let root = TempDir::new().unwrap();
+        let store = Store::open_with_layout(root.path(), BlobLayoutKind::Haystack).unwrap();
+
+        let keep = store.commit_bytes(b"keep-alive").await.unwrap();
+        let dead = store.commit_bytes(b"dead-weight").await.unwrap();
+        store.remove(&dead).await.unwrap();
+        assert!(store.location(&dead).is_none());
+
+        // Simulate a concurrent commit_temp insert that a full rebuild_locations
+        // snapshot would miss (digest not in haystack index / file_cas yet).
+        let concurrent = digest_of(b"committed-during-compact");
+        store
+            .locations
+            .lock()
+            .insert(concurrent.clone(), BlobLocation::Haystack);
+
+        let dropped = store.compact_haystack().await.expect("compact");
+        assert!(
+            dropped.iter().any(|d| d == &dead),
+            "compaction should report the tombstoned digest as dropped"
+        );
+
+        // Patch removes only drops — must not replace the whole map.
+        assert_eq!(store.location(&keep), Some(BlobLocation::Haystack));
+        assert_eq!(store.location(&concurrent), Some(BlobLocation::Haystack));
+        assert!(store.location(&dead).is_none());
+
+        let mut got = Vec::new();
+        store
+            .open_blob(&keep)
+            .await
+            .unwrap()
+            .read_to_end(&mut got)
+            .await
+            .unwrap();
+        assert_eq!(got, b"keep-alive");
     }
 
     /// The real content address: hex-encoded SHA-256 of the bytes.

@@ -13,8 +13,8 @@
 //! [ digest hex: Digest::LEN bytes ][ size: u64 LE ][ payload: size bytes ]
 //! ```
 //!
-//! [`NeedleLocator::offset`] is the **payload** start (after the header) so GET
-//! can seek + `take(size)` without re-parsing.
+//! [`NeedleLocator::payload_offset`] is the **payload** start (after the header)
+//! so GET can seek + `take(size)` without re-parsing.
 //!
 //! ## Durable live index
 //!
@@ -23,8 +23,9 @@
 //! `volumes/needles.json` from RAM and truncates the log — JSON is a fast-boot
 //! snapshot, the log is the durability path. Open loads JSON (if any) then
 //! replays the log; volume scan is recovery only when both are missing.
-//! [`Self::remove`] / quarantine append tombstone ops; compaction still drops
-//! dead volume bytes later.
+//! [`Haystack::remove`] / quarantine append tombstone ops; compaction copies live
+//! needles into a **new** volume id, remaps the index, then unlinks the old
+//! file (closed volumes are never rewritten in place).
 //!
 //! ## Scaffold status
 //!
@@ -47,6 +48,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use crate::durable::{atomic_write_sibling_sync, publish_temp, TempEntry};
 use crate::error::AppError;
 use crate::object::Digest;
+use uuid::Uuid;
 
 /// Soft volume capacity default when `HAYSTACK_MAX_VOLUME_SIZE` is unset (1 MiB).
 ///
@@ -61,7 +63,8 @@ pub const INDEX_CHECKPOINT_INTERVAL: Duration = Duration::from_millis(500);
 const VOLUME_EXT: &str = "dat";
 const INDEX_FILE: &str = "needles.json";
 const LOG_FILE: &str = "needles.log";
-const INDEX_VERSION: u32 = 1;
+/// Bumped when `volume_id` switched from `u32` to UUID (hyphenated string on disk).
+const INDEX_VERSION: u32 = 2;
 /// Hex digest (`Digest::LEN`) + little-endian `u64` payload length.
 const NEEDLE_HEADER_LEN: u64 = Digest::LEN as u64 + std::mem::size_of::<u64>() as u64;
 
@@ -72,10 +75,15 @@ struct NeedleIndexFile {
     entries: Vec<NeedleIndexEntry>,
 }
 
+/// One row in [`NeedleIndexFile`] — on-disk mirror of a [`NeedleRecord`].
+///
+/// The JSON field is still named `offset` (INDEX_VERSION 2); it stores the
+/// payload start, matching [`NeedleLocator::payload_offset`].
 #[derive(Debug, Serialize, Deserialize)]
 struct NeedleIndexEntry {
     digest: Digest,
-    volume_id: u32,
+    volume_id: VolumeId,
+    /// Payload byte offset (serialized as `offset`).
     offset: u64,
     size: u64,
     /// Tombstone: logical delete; compaction drops the entry and skips the bytes.
@@ -87,16 +95,19 @@ struct NeedleIndexEntry {
 }
 
 impl NeedleIndexEntry {
+    /// Build a snapshot row from a live RAM record.
     fn from_record(digest: &Digest, record: &NeedleRecord) -> Self {
         let NeedleLocator {
             volume_id,
-            offset,
+            payload_offset,
             size,
         } = record.locator;
         Self {
             digest: digest.clone(),
-            volume_id: volume_id.0,
-            offset,
+            volume_id,
+            // On-disk key stays `offset` (INDEX_VERSION 2); the Rust field name
+            // is payload_offset on NeedleLocator.
+            offset: payload_offset,
             size,
             deleted: record.deleted,
             quarantined: record.quarantined,
@@ -108,30 +119,31 @@ impl NeedleIndexEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum IndexLogOp {
+    /// Index (or replace) a live needle at `offset` (payload start).
     Put {
         digest: Digest,
-        volume_id: u32,
+        volume_id: VolumeId,
         offset: u64,
         size: u64,
     },
-    Delete {
-        digest: Digest,
-    },
-    Quarantine {
-        digest: Digest,
-    },
+    /// Mark `digest` deleted; bytes stay until compaction.
+    Delete { digest: Digest },
+    /// Mark `digest` quarantined after a scrub mismatch.
+    Quarantine { digest: Digest },
 }
 
 impl IndexLogOp {
+    /// WAL `put` for a freshly committed locator.
     fn put(digest: &Digest, locator: NeedleLocator) -> Self {
         Self::Put {
             digest: digest.clone(),
-            volume_id: locator.volume_id.0,
-            offset: locator.offset,
+            volume_id: locator.volume_id,
+            offset: locator.payload_offset,
             size: locator.size,
         }
     }
 
+    /// Replay this op onto the in-memory map (boot / recovery).
     fn apply_to(self, map: &mut HashMap<Digest, NeedleRecord>) {
         match self {
             Self::Put {
@@ -143,8 +155,8 @@ impl IndexLogOp {
                 map.insert(
                     digest,
                     NeedleRecord::live(NeedleLocator {
-                        volume_id: VolumeId(volume_id),
-                        offset,
+                        volume_id,
+                        payload_offset: offset,
                         size,
                     }),
                 );
@@ -163,6 +175,10 @@ impl IndexLogOp {
     }
 }
 
+/// Append-only, fsynced handle on `volumes/needles.log`.
+///
+/// Tracks logical length so appends always seek to EOF even if another process
+/// truncated; [`Self::truncate`] clears after a successful checkpoint.
 #[derive(Debug)]
 struct IndexWal {
     file: std::fs::File,
@@ -170,6 +186,7 @@ struct IndexWal {
 }
 
 impl IndexWal {
+    /// Open or create the WAL under `volumes_dir` (no truncate).
     fn open(volumes_dir: &Path) -> std::io::Result<Self> {
         let path = volumes_dir.join(LOG_FILE);
         let file = std::fs::OpenOptions::new()
@@ -182,6 +199,7 @@ impl IndexWal {
         Ok(Self { file, len })
     }
 
+    /// Append one NDJSON line and `sync_all` (crash-safe durability).
     fn append_line(&mut self, line: &[u8]) -> std::io::Result<()> {
         self.file.seek(SyncSeekFrom::Start(self.len))?;
         self.file.write_all(line)?;
@@ -190,6 +208,7 @@ impl IndexWal {
         Ok(())
     }
 
+    /// Empty the WAL after `needles.json` covers every prior op.
     fn truncate(&mut self) -> std::io::Result<()> {
         self.file.set_len(0)?;
         self.file.sync_all()?;
@@ -198,20 +217,25 @@ impl IndexWal {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VolumeId(u32);
+/// Opaque volume file identity (`volumes/<uuid>.dat`).
+///
+/// UUIDs make allocation trivial (`Uuid::new_v4`) — no `read_dir` max+1 scan and
+/// no coordination between compaction and PUT beyond sealing the active FD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct VolumeId(Uuid);
 
 impl VolumeId {
-    const ZERO: Self = Self(0);
-
-    fn next(self) -> Self {
-        Self(self.0.saturating_add(1))
+    /// Allocate a fresh volume identity (`Uuid::new_v4`).
+    fn new() -> Self {
+        Self(Uuid::new_v4())
     }
 
+    /// Parse a volume filename stem (`<uuid>.dat` → id).
     fn parse(name: &std::ffi::OsStr) -> Option<Self> {
         let name = name.to_str()?;
         let stem = name.strip_suffix(".dat")?;
-        stem.parse().ok().map(Self)
+        Uuid::parse_str(stem).ok().map(Self)
     }
 }
 
@@ -221,19 +245,27 @@ impl std::fmt::Display for VolumeId {
     }
 }
 
-/// Where a committed needle's **payload** lives inside a volume file.
+/// Where a live needle's bytes sit inside a volume file.
+///
+/// The in-memory / index map is `digest → NeedleLocator`. Offsets point at the
+/// **payload**, not the needle header — GET seeks here and reads exactly
+/// [`Self::size`] bytes (see module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NeedleLocator {
+    /// Volume that owns this needle (`volumes/<uuid>.dat`).
     pub volume_id: VolumeId,
-    pub offset: u64,
+    /// Byte offset of the payload start (after digest + size header).
+    pub payload_offset: u64,
+    /// Payload length in bytes (excludes the needle header).
     pub size: u64,
 }
 
 impl NeedleLocator {
-    fn new(volume_id: VolumeId, offset: u64, size: u64) -> Self {
+    /// Construct a locator for a needle already written (or about to be remapped).
+    fn new(volume_id: VolumeId, payload_offset: u64, size: u64) -> Self {
         Self {
             volume_id,
-            offset,
+            payload_offset,
             size,
         }
     }
@@ -248,6 +280,7 @@ struct NeedleRecord {
 }
 
 impl NeedleRecord {
+    /// Live (servable) row immediately after a successful commit.
     fn live(locator: NeedleLocator) -> Self {
         Self {
             locator,
@@ -256,23 +289,28 @@ impl NeedleRecord {
         }
     }
 
+    /// Whether GET may serve this needle (not deleted, not quarantined).
     fn is_live(self) -> bool {
         !self.deleted && !self.quarantined
     }
 
+    /// Logical delete; physical reclaim is [`Haystack::compaction`].
     fn tombstone(&mut self) {
         self.deleted = true;
     }
 
+    /// Integrity failure; GET refuses until compaction drops the row.
     fn quarantine(&mut self) {
         self.quarantined = true;
     }
 }
 
+/// Current append target: open FD + next write offset inside one volume.
 #[derive(Debug)]
 struct ActiveFile {
     volume_id: VolumeId,
     file: tokio::fs::File,
+    /// Next needle's start offset (= EOF of the last complete needle).
     current_offset: u64,
 }
 
@@ -289,13 +327,17 @@ impl ActiveFile {
 /// Append-only volume packing for small CAS objects (Haystack / SeaweedFS lineage).
 #[derive(Debug)]
 pub struct Haystack {
+    /// Directory holding `*.dat` volumes plus `needles.json` / `needles.log`.
     volumes_dir: PathBuf,
     /// Soft cap on one `*.dat` file; captured from env at [`Self::open`].
     max_volume_size: u64,
+    /// Live digest → needle map (source of truth between checkpoints).
     index: parking_lot::Mutex<HashMap<Digest, NeedleRecord>>,
+    /// Durable mutation log; truncated by [`Self::checkpoint`].
     wal: parking_lot::Mutex<IndexWal>,
     /// Set when the WAL has records not yet covered by `needles.json`.
     dirty: AtomicBool,
+    /// Sole volume open for append; `None` when sealed / idle.
     active_file: tokio::sync::Mutex<Option<ActiveFile>>,
 }
 
@@ -342,6 +384,7 @@ impl Haystack {
         self.max_volume_size
     }
 
+    /// Path of one volume file (`volumes/<uuid>.dat`).
     fn volume_path(&self, volume_id: VolumeId) -> PathBuf {
         self.volumes_dir.join(format!("{volume_id}.{VOLUME_EXT}"))
     }
@@ -356,6 +399,7 @@ impl Haystack {
         self.volumes_dir.join(LOG_FILE)
     }
 
+    /// Load snapshot + replay WAL (or volume-scan recover) into the RAM index.
     fn bootstrap_index(&self) -> std::io::Result<()> {
         let mut map = match self.load_snapshot() {
             Ok(map) => map,
@@ -392,6 +436,7 @@ impl Haystack {
         Ok(())
     }
 
+    /// Whether any `*.dat` volume file exists under [`Self::volumes_dir`].
     fn volume_dat_exists(&self) -> std::io::Result<bool> {
         for entry in std::fs::read_dir(&self.volumes_dir)? {
             let entry = entry?;
@@ -402,6 +447,13 @@ impl Haystack {
         Ok(false)
     }
 
+    /// Deserialize `needles.json` into a RAM map (does not touch the WAL).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotFound`](std::io::ErrorKind::NotFound) if the snapshot is
+    /// missing, or [`InvalidData`](std::io::ErrorKind::InvalidData) for bad
+    /// JSON / unsupported version / bad digests.
     fn load_snapshot(&self) -> std::io::Result<HashMap<Digest, NeedleRecord>> {
         let file = std::fs::File::open(self.index_path())?;
         let parsed: NeedleIndexFile = serde_json::from_reader(file).map_err(|e| {
@@ -432,8 +484,8 @@ impl Haystack {
                 digest,
                 NeedleRecord {
                     locator: NeedleLocator {
-                        volume_id: VolumeId(entry.volume_id),
-                        offset: entry.offset,
+                        volume_id: entry.volume_id,
+                        payload_offset: entry.offset,
                         size: entry.size,
                     },
                     deleted: entry.deleted,
@@ -444,6 +496,10 @@ impl Haystack {
         Ok(map)
     }
 
+    /// Apply every complete NDJSON line from `needles.log` onto `map`.
+    ///
+    /// Stops (with a warning) at the first unreadable line so a torn trailing
+    /// append after a crash does not discard earlier ops.
     fn replay_log_into(&self, map: &mut HashMap<Digest, NeedleRecord>) -> std::io::Result<()> {
         let path = self.log_path();
         if !path.is_file() {
@@ -473,6 +529,7 @@ impl Haystack {
         Ok(())
     }
 
+    /// Serialize `op`, append + fsync to the WAL, and mark the index dirty.
     fn append_wal(&self, op: IndexLogOp) -> Result<(), AppError> {
         let mut line = serde_json::to_vec(&op)?;
         line.push(b'\n');
@@ -486,6 +543,11 @@ impl Haystack {
     ///
     /// Holds the WAL lock so no append can sneak in between snapshot and truncate.
     /// Safe to call from the background task or tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AppError`] if JSON encoding, the atomic snapshot write, or
+    /// WAL truncate fails.
     pub fn checkpoint(&self) -> Result<(), AppError> {
         let mut wal = self.wal.lock();
         let file = {
@@ -506,10 +568,12 @@ impl Haystack {
         Ok(())
     }
 
+    /// Whether the WAL has ops not yet covered by a checkpointed snapshot.
     pub fn is_index_dirty(&self) -> bool {
         self.dirty.load(Ordering::Acquire)
     }
 
+    /// Framed needle length: header + payload.
     #[inline]
     const fn needle_len(payload_len: u64) -> u64 {
         NEEDLE_HEADER_LEN + payload_len
@@ -531,6 +595,10 @@ impl Haystack {
     }
 
     /// Ensure `active_file` is an open, writable volume with room for `size_to_append`.
+    ///
+    /// Closed volumes are **immutable**: once the active FD is dropped (full
+    /// volume, or sealed for compaction), that `*.dat` is never reopened for
+    /// append. A new write always `create_new`s the next volume id.
     async fn ensure_active_file(
         &self,
         active: &mut Option<ActiveFile>,
@@ -542,35 +610,7 @@ impl Haystack {
             }
         }
 
-        // Prefer an existing volume that still has room.
-        let mut next_id = VolumeId::ZERO;
-        let mut candidate: Option<(VolumeId, u64)> = None;
-        let mut entries = tokio::fs::read_dir(&self.volumes_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let Some(volume_id) = VolumeId::parse(&entry.file_name()) else {
-                continue;
-            };
-            next_id = next_id.max(volume_id.next());
-            let metadata = entry.metadata().await?;
-            if metadata.is_file()
-                && metadata.len() + size_to_append <= self.max_volume_size
-                && candidate.is_none()
-            {
-                candidate = Some((volume_id, metadata.len()));
-            }
-        }
-
-        if let Some((volume_id, len)) = candidate {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(self.volume_path(volume_id))
-                .await?;
-            *active = Some(ActiveFile::new(volume_id, file, len));
-            return Ok(());
-        }
-
-        let volume_id = next_id;
+        let volume_id = VolumeId::new();
         let path = self.volume_path(volume_id);
         let file = OpenOptions::new()
             .read(true)
@@ -590,6 +630,10 @@ impl Haystack {
     /// Occupancy for metrics: `(volume_file_count, total_bytes_on_disk)`.
     ///
     /// Counts only `*.dat` volume files — ignores `needles.json` and junk sidecars.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors from directory reads or metadata lookups.
     pub fn scan_occupancy(&self) -> std::io::Result<(u64, u64)> {
         let mut file_count = 0u64;
         let mut total_bytes = 0u64;
@@ -607,66 +651,95 @@ impl Haystack {
         Ok((file_count, total_bytes))
     }
 
-    /// Rewrite volumes that hold tombstoned / quarantined needles, keeping live
-    /// payloads only. Same `volume_id`; offsets change. Peak disk ≈ old + live.
+    /// Compact dirty volumes by copying live needles into a **new** volume id.
     ///
-    /// Steps per dirty volume: copy live needles into a sibling temp →
-    /// [`publish_temp`] over the old `.dat` → update RAM locators and drop dead
-    /// rows for that volume → [`Self::checkpoint`]. Empty (all-dead) volumes are
-    /// unlinked after the index drop.
+    /// Closed volumes are immutable: this never rewrites an existing `*.dat` in
+    /// place. Per dirty volume:
+    /// 1. Seal it if it is the active append target (drop the FD).
+    /// 2. Snapshot live needles; stage them into a sibling temp under
+    ///    `volumes/`, `sync_all`, then [`publish_temp`] to
+    ///    `volumes/<new-uuid>.dat` so a crash never leaves a half-written
+    ///    final path.
+    /// 3. Under the index lock, remap `old@off → new@off` and drop dead rows.
+    /// 4. Checkpoint, then unlink the old file.
+    ///
+    /// Peak disk ≈ old + live (+ temp during the copy). Empty (all-dead)
+    /// volumes skip the new file and are unlinked after the index drop.
+    ///
+    /// Returns digests whose index rows were dropped (tombstone / quarantine /
+    /// empty-volume reclaim). Callers that keep a separate routing map should
+    /// remove only these keys — never rebuild the whole map, or a concurrent
+    /// commit's insert can be clobbered.
     ///
     /// # Errors
     ///
     /// Returns an I/O-backed [`AppError`] if a volume cannot be read/written or
     /// the checkpoint fails.
-    pub async fn compaction(&self) -> Result<(), AppError> {
-        let (live_by_volume, dirty_volumes) = {
+    pub async fn compaction(&self) -> Result<Vec<Digest>, AppError> {
+        let dirty_volumes: HashSet<VolumeId> = {
             let guard = self.index.lock();
-            let mut live_by_volume: HashMap<VolumeId, Vec<(Digest, NeedleLocator)>> =
-                HashMap::new();
-            let mut dirty_volumes = HashSet::new();
-            for (digest, rec) in guard.iter() {
-                let locator = rec.locator;
-                if !rec.is_live() {
-                    dirty_volumes.insert(locator.volume_id);
-                    continue;
-                }
-                live_by_volume
-                    .entry(locator.volume_id)
-                    .or_default()
-                    .push((digest.clone(), locator));
-            }
-            (live_by_volume, dirty_volumes)
+            guard
+                .values()
+                .filter(|rec| !rec.is_live())
+                .map(|rec| rec.locator.volume_id)
+                .collect()
         };
 
-        for volume_id in dirty_volumes {
-            let live = live_by_volume.get(&volume_id).cloned().unwrap_or_default();
-            let old_path = self.volume_path(volume_id);
+        let mut dropped = Vec::new();
 
-            // if the Live needles are empty, we can remove the volume and drop the dead row from the index
+        for old_id in dirty_volumes {
+            // Seal before snapshot so no PUT can append into the volume we are
+            // about to retire. Holding `active_file` only for the seal keeps
+            // the long copy off the append mutex.
+            {
+                let mut active = self.active_file.lock().await;
+                if active.as_ref().is_some_and(|a| a.volume_id == old_id) {
+                    *active = None;
+                }
+            }
+
+            let live: Vec<(Digest, NeedleLocator)> = {
+                self.index
+                    .lock()
+                    .iter()
+                    .filter(|(_, rec)| rec.locator.volume_id == old_id && rec.is_live())
+                    .map(|(digest, rec)| (digest.clone(), rec.locator))
+                    .collect()
+            };
+            let old_path = self.volume_path(old_id);
+
             if live.is_empty() {
                 {
                     let mut guard = self.index.lock();
-                    guard.retain(|_, rec| rec.locator.volume_id != volume_id);
+                    dropped.extend(
+                        guard
+                            .iter()
+                            .filter(|(_, rec)| rec.locator.volume_id == old_id)
+                            .map(|(digest, _)| digest.clone()),
+                    );
+                    guard.retain(|_, rec| rec.locator.volume_id != old_id);
                 }
                 self.checkpoint()?;
                 let _ = tokio::fs::remove_file(&old_path).await;
-                self.clear_active_if(volume_id).await;
                 continue;
             }
 
+            let new_id = VolumeId::new();
+            let dest = self.volume_path(new_id);
+            // Same-dir temp so rename is atomic; TempEntry unlinks on failure.
             let mut temp = TempEntry::unique_in(&self.volumes_dir, "compact");
             let mut out = tokio::fs::File::create(temp.path()).await?;
             let mut src = tokio::fs::File::open(&old_path).await?;
             let mut buffer = vec![0u8; 1024 * 1024];
-            let mut write_offset = 0u64;
+            let mut needle_start = 0u64;
             let mut new_locs: Vec<(Digest, NeedleLocator)> = Vec::with_capacity(live.len());
 
             for (digest, locator) in &live {
                 out.write_all(digest.as_str().as_bytes()).await?;
                 out.write_all(&locator.size.to_le_bytes()).await?;
 
-                src.seek(std::io::SeekFrom::Start(locator.offset)).await?;
+                src.seek(std::io::SeekFrom::Start(locator.payload_offset))
+                    .await?;
                 let mut remaining = locator.size;
                 while remaining > 0 {
                     let n = remaining.min(buffer.len() as u64) as usize;
@@ -675,41 +748,47 @@ impl Haystack {
                     remaining -= n as u64;
                 }
 
-                let locator =
-                    NeedleLocator::new(volume_id, Self::needle_len(write_offset), locator.size);
+                let payload_offset = needle_start + NEEDLE_HEADER_LEN;
+                let locator = NeedleLocator::new(new_id, payload_offset, locator.size);
                 new_locs.push((digest.clone(), locator));
-                write_offset += Self::needle_len(locator.size);
+                needle_start += Self::needle_len(locator.size);
             }
             out.sync_all().await?;
             drop(out);
+            drop(src);
 
-            publish_temp(temp.path(), &old_path).await?;
+            publish_temp(temp.path(), &dest).await?;
             temp.disarm();
 
-            // update the index with the new locators and drop the dead row from the index
             {
                 let mut guard = self.index.lock();
-                guard.retain(|_, rec| rec.locator.volume_id != volume_id || rec.is_live());
-                for (digest, loc) in new_locs {
-                    if let Some(rec) = guard.get_mut(&digest) {
+                new_locs.into_iter().for_each(|(digest, loc)| {
+                    let Some(rec) = guard.get_mut(&digest) else {
+                        return;
+                    };
+                    // Tombstoned/quarantined during the copy: leave on old_id
+                    // so the retain below drops the row (orphan bytes in the
+                    // new volume until a later compact).
+                    if rec.is_live() {
                         rec.locator = loc;
                     }
-                }
+                });
+                dropped.extend(
+                    guard
+                        .iter()
+                        .filter(|(_, rec)| rec.locator.volume_id == old_id)
+                        .map(|(digest, _)| digest.clone()),
+                );
+                guard.retain(|_, rec| rec.locator.volume_id != old_id);
             }
             self.checkpoint()?;
-            self.clear_active_if(volume_id).await;
+            let _ = tokio::fs::remove_file(&old_path).await;
         }
 
-        Ok(())
+        Ok(dropped)
     }
 
-    async fn clear_active_if(&self, volume_id: VolumeId) {
-        let mut active = self.active_file.lock().await;
-        if active.as_ref().is_some_and(|a| a.volume_id == volume_id) {
-            *active = None;
-        }
-    }
-
+    /// Whether `digest` is currently servable (present, not deleted/quarantined).
     pub fn contains(&self, digest: &Digest) -> bool {
         self.index
             .lock()
@@ -717,6 +796,7 @@ impl Haystack {
             .is_some_and(|rec| rec.is_live())
     }
 
+    /// Return the live [`NeedleLocator`] for `digest`, if servable.
     pub fn locate(&self, digest: &Digest) -> Option<NeedleLocator> {
         self.index
             .lock()
@@ -738,6 +818,11 @@ impl Haystack {
     /// Returns an I/O-backed [`AppError`] if the volume cannot be opened,
     /// appended, synced, the WAL cannot be written, or if `temp` cannot be
     /// removed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the active-volume ensure step returns without installing an
+    /// active volume (programming error).
     pub async fn commit_temp(&self, temp: &Path, digest: &Digest) -> Result<(), AppError> {
         let temp_size = tokio::fs::metadata(temp).await?.len();
         let needle_len = Self::needle_len(temp_size);
@@ -752,7 +837,7 @@ impl Haystack {
         let payload_offset = needle_start + NEEDLE_HEADER_LEN;
         let locator = NeedleLocator {
             volume_id: active.volume_id,
-            offset: payload_offset,
+            payload_offset,
             size: temp_size,
         };
 
@@ -789,7 +874,8 @@ impl Haystack {
         self.ensure_readable(digest)?;
         let locator = self.locate(digest).ok_or(AppError::NoSuchKey)?;
         let mut file = tokio::fs::File::open(self.volume_path(locator.volume_id)).await?;
-        file.seek(std::io::SeekFrom::Start(locator.offset)).await?;
+        file.seek(std::io::SeekFrom::Start(locator.payload_offset))
+            .await?;
         Ok(file.take(locator.size))
     }
 
@@ -815,11 +901,12 @@ impl Haystack {
             )));
         }
         let mut file = tokio::fs::File::open(self.volume_path(locator.volume_id)).await?;
-        file.seek(std::io::SeekFrom::Start(locator.offset + start))
+        file.seek(std::io::SeekFrom::Start(locator.payload_offset + start))
             .await?;
         Ok(file.take(end - start + 1))
     }
 
+    /// Refuse reads of quarantined digests; missing/tombstoned are handled by callers.
     fn ensure_readable(&self, digest: &Digest) -> Result<(), AppError> {
         let guard = self.index.lock();
         match guard.get(digest) {
@@ -834,6 +921,10 @@ impl Haystack {
     ///
     /// Idempotent: missing or already-deleted digests return `Ok(None)`. The
     /// locator stays until compaction; durability is a WAL `delete` record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AppError`] if the WAL append fails.
     pub async fn remove(&self, digest: &Digest) -> Result<Option<u64>, AppError> {
         let size = {
             let guard = self.index.lock();
@@ -858,6 +949,10 @@ impl Haystack {
     ///
     /// No-op (returns `false`) if the digest is absent. Appends a WAL record
     /// when the flag flips.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AppError`] if the WAL append fails.
     pub fn mark_quarantined(&self, digest: &Digest) -> Result<bool, AppError> {
         let should = {
             let guard = self.index.lock();
@@ -881,6 +976,11 @@ impl Haystack {
     /// For each live locator: seek to payload offset, hash exactly `size`
     /// bytes, compare to the digest key. Mismatch or short read →
     /// [`Self::mark_quarantined`]. Returns how many needles were examined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O-backed [`AppError`] if a volume cannot be opened/read, or
+    /// if quarantine WAL append fails.
     pub async fn scrub_once(&self) -> Result<u64, AppError> {
         let mut by_volume: HashMap<VolumeId, Vec<(Digest, NeedleLocator)>> = HashMap::new();
         {
@@ -903,7 +1003,8 @@ impl Haystack {
             let mut file = tokio::fs::File::open(self.volume_path(volume_id)).await?;
             for (digest, locator) in needles {
                 examined += 1;
-                file.seek(std::io::SeekFrom::Start(locator.offset)).await?;
+                file.seek(std::io::SeekFrom::Start(locator.payload_offset))
+                    .await?;
 
                 let mut hasher = Sha256::new();
                 let mut remaining = locator.size;
@@ -936,6 +1037,11 @@ impl Haystack {
     /// trailing needles are not indexed; that volume is truncated to the last
     /// complete needle. Callers should [`Self::checkpoint`] afterward (clears
     /// the WAL and writes a fresh snapshot).
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if directory listing or a per-volume scan fails, or
+    /// if a scan thread panics.
     fn rebuild_index(&self) -> std::io::Result<()> {
         let volumes = self.list_volume_files()?;
         let mut needles = HashMap::new();
@@ -958,6 +1064,7 @@ impl Haystack {
         Ok(())
     }
 
+    /// List `(volume_id, path)` for every parseable `*.dat` under `volumes/`.
     fn list_volume_files(&self) -> std::io::Result<Vec<(VolumeId, PathBuf)>> {
         let mut volumes = Vec::new();
         for entry in std::fs::read_dir(&self.volumes_dir)? {
@@ -977,7 +1084,7 @@ impl Haystack {
     ///
     /// Reads sequential `[digest hex][size LE][payload]` frames (see module
     /// docs). Each complete needle becomes a live [`NeedleRecord`] whose
-    /// [`NeedleLocator::offset`] points at the **payload** start. Stops at the
+    /// [`NeedleLocator::payload_offset`] points at the **payload** start. Stops at the
     /// first incomplete / corrupt frame (short header, non-UTF8 / non-hex
     /// digest, or payload past EOF) and **truncates** the file to
     /// `good_end` so a torn trailing append cannot be served or extended over.
@@ -1034,7 +1141,7 @@ impl Haystack {
                 digest,
                 NeedleRecord::live(NeedleLocator {
                     volume_id,
-                    offset: payload_pos,
+                    payload_offset: payload_pos,
                     size,
                 }),
             );
@@ -1057,6 +1164,15 @@ mod tests {
 
     fn digest_of(bytes: &[u8]) -> Digest {
         Digest(hex::encode(Sha256::digest(bytes)))
+    }
+
+    /// Deterministic volume id for recovery / parse tests (`n` → fixed UUID).
+    fn vid(n: u128) -> VolumeId {
+        VolumeId(Uuid::from_u128(n))
+    }
+
+    fn volume_dat(dir: &Path, id: VolumeId) -> PathBuf {
+        dir.join(format!("{id}.dat"))
     }
 
     async fn stage(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
@@ -1115,14 +1231,9 @@ mod tests {
         assert!(!temp.exists(), "staging temp must be consumed");
         assert!(hs.contains(&digest));
         let locator = hs.locate(&digest).expect("indexed");
-        assert_eq!(
-            locator,
-            NeedleLocator {
-                volume_id: VolumeId(0),
-                offset: NEEDLE_HEADER_LEN,
-                size: bytes.len() as u64,
-            }
-        );
+        assert_eq!(locator.payload_offset, NEEDLE_HEADER_LEN);
+        assert_eq!(locator.size, bytes.len() as u64);
+        assert!(hs.volume_path(locator.volume_id).exists());
         assert_eq!(
             hs.scan_occupancy().unwrap(),
             (1, expected_occupancy(&[bytes.len()]))
@@ -1152,22 +1263,16 @@ mod tests {
 
         let a_payload = NEEDLE_HEADER_LEN;
         let b_payload = Haystack::needle_len(a.len() as u64) + NEEDLE_HEADER_LEN;
+        let loc_a = hs.locate(&da).unwrap();
+        let loc_b = hs.locate(&db).unwrap();
         assert_eq!(
-            hs.locate(&da).unwrap(),
-            NeedleLocator {
-                volume_id: VolumeId(0),
-                offset: a_payload,
-                size: 3,
-            }
+            loc_a.volume_id, loc_b.volume_id,
+            "both needles share a volume"
         );
-        assert_eq!(
-            hs.locate(&db).unwrap(),
-            NeedleLocator {
-                volume_id: VolumeId(0),
-                offset: b_payload,
-                size: 4,
-            }
-        );
+        assert_eq!(loc_a.payload_offset, a_payload);
+        assert_eq!(loc_a.size, 3);
+        assert_eq!(loc_b.payload_offset, b_payload);
+        assert_eq!(loc_b.size, 4);
         assert_eq!(
             hs.scan_occupancy().unwrap(),
             (1, expected_occupancy(&[3, 4]))
@@ -1199,14 +1304,9 @@ mod tests {
 
         let hs = Haystack::open(root.path()).unwrap();
         assert!(hs.contains(&digest));
-        assert_eq!(
-            hs.locate(&digest).unwrap(),
-            NeedleLocator {
-                volume_id: VolumeId(0),
-                offset: NEEDLE_HEADER_LEN,
-                size: bytes.len() as u64,
-            }
-        );
+        let locator = hs.locate(&digest).unwrap();
+        assert_eq!(locator.payload_offset, NEEDLE_HEADER_LEN);
+        assert_eq!(locator.size, bytes.len() as u64);
         let mut reader = hs.open_blob(&digest).await.unwrap();
         let mut got = Vec::new();
         reader.read_to_end(&mut got).await.unwrap();
@@ -1219,14 +1319,14 @@ mod tests {
         let bytes = b"complete";
         let digest = digest_of(bytes);
 
-        {
+        let volume = {
             let hs = Haystack::open(root.path()).unwrap();
             hs.commit_temp(&stage(root.path(), "t.tmp", bytes).await, &digest)
                 .await
                 .unwrap();
-        }
+            hs.volume_path(hs.locate(&digest).unwrap().volume_id)
+        };
 
-        let volume = root.path().join("volumes").join("0.dat");
         let good_len = expected_occupancy(&[bytes.len()]);
         {
             use std::io::Write;
@@ -1280,24 +1380,26 @@ mod tests {
         let b = b"vol-one";
         let da = digest_of(a);
         let db = digest_of(b);
+        let vol_a = vid(1);
+        let vol_b = vid(2);
 
-        write_needle(&volumes.join("0.dat"), &da, a);
-        write_needle(&volumes.join("1.dat"), &db, b);
+        write_needle(&volume_dat(&volumes, vol_a), &da, a);
+        write_needle(&volume_dat(&volumes, vol_b), &db, b);
 
         let hs = Haystack::open(root.path()).unwrap();
         assert_eq!(
             hs.locate(&da).unwrap(),
             NeedleLocator {
-                volume_id: VolumeId(0),
-                offset: NEEDLE_HEADER_LEN,
+                volume_id: vol_a,
+                payload_offset: NEEDLE_HEADER_LEN,
                 size: a.len() as u64,
             }
         );
         assert_eq!(
             hs.locate(&db).unwrap(),
             NeedleLocator {
-                volume_id: VolumeId(1),
-                offset: NEEDLE_HEADER_LEN,
+                volume_id: vol_b,
+                payload_offset: NEEDLE_HEADER_LEN,
                 size: b.len() as u64,
             }
         );
@@ -1307,18 +1409,18 @@ mod tests {
     }
 
     #[test]
-    fn volume_id_parse_accepts_dat_stems_and_rejects_junk() {
-        assert_eq!(
-            VolumeId::parse(std::ffi::OsStr::new("0.dat")),
-            Some(VolumeId(0))
-        );
-        assert_eq!(
-            VolumeId::parse(std::ffi::OsStr::new("42.dat")),
-            Some(VolumeId(42))
-        );
+    fn volume_id_parse_accepts_uuid_dat_stems_and_rejects_junk() {
+        let id = vid(42);
+        let name = format!("{id}.dat");
+        assert_eq!(VolumeId::parse(std::ffi::OsStr::new(&name)), Some(id));
+        assert_eq!(VolumeId::parse(std::ffi::OsStr::new("0.dat")), None);
         assert_eq!(VolumeId::parse(std::ffi::OsStr::new("0.idx")), None);
         assert_eq!(VolumeId::parse(std::ffi::OsStr::new("notes.txt")), None);
         assert_eq!(VolumeId::parse(std::ffi::OsStr::new(".dat")), None);
+        assert_eq!(
+            VolumeId::parse(std::ffi::OsStr::new("not-a-uuid.dat")),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1431,13 +1533,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            hs.locate(&digest).unwrap(),
-            NeedleLocator {
-                volume_id: VolumeId(0),
-                offset: NEEDLE_HEADER_LEN,
-                size: 0,
-            }
+            hs.locate(&digest).unwrap().payload_offset,
+            NEEDLE_HEADER_LEN
         );
+        assert_eq!(hs.locate(&digest).unwrap().size, 0);
         assert_eq!(read_all(&hs, &digest).await, b"");
         assert!(matches!(
             hs.open_blob_range(&digest, 0, 0).await,
@@ -1464,8 +1563,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(hs.locate(&d_big).unwrap().volume_id, VolumeId(0));
-        assert_eq!(hs.locate(&d_small).unwrap().volume_id, VolumeId(1));
+        assert_ne!(
+            hs.locate(&d_big).unwrap().volume_id,
+            hs.locate(&d_small).unwrap().volume_id,
+            "full volume must roll to a new uuid volume"
+        );
         assert_eq!(hs.scan_occupancy().unwrap().0, 2);
         assert_eq!(read_all(&hs, &d_big).await, big);
         assert_eq!(read_all(&hs, &d_small).await, small);
@@ -1479,9 +1581,10 @@ mod tests {
 
         let bytes = b"keep-me";
         let digest = digest_of(bytes);
-        write_needle(&volumes.join("0.dat"), &digest, bytes);
+        write_needle(&volume_dat(&volumes, vid(7)), &digest, bytes);
         std::fs::write(volumes.join("notes.txt"), b"not a volume").unwrap();
         std::fs::write(volumes.join("0.idx"), b"sidecar").unwrap();
+        std::fs::write(volumes.join("0.dat"), b"numeric stem is not a uuid volume").unwrap();
 
         let hs = Haystack::open(root.path()).unwrap();
         assert!(hs.contains(&digest));
@@ -1499,7 +1602,7 @@ mod tests {
 
         let good = b"complete-needle";
         let digest = digest_of(good);
-        let volume = volumes.join("0.dat");
+        let volume = volume_dat(&volumes, vid(3));
         write_needle(&volume, &digest, good);
 
         // Append a header that claims a large payload, then only a few bytes.
@@ -1533,7 +1636,7 @@ mod tests {
         let bytes = b"case-fold";
         let digest = digest_of(bytes);
         let upper = Digest(digest.as_str().to_ascii_uppercase());
-        write_needle(&volumes.join("0.dat"), &upper, bytes);
+        write_needle(&volume_dat(&volumes, vid(9)), &upper, bytes);
 
         let hs = Haystack::open(root.path()).unwrap();
         // parse normalizes to lowercase — matches the digest clients look up.
@@ -1619,7 +1722,7 @@ mod tests {
         let locator = hs.locate(&digest).unwrap();
         let volume = hs.volume_path(locator.volume_id);
         let mut raw = tokio::fs::read(&volume).await.unwrap();
-        let idx = locator.offset as usize;
+        let idx = locator.payload_offset as usize;
         raw[idx] ^= 0x01;
         tokio::fs::write(&volume, &raw).await.unwrap();
 
@@ -1676,6 +1779,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compaction_writes_a_new_volume_id_and_unlinks_the_old() {
+        let root = TempDir::new().unwrap();
+        let hs = Haystack::open(root.path()).unwrap();
+        let keep = digest_of(b"keep-me");
+        let drop = digest_of(b"drop-me");
+        hs.commit_temp(&stage(root.path(), "k.tmp", b"keep-me").await, &keep)
+            .await
+            .unwrap();
+        hs.commit_temp(&stage(root.path(), "d.tmp", b"drop-me").await, &drop)
+            .await
+            .unwrap();
+
+        let old_id = hs.locate(&keep).unwrap().volume_id;
+        assert!(hs.volume_path(old_id).exists());
+
+        hs.remove(&drop).await.unwrap();
+        hs.compaction().await.unwrap();
+
+        let new_loc = hs.locate(&keep).unwrap();
+        assert_ne!(
+            new_loc.volume_id, old_id,
+            "live needles must move to a new volume id"
+        );
+        assert!(
+            hs.volume_path(new_loc.volume_id).exists(),
+            "compacted volume must exist"
+        );
+        assert!(
+            !hs.volume_path(old_id).exists(),
+            "old volume must be unlinked after remap"
+        );
+        assert_eq!(read_all(&hs, &keep).await, b"keep-me");
+        assert_eq!(hs.scan_occupancy().unwrap().0, 1);
+    }
+
+    #[tokio::test]
     async fn compaction_is_noop_when_nothing_is_dirty() {
         let root = TempDir::new().unwrap();
         let hs = Haystack::open(root.path()).unwrap();
@@ -1709,13 +1848,14 @@ mod tests {
         hs.commit_temp(&stage(root.path(), "t.tmp", b"all-dead").await, &digest)
             .await
             .unwrap();
+        let old_id = hs.locate(&digest).unwrap().volume_id;
         assert_eq!(hs.scan_occupancy().unwrap().0, 1);
 
         hs.remove(&digest).await.unwrap();
         hs.compaction().await.unwrap();
 
         assert_eq!(hs.scan_occupancy().unwrap(), (0, 0));
-        assert!(!hs.volume_path(VolumeId(0)).exists());
+        assert!(!hs.volume_path(old_id).exists());
         let file: NeedleIndexFile =
             serde_json::from_slice(&std::fs::read(hs.index_path()).unwrap()).unwrap();
         assert!(file.entries.is_empty());
@@ -1777,9 +1917,9 @@ mod tests {
             expected_occupancy(&[b"left".len(), b"right".len()])
         );
         // Live needles should be packed at the start of the volume.
-        assert_eq!(hs.locate(&left).unwrap().offset, NEEDLE_HEADER_LEN);
+        assert_eq!(hs.locate(&left).unwrap().payload_offset, NEEDLE_HEADER_LEN);
         assert_eq!(
-            hs.locate(&right).unwrap().offset,
+            hs.locate(&right).unwrap().payload_offset,
             Haystack::needle_len(b"left".len() as u64) + NEEDLE_HEADER_LEN
         );
     }
