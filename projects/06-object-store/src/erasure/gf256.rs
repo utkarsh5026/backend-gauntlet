@@ -34,29 +34,38 @@ impl Gf256 {
     /// Irreducible polynomial used by AES and Linux RAID-6 (`x⁸ + x⁴ + x³ + x² + 1`).
     pub const REDUCTION_POLY: u16 = 0x11D;
 
+    /// Low byte of [`Self::REDUCTION_POLY`] — XOR'd in by [`Self::xtime`] after overflow.
+    pub const REDUCTION_BYTE: u8 = Self::REDUCTION_POLY as u8;
+
+    /// High bit of a byte — if set, [`Self::xtime`]'s left-shift overflows GF(2⁸).
+    pub const HIGH_BIT: u8 = 0x80;
+
+    /// Order of the multiplicative group (255 nonzero elements); log exponents mod this.
+    pub const MUL_ORDER: u16 = 255;
+
     /// Build log/antilog tables. Call once; reuse.
     pub fn new() -> Self {
         let mut log = [0; 256];
         let mut antilog = [0; 256];
         let mut x = 1u8;
-        for (i, slot) in antilog[..255].iter_mut().enumerate() {
+        for (i, slot) in antilog[..Self::MUL_ORDER as usize].iter_mut().enumerate() {
             log[x as usize] = i as u8;
             *slot = x;
             x = Self::xtime(x);
         }
-        antilog[255] = antilog[0];
+        antilog[Self::MUL_ORDER as usize] = antilog[0];
         Self { log, antilog }
     }
 
-    /// Multiply by 2 in GF(2⁸): left-shift, XOR `0x1D` if the high bit was set.
+    /// Multiply by 2 in GF(2⁸): left-shift, XOR [`Self::REDUCTION_BYTE`] if the high bit was set.
     ///
     /// Useful both for building tables and for the hand-checkable Q parity row.
     #[inline]
     pub fn xtime(a: u8) -> u8 {
-        let hi = a & 0x80;
+        let hi = a & Self::HIGH_BIT;
         let shifted = a << 1;
         if hi != 0 {
-            shifted ^ 0x1D
+            shifted ^ Self::REDUCTION_BYTE
         } else {
             shifted
         }
@@ -75,7 +84,7 @@ impl Gf256 {
             return 0;
         }
         let i = self.log[a as usize] as u16 + self.log[b as usize] as u16;
-        self.antilog[(i % 255) as usize]
+        self.antilog[(i % Self::MUL_ORDER) as usize]
     }
 
     /// Multiplicative inverse of a nonzero element.
@@ -85,7 +94,7 @@ impl Gf256 {
                 "multiplicative inverse of 0 is undefined".into(),
             ));
         }
-        Ok(self.antilog[(255 - self.log[a as usize] as u16) as usize])
+        Ok(self.antilog[(Self::MUL_ORDER - self.log[a as usize] as u16) as usize])
     }
 
     /// `a / b = a · b⁻¹`.
