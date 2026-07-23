@@ -162,6 +162,28 @@ you will debug networking and consistency at once.
 
 ---
 
+## 🧠 Card 7 — Erasure coding / RS → LRC → nines *(From the field · optional)*
+
+**The problem.** One CAS blob on one disk dies with the disk. 3× replication survives two failures but costs 200% extra storage. At petabyte scale that tax dominates the bill.
+
+**The idea.** Split into `k` data shards + `m` parity shards over **GF(2⁸)** so any `k` of `n=k+m` rebuild the original (Reed–Solomon). Start with systematic **RS(4,2)** / P+Q. Then **LRC** adds local parities so the common case (one lost shard) repairs with ≈ `k/l` reads, not `k`. Finally a **durability calculator** turns `(k, m, AFR, repair window)` into honest nines — eleven nines is a function of those inputs, not a property of "erasure coding" itself.
+
+**In the wild:** Backblaze Vaults (17+3), Azure LRC, Ceph EC pools, S3's durability engineering (scrub + repair on top of coded shards).
+
+**You own it when you can explain:**
+- [ ] Why GF(2⁸) (closed bytes, inverses, add=XOR) and what the `0x11D` / log-antilog tables buy you.
+- [ ] Why "any k of n" ≡ every `k×k` submatrix of the generator is invertible.
+- [ ] P+Q encode + reconstruct by hand for a two-data-shard loss (docs/12 §4).
+- [ ] Why single-disk repair fan-in is `k` for RS and ≈ `k/l` for LRC — and why I/O, not bytes, is the scarce resource.
+- [ ] How to compute nines from `(k,m,AFR,window)` and why RS(4,2) is ~9 nines under Backblaze's AFR, not 11.
+
+**Trap:** wiring shards into `Store` before the offline codec round-trips. Get encode → delete any `m` → reconstruct bit-exact first.
+
+**Teach-yourself doc:** [`docs/12-how-erasure-coding-works.md`](docs/12-how-erasure-coding-works.md).
+**Scaffold:** [`src/erasure/`](src/erasure/) · proof: [`tests/erasure_acceptance.rs`](tests/erasure_acceptance.rs).
+
+---
+
 ## ⚡ Rapid-fire round
 
 - [ ] `Range` semantics: `206` + `Content-Range`, open-ended (`bytes=a-`) and suffix (`bytes=-n`) forms, `416` with `bytes */len` — and why video seeking depends on them.

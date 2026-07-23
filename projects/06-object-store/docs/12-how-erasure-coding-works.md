@@ -9,13 +9,15 @@
 > assumed. It helps to know V1's content-addressed store (a blob's name is the
 > hash of its bytes).
 >
-> **This is a teach-ahead doc.** Unlike the other deep dives, there is *no
-> erasure-coding module in `src/` yet* — this explains the concept and the design
-> you'd build, the same way [`docs/03-how-fuse-mountpoint-works.md`](03-how-fuse-mountpoint-works.md)
-> taught FUSE before any code. It anchors to the *real* code the future coder
-> would sit on top of:
+> **Scaffold is in place; bodies are yours.** The codec lab lives at
+> [`src/erasure/`](../src/erasure/) (`gf256` → `reed_solomon` → `lrc` →
+> `durability`) with `todo!()` markers and ignored acceptance tests in
+> [`tests/erasure_acceptance.rs`](../tests/erasure_acceptance.rs). This doc is
+> the teach-yourself path — same role as the other deep dives. It anchors to the
+> *real* code the codec would eventually sit under:
 > [`src/store/mod.rs`](../src/store/mod.rs) / [`src/store/file_cas.rs`](../src/store/file_cas.rs)
-> (the content-addressed blob layer erasure coding would replace),
+> (the content-addressed blob layer erasure coding would replace — **not wired
+> yet**; fill the codec offline first),
 > [`src/streaming.rs`](../src/streaming.rs) (`CheckSumAlgorithm` — how corruption
 > is *noticed*, the precondition every repair scheme assumes),
 > [`docs/04-how-continuous-scrubbing-works.md`](04-how-continuous-scrubbing-works.md)
@@ -622,7 +624,14 @@ cold tier):
 ## 9. Where to start (a nudge, not a solution)
 
 Per this repo's rules, the code is yours to write — here's the first fork in the
-road, not the map:
+road, not the map. Open the matching `todo!()` as you go:
+
+| Step | File | Un-ignore when ready |
+| --- | --- | --- |
+| 1. GF(2⁸) tables | [`src/erasure/gf256.rs`](../src/erasure/gf256.rs) | `gf256_*` tests |
+| 2. RS(4,2) P+Q | [`src/erasure/reed_solomon.rs`](../src/erasure/reed_solomon.rs) | `rs_4_2_*` / `hand_worked_*` |
+| 3. LRC `(4,2,2)` | [`src/erasure/lrc.rs`](../src/erasure/lrc.rs) | `lrc_*` |
+| 4. Nines calculator | [`src/erasure/durability.rs`](../src/erasure/durability.rs) | `durability_*` |
 
 - **The very first decision is the GF(2⁸) layer**, because everything (encode,
   decode, both parity kinds) is built on it. Settle the reduction polynomial
@@ -637,6 +646,12 @@ road, not the map:
   Anvin's "The mathematics of RAID-6" for the P+Q derivation; the Azure LRC paper
   for `(k, l, r)`. All are grounded in RESEARCH.md §Part 3.
 
+```bash
+# work the ignored suite one layer at a time:
+cargo test -p object-store --test erasure_acceptance -- --ignored gf256
+cargo test -p object-store --test erasure_acceptance -- --ignored rs_4_2
+```
+
 The whole point: **any `k` of `n`, because the encoding matrix is built so every
 `k×k` submatrix inverts, over an arithmetic (GF(2⁸)) that keeps bytes exact.**
 Everything else — LRC's cheaper repair, the calculator's nines — is a
@@ -644,8 +659,8 @@ consequence of that one sentence.
 
 ---
 
-*Anchored to real code: [`src/store/mod.rs`](../src/store/mod.rs),
-[`src/store/file_cas.rs`](../src/store/file_cas.rs),
+*Scaffold: [`src/erasure/`](../src/erasure/). Anchored to real store code:
+[`src/store/mod.rs`](../src/store/mod.rs), [`src/store/file_cas.rs`](../src/store/file_cas.rs),
 [`src/streaming.rs`](../src/streaming.rs). Concept siblings:
 [`docs/04-how-continuous-scrubbing-works.md`](04-how-continuous-scrubbing-works.md),
 [`docs/07-durability-review.md`](07-durability-review.md). Full industry context:

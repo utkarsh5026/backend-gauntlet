@@ -325,17 +325,22 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
 
 ### Storage-engine labs
 
-- [~] Erasure-coding lab: RS(4,2) over GF(2⁸) with log/antilog tables — a blob
+- [✔] Erasure-coding lab: RS(4,2) over GF(2⁸) with log/antilog tables — a blob
   split into 6 shards reconstructs bit-exact after any 2 are deleted
-  *(→ RESEARCH.md §Part 3)*
-  
-- [~] Local Reconstruction Codes on top of the RS lab: with (k, l, r) local
+  *(→ RESEARCH.md §Part 3; teach-yourself:
+  [`docs/12-how-erasure-coding-works.md`](docs/12-how-erasure-coding-works.md);
+  `src/erasure/{mod,gf256,reed_solomon}.rs`;
+  proof: `tests/erasure_acceptance.rs::rs_4_2_survives_any_two_erasures`)*
+- [✔] Local Reconstruction Codes on top of the RS lab: with (k, l, r) local
   groups, repairing a single lost shard reads only its local group (≈ k/l
   shards), not all k — measure the repair-read fan-in both ways
-  *(→ RESEARCH.md §Part 3)*
-- [~] Your own durability number: a calculator that turns (k, m, per-shard
+  *(→ RESEARCH.md §Part 3; `src/erasure/lrc.rs`;
+  proof: `tests/erasure_acceptance.rs::lrc_single_shard_repair_fan_in`)*
+- [✔] Your own durability number: a calculator that turns (k, m, per-shard
   annual failure rate, repair window) into nines, Backblaze-style, with the
-  result and its assumptions in the bench doc *(→ RESEARCH.md §Part 3)*
+  result and its assumptions in the bench doc
+  *(→ RESEARCH.md §Part 3; `src/erasure/durability.rs`;
+  proof: `tests/erasure_acceptance.rs::durability_nines_in_expected_bands`)*
 - [~] Small-object packing (Haystack "needles"): thousands of tiny objects
   occupy a handful of append-only volume files instead of one file each, and
   GET still streams each one correctly
