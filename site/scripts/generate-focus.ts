@@ -21,98 +21,112 @@
  * copy of that file is just a last-known-good snapshot for anyone who reads
  * the repo without running the script; every dev/build run recomputes it.
  */
-import { execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = join(SCRIPT_DIR, '..', '..')
-const OUT_FILE = join(SCRIPT_DIR, '..', 'src', 'data', 'focus.generated.ts')
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(SCRIPT_DIR, "..", "..");
+const OUT_FILE = join(SCRIPT_DIR, "..", "src", "data", "focus.generated.ts");
 
 /** How many project-touching merges to poll. */
-const WINDOW = 10
+const WINDOW = 10;
 /** Safety cap on how far back to look for WINDOW qualifying merges. */
-const MAX_MERGES_SCANNED = 60
+const MAX_MERGES_SCANNED = 60;
 
 function git(args: string[]): string {
-  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim()
+  return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
 }
 
 /** 'projects/06-object-store/src/foo.rs' -> '06' */
 function projectIdFromPath(path: string): string | null {
-  return path.match(/^projects\/(\d+)-[^/]+\//)?.[1] ?? null
+  return path.match(/^projects\/(\d+)-[^/]+\//)?.[1] ?? null;
 }
 
-type Vote = { hash: string; projectId: string }
+type Vote = { hash: string; projectId: string };
 
 /** Newest-first votes, one per merge that touched at least one projects/ path. */
 function collectVotes(): Vote[] {
-  let merges: string[]
+  let merges: string[];
   try {
-    merges = git(['log', '--first-parent', '--merges', `-n${MAX_MERGES_SCANNED}`, '--pretty=format:%H'])
-      .split('\n')
-      .filter(Boolean)
+    merges = git([
+      "log",
+      "--first-parent",
+      "--merges",
+      `-n${MAX_MERGES_SCANNED}`,
+      "--pretty=format:%H",
+    ])
+      .split("\n")
+      .filter(Boolean);
   } catch {
-    return [] // not a git checkout, or git isn't on PATH
+    return []; // not a git checkout, or git isn't on PATH
   }
 
-  const votes: Vote[] = []
+  const votes: Vote[] = [];
   for (const hash of merges) {
-    if (votes.length >= WINDOW) break
+    if (votes.length >= WINDOW) break;
 
-    let files: string[]
+    let files: string[];
     try {
-      files = git(['diff', '--name-only', `${hash}^1..${hash}`]).split('\n').filter(Boolean)
+      files = git(["diff", "--name-only", `${hash}^1..${hash}`])
+        .split("\n")
+        .filter(Boolean);
     } catch {
-      continue // e.g. a shallow checkout missing this merge's parents
+      continue; // e.g. a shallow checkout missing this merge's parents
     }
 
-    const filesPerProject = new Map<string, number>()
+    const filesPerProject = new Map<string, number>();
     for (const file of files) {
-      const id = projectIdFromPath(file)
-      if (id) filesPerProject.set(id, (filesPerProject.get(id) ?? 0) + 1)
+      const id = projectIdFromPath(file);
+      if (id) filesPerProject.set(id, (filesPerProject.get(id) ?? 0) + 1);
     }
-    if (filesPerProject.size === 0) continue // docs/CI/site-only merge — not project work, abstain
+    if (filesPerProject.size === 0) continue; // docs/CI/site-only merge — not project work, abstain
 
     // This merge's vote goes to whichever project it touched the most files in.
-    const [topProjectId] = [...filesPerProject.entries()].sort((a, b) => b[1] - a[1])[0]!
-    votes.push({ hash, projectId: topProjectId })
+    const [topProjectId] = [...filesPerProject.entries()].sort((a, b) => b[1] - a[1])[0]!;
+    votes.push({ hash, projectId: topProjectId });
   }
-  return votes
+  return votes;
 }
 
-function pickFocus(votes: Vote[]): { id: string; tally: Record<string, number>; window: number } | null {
-  if (votes.length === 0) return null
+function pickFocus(
+  votes: Vote[],
+): { id: string; tally: Record<string, number>; window: number } | null {
+  if (votes.length === 0) return null;
 
-  const tally: Record<string, number> = {}
-  for (const vote of votes) tally[vote.projectId] = (tally[vote.projectId] ?? 0) + 1
+  const tally: Record<string, number> = {};
+  for (const vote of votes) tally[vote.projectId] = (tally[vote.projectId] ?? 0) + 1;
 
   // votes[] is newest-first, so the first project to reach the max tally is
   // also the most recently active one — ties favor recency automatically.
-  let winner = votes[0]!.projectId
-  let winnerCount = 0
+  let winner = votes[0]!.projectId;
+  let winnerCount = 0;
   for (const vote of votes) {
     if (tally[vote.projectId]! > winnerCount) {
-      winnerCount = tally[vote.projectId]!
-      winner = vote.projectId
+      winnerCount = tally[vote.projectId]!;
+      winner = vote.projectId;
     }
   }
-  return { id: winner, tally, window: votes.length }
+  return { id: winner, tally, window: votes.length };
 }
 
-const focus = pickFocus(collectVotes())
+const focus = pickFocus(collectVotes());
 
 writeFileSync(
   OUT_FILE,
   `// Auto-generated by scripts/generate-focus.ts — do not edit by hand.\n` +
     `// Recomputed on every \`bun run dev\` / \`bun run build\` from the last N merged\n` +
     `// branches that touched a projects/ directory (see that script for the "why").\n` +
-    `export const GENERATED_FOCUS = ${focus ? JSON.stringify(focus, null, 2) : 'null'} as const\n`,
-)
+    `export const GENERATED_FOCUS = ${focus ? JSON.stringify(focus, null, 2) : "null"} as const\n`,
+);
 
 if (focus) {
-  console.log(`[generate-focus] current focus: ${focus.id} (${focus.tally[focus.id]}/${focus.window} recent project merges)`)
+  console.log(
+    `[generate-focus] current focus: ${focus.id} (${focus.tally[focus.id]}/${focus.window} recent project merges)`,
+  );
 } else {
-  console.log('[generate-focus] no project-touching merges found — falling back to FALLBACK_FOCUS in roadmap.ts')
+  console.log(
+    "[generate-focus] no project-touching merges found — falling back to FALLBACK_FOCUS in roadmap.ts",
+  );
 }

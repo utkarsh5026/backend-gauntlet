@@ -1,0 +1,6 @@
+node_modules
+dist
+.vite
+bun.lock
+public/assets
+src/data/focus.generated.ts

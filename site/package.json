@@ -8,13 +8,16 @@
     "generate:focus": "bun run scripts/generate-focus.ts",
     "dev": "bun run generate:focus && vite",
     "build": "bun run generate:focus && tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-icons": "^5.7.0",
     "react-router-dom": "^7.1.1",
     "tailwind-merge": "^3.0.2"
   },
@@ -23,6 +26,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "prettier": "^3.6.2",
     "tailwindcss": "^4.0.0",
     "typescript": "^7.0.2",
     "vite": "^5.4.11"

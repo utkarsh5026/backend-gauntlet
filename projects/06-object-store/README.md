@@ -134,5 +134,7 @@ Everything I had to understand, I wrote down first-principles style:
 - [`docs/08-how-loom-and-shuttle-work.md`](docs/08-how-loom-and-shuttle-work.md) — concurrency model checkers (Loom exhaustive / Shuttle randomized) before the GC↔PUT race exercise.
 - [`docs/09-how-session-scoped-auth-works.md`](docs/09-how-session-scoped-auth-works.md) — amortize expensive identity once; cheap integrity on every hot-path request (S3 Express–style sessions).
 - [`docs/10-how-chunk-level-dedup-works.md`](docs/10-how-chunk-level-dedup-works.md) — content-defined chunking: near-duplicates share most on-disk bytes when whole-object dedup cannot.
+- [`docs/11-how-haystack-packing-works.md`](docs/11-how-haystack-packing-works.md) — small-object packing: thousands of tiny blobs in a few append-only volume files, located by an in-memory map instead of one inode each.
+- [`docs/12-how-erasure-coding-works.md`](docs/12-how-erasure-coding-works.md) — surviving lost disks for a fraction of replication's cost: Reed–Solomon RS(4,2) → Local Reconstruction Codes → the durability ("nines") calculator, from XOR up.
 
 The graded contract lives in [`SPEC.md`](SPEC.md); the concept map I test myself against is [`CONCEPTS.md`](CONCEPTS.md); the industry research it's all distilled from — how S3, ShardStore, Backblaze, and Haystack really work — is [`RESEARCH.md`](RESEARCH.md).

@@ -4,8 +4,8 @@
 export const GENERATED_FOCUS = {
   "id": "06",
   "tally": {
-    "01": 1,
-    "06": 2
+    "06": 5,
+    "01": 1
   },
-  "window": 3
+  "window": 6
 } as const

@@ -1,9 +1,9 @@
-import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { Layout } from '@/components/Layout'
-import { Home } from '@/pages/Home'
-import { Method } from '@/pages/Method'
-import { Roadmap } from '@/pages/Roadmap'
-import { ProjectDetail } from '@/pages/ProjectDetail'
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Layout } from "@/components/Layout";
+import { Home } from "@/pages/Home";
+import { Method } from "@/pages/Method";
+import { Roadmap } from "@/pages/Roadmap";
+import { ProjectDetail } from "@/pages/ProjectDetail";
 
 export default function App() {
   return (
@@ -18,5 +18,5 @@ export default function App() {
         </Route>
       </Routes>
     </HashRouter>
-  )
+  );
 }

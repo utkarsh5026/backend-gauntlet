@@ -9,9 +9,11 @@ Lives at **https://utkarsh5026.github.io/backend-gauntlet/** after GitHub Pages 
 ```bash
 cd site
 bun install
-bun run dev      # http://localhost:5173/backend-gauntlet/
-bun run build   # → dist/
+bun run dev           # http://localhost:5173/backend-gauntlet/
+bun run build         # → dist/
 bun run preview
+bun run format        # Prettier --write
+bun run format:check  # Prettier --check (CI-friendly)
 ```
 
 Uses Vite `base: '/backend-gauntlet/'` and `HashRouter` so project Pages routing works without SPA rewrites.

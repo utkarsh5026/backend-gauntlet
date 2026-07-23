@@ -13,6 +13,7 @@ pub mod auth;
 pub mod bucket;
 pub mod cdc;
 pub mod durable;
+pub mod erasure;
 pub mod error;
 pub mod index;
 pub mod index_backend;

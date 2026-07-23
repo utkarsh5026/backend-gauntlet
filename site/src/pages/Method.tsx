@@ -1,21 +1,21 @@
 const pillars = [
   {
-    title: 'Two-axis SPECs',
+    title: "Two-axis SPECs",
     body: "Every project grades on verticals (build the hard core from scratch — the parts you'd normally cargo add) and horizontals (protocols, caching, security, observability woven into the same ticket).",
   },
   {
-    title: 'todo!() is the worklist',
-    body: 'Scaffolds compile; interesting logic panics at runtime on purpose. The gap between a clean cargo check and a defeated boss fight is where the learning lives.',
+    title: "todo!() is the worklist",
+    body: "Scaffolds compile; interesting logic panics at runtime on purpose. The gap between a clean cargo check and a defeated boss fight is where the learning lives.",
   },
   {
     title: 'Observable "done"',
-    body: 'Criteria are outcomes you can prove — tests, benches, design docs — never solution steps. A checkbox flips only when its Proof exists.',
+    body: "Criteria are outcomes you can prove — tests, benches, design docs — never solution steps. A checkbox flips only when its Proof exists.",
   },
   {
-    title: 'Boss fights',
+    title: "Boss fights",
     body: "Each project ends with a named load/failure scenario and numeric targets (RPS, p99, hit ratio). Vibes don't count; reproducible numbers do.",
   },
-]
+];
 
 export function Method() {
   return (
@@ -28,9 +28,8 @@ export function Method() {
           how this lab works
         </h1>
         <p className="m-0 text-fg-muted">
-          Not a tutorial walkthrough, not a product demo. A progression of
-          infrastructure primitives in Rust, designed so the owner writes the
-          interesting code themselves.
+          Not a tutorial walkthrough, not a product demo. A progression of infrastructure primitives
+          in Rust, designed so the owner writes the interesting code themselves.
         </p>
       </header>
 
@@ -43,9 +42,7 @@ export function Method() {
               </span>
               {p.title}
             </h2>
-            <p className="mb-0 mt-2.5 pl-5 leading-relaxed text-fg-muted">
-              {p.body}
-            </p>
+            <p className="mb-0 mt-2.5 pl-5 leading-relaxed text-fg-muted">{p.body}</p>
           </li>
         ))}
       </ul>
@@ -54,19 +51,18 @@ export function Method() {
         <p className="panel-title">what I refuse to do</p>
         <ul className="m-0 list-none space-y-2.5 p-0 text-fg-muted">
           <li>
-            <span className="mr-2 text-err">✕</span>copy-paste “full solutions”
-            for vertical challenges
+            <span className="mr-2 text-err">✕</span>copy-paste “full solutions” for vertical
+            challenges
           </li>
           <li>
-            <span className="mr-2 text-err">✕</span>skip benches and call a
-            feature done
+            <span className="mr-2 text-err">✕</span>skip benches and call a feature done
           </li>
           <li>
-            <span className="mr-2 text-err">✕</span>log secrets or commit{' '}
+            <span className="mr-2 text-err">✕</span>log secrets or commit{" "}
             <code className="text-fg">.env</code>
           </li>
           <li>
-            <span className="mr-2 text-err">✕</span>treat a green{' '}
+            <span className="mr-2 text-err">✕</span>treat a green{" "}
             <code className="text-fg">cargo check</code> as mastery
           </li>
         </ul>
@@ -75,12 +71,11 @@ export function Method() {
       <section className="space-y-2">
         <h2 className="rule-title m-0 text-[1rem] font-bold">why public</h2>
         <p className="m-0 text-fg-muted">
-          Hiring and peer eyes should see how I think about scale — tradeoffs,
-          failure modes, and proof — not a polished SaaS landing page for
-          unfinished crates. The repo is the source of truth; this site is the
-          reading room.
+          Hiring and peer eyes should see how I think about scale — tradeoffs, failure modes, and
+          proof — not a polished SaaS landing page for unfinished crates. The repo is the source of
+          truth; this site is the reading room.
         </p>
       </section>
     </article>
-  )
+  );
 }
