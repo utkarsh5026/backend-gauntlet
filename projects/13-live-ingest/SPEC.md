@@ -1,5 +1,5 @@
 <!-- status:
-state: not-started       # active | paused | blocked | done | not-started
+state: active            # active | paused | blocked | done | not-started
 blocked-on: ~            # free text, or ~ for none
 -->
 
@@ -74,24 +74,27 @@ the previous chunk on that same stream id (type 3 repeats everything). Timestamp
 into whole messages — while honoring a mid-stream **Set Chunk Size** — is the work.
 
 **Done when ALL true:**
-- [ ] The **handshake completes** with a real broadcaster (`ffmpeg`/OBS): after
+- [x] The **handshake completes** with a real broadcaster (`ffmpeg`/OBS): after
   C0/C1↔S0/S1/S2↔C2 the peer proceeds to send commands — a wrong echo or length and it
   hangs up, so completion *is* the proof it's byte-correct.
-- [ ] A message split across **multiple chunks** is reassembled into one message with
+- [x] A message split across **multiple chunks** is reassembled into one message with
   the correct length and payload — no chunk boundary ever leaks into the message body.
-- [ ] All four chunk **header formats (0–3)** decode, with fmt 1/2/3 correctly
+- [x] All four chunk **header formats (0–3)** decode, with fmt 1/2/3 correctly
   inheriting the missing fields (timestamp delta, message length, type id, stream id)
   from the prior chunk on that chunk stream id.
-- [ ] **Extended timestamps** (value `0xFFFFFF`) are read from the 4 extra bytes, and a
+- [x] **Extended timestamps** (value `0xFFFFFF`) are read from the 4 extra bytes, and a
   mid-stream **Set Chunk Size** changes the reassembly boundary from then on.
-- [ ] A **truncated, oversized, or malformed** chunk is rejected as an error that ends
+- [x] A **truncated, oversized, or malformed** chunk is rejected as an error that ends
   the session cleanly — never a panic, an unbounded allocation, or an out-of-bounds read.
 
-**Proof:** unit tests decoding captured chunk sequences (fmt 0→3 inheritance, a
-multi-chunk message, an extended timestamp) into expected messages
-(`reassembles_multichunk_message`, `chunk_header_fmt_inheritance`); a fuzz/property test
-that random/truncated bytes never panic the reader (`malformed_chunks_never_panic`); and
-a live handshake with `ffmpeg` reaching the command phase, noted in `docs/13-design.md`.
+**Proof:** unit tests decoding synthetic chunk sequences (fmt 0→3 inheritance, a
+multi-chunk message, an extended timestamp, mid-stream Set Chunk Size) into expected
+messages (`reassembles_multichunk_message`, `chunk_header_fmt_inheritance`,
+`extended_timestamp_read_from_four_bytes`, `set_chunk_size_changes_reassembly_boundary`);
+a property test that random/truncated bytes never panic the reader
+(`malformed_chunks_never_panic`); handshake tests over a loopback socket
+(`handshake_completes_with_well_behaved_client`, …); and a live `ffmpeg` handshake
+reaching the command phase, reproduced by `scripts/smoke_rtmp.py` (`make smoke-rtmp`).
 
 *Concept to internalize:* why a media protocol multiplexes messages into small chunks
 (head-of-line blocking on a shared TCP connection), how RTMP's delta-compressed chunk
@@ -115,27 +118,32 @@ the first video/audio messages: the AVC **sequence header** (SPS/PPS, i.e. the
 segment.
 
 **Done when ALL true:**
-- [ ] AMF0 **decodes and encodes** the value types a publish flow uses (number,
+- [x] AMF0 **decodes and encodes** the value types a publish flow uses (number,
   boolean, string, object, null) and **round-trips** (decode∘encode is identity on
   those); a value with a trailing/short buffer errors, never panics.
-- [ ] The session drives the **full publish sequence**: it answers `connect` with
+- [x] The session drives the **full publish sequence**: it answers `connect` with
   `_result`, `createStream` with a stream id, and `publish` with an `onStatus`
   `NetStream.Publish.Start` — a real broadcaster transitions to sending media.
-- [ ] The session is a **state machine**: media (audio/video) messages are accepted
+- [x] The session is a **state machine**: media (audio/video) messages are accepted
   **only after** a successful `publish`, and an out-of-order or duplicate command is
   handled without corrupting state (rejected or ignored, documented which).
 - [ ] The **codec config is extracted**: the AVC sequence header (SPS/PPS → `avcC`,
   with width/height) and the AAC AudioSpecificConfig are captured from the first tags
-  and handed to the packager — not the per-frame data, the *setup*.
-- [ ] A publish to an **unknown/absent stream key is refused** (see security) and the
+  and handed to the packager — not the per-frame data, the *setup*. *(Open — the media
+  branch accepts A/V but parsing the sequence headers lands with V3.)*
+- [x] A publish to an **unknown/absent stream key is refused** (see security) and the
   session closes — an open ingest is a takeover vector, so the key gates the transition
   to the publishing state.
 
-**Proof:** unit tests round-tripping AMF0 values and decoding a captured `connect`
-/`publish` command (`amf0_roundtrips_publish_command`); a state-machine test that a
-media message before `publish` is rejected and after `publish` is accepted
-(`media_rejected_before_publish`); a live `ffmpeg` publish reaching the media phase,
-noted in `docs/13-design.md`.
+**Proof:** unit + property tests round-tripping AMF0 values and decoding a `connect`
+/`publish` command (`roundtrip_publish_command`, `encode_then_decode_is_identity`,
+`decode_connect_command`); state-machine tests over a loopback socket that media before
+`publish` is rejected and after is accepted, and that an unknown key is refused
+(`media_rejected_before_publish`, `media_accepted_after_publish`,
+`unauthorized_publish_key_is_refused`, `out_of_order_command_is_rejected`); and a live
+`ffmpeg` publish reaching the media phase — `publish accepted`, ffmpeg exit 0 —
+reproduced by `scripts/smoke_rtmp.py`. *Codec-config extraction (box 4) is still open;
+it lands with V3.*
 
 *Concept to internalize:* AMF0's typed-marker wire format; RTMP's command/response
 RPC and the `connect`→`createStream`→`publish` sequence; and why the ingest is a state
@@ -332,6 +340,55 @@ timecode/QR (publisher clock vs. what a player renders).
 **Proof:** methodology + latency distribution + the memory-over-time trace and the
 blocking-reload hold-time histogram in `docs/13-benchmarks.md` (hardware + source +
 `ffmpeg`/player commands reproducible via `bench/`).
+
+## 🔬 From the field
+
+<!-- Adoption backlog distilled from RESEARCH.md by /harvest. NOT graded:
+     [~] = open, [✔] = adopted — not counted toward graded progress;
+     shown under FROM THE FIELD in status detail.
+     Tick a box when the idea has actually landed in this project. -->
+
+Industry techniques beyond the graded contract above — things real ingest stacks
+(nginx-rtmp, SRS, Mux/Twitch/YouTube, Apple/DASH-IF) do that this project *could*
+adopt at single-node scale. Ordered quick-wins → ambitious within each group.
+
+### RTMP wire & command extras
+- [~] The **complex/digest handshake** (HMAC-SHA256 over the 1536-byte blob, `GENUINE_FP/FMS` keys, scheme-0/1 offset) is accepted when a client insists on it — validate the digest, otherwise fall back to the simple handshake *(→ RESEARCH.md §Part 2)*
+- [~] **`FCPublish`/`releaseStream` are answered** (`onFCPublish`) instead of silently ignored, matching FMS-lineage encoders *(→ RESEARCH.md §Part 2)*
+- [~] **Window-acknowledgement flow control**: after every negotiated `window` bytes received, an Acknowledgement (type 3) is sent, so a fast publisher never stalls *(→ RESEARCH.md §Part 2)*
+- [~] An **Abort message (type 2)** discards the partial message on that csid without desyncing the reader *(→ RESEARCH.md §Part 2)*
+- [~] The server **raises its own outbound chunk size** above the 128-byte default (e.g. 4096) via Set Chunk Size, cutting per-chunk header overhead on replies/media *(→ RESEARCH.md §Part 2)*
+- [~] **`@setDataFrame`/`onMetaData`** (data message type 18) is parsed for width/height/framerate/bitrate and reconciled against the codec config from the sequence headers *(→ RESEARCH.md §Part 2)*
+- [~] **Enhanced RTMP** video is understood: the `IsExHeader` bit + 4-byte FourCC route `hvc1`/`av01`/`vp09`, capability is negotiated on `connect` with graceful fallback, and `CodedFramesX` skips the CTS field when it's zero *(→ RESEARCH.md §Part 2)*
+- [~] Interop is verified against **OBS as well as ffmpeg** — the 2012 spec is buggy, so the Thornburgh Errata is authoritative and both encoders are exercised *(→ RESEARCH.md §Part 2)*
+
+### Ingest admission & fast-join
+- [~] Publishing **begins on a keyframe** (`wait_key`), so the first emitted segment is always independently decodable *(→ RESEARCH.md §Part 3)*
+- [~] A **GOP cache** (last IDR + following frames) lets a new viewer start decoding immediately instead of waiting up to a full GOP *(→ RESEARCH.md §Part 3)*
+- [~] **Ingest sanity limits** are enforced/warned — an over-long keyframe interval or out-of-range bitrate is flagged the way YouTube/Twitch reject an "unstable" stream *(→ RESEARCH.md §Part 3)*
+- [~] **Backpressure is explicit**: a lagging publisher emits a discontinuity (or stalls) rather than producing negative deltas, and a bursting one drops oldest un-referenced data *(→ RESEARCH.md §Part 3)*
+- [~] Stream-key auth can go through an async **`on_publish` HTTP callback** (2xx admits, non-2xx rejects), not only a static allow-list *(→ RESEARCH.md §Part 3)*
+
+### fMP4 remux correctness
+- [~] **`lengthSizeMinusOne` from `avcC` is honored**, so a producer using 2-byte NAL-length prefixes parses correctly, not just the usual 4-byte *(→ RESEARCH.md §Part 4)*
+- [~] A **`styp` box** is emitted at each segment start (CMAF segment typing) *(→ RESEARCH.md §Part 4)*
+- [~] The segment's **first sample is flagged non-sync/independent** (`first-sample-flags`, `sample_depends_on`) so players can find seek points *(→ RESEARCH.md §Part 4)*
+- [~] **B-frames round-trip**: `trun` version 1 with **signed** `sample_composition_time_offset` represents PTS < DTS from FLV `CompositionTime` *(→ RESEARCH.md §Part 4)*
+- [~] **`baseMediaDecodeTime` is a running accumulator in the source timescale** — zero rounding drift over a multi-hour stream, not per-sample ms→timescale rounding *(→ RESEARCH.md §Part 4)*
+
+### LL-HLS & delivery extras
+- [~] A blocking request for a **past MSN** (already evicted) or one **too far in the future** returns `400`, not an indefinite hold *(→ RESEARCH.md §Part 5)*
+- [~] **Parts are addressable as byte-ranges** into the growing segment file (`EXT-X-PART:…,BYTERANGE=`), so the finished segment is one cacheable object *(→ RESEARCH.md §Part 5)*
+- [~] **Delta playlists** (`EXT-X-SKIP` + `CAN-SKIP-UNTIL`, client `_HLS_skip=YES`) shrink the reload payload as the window grows *(→ RESEARCH.md §Part 5)*
+- [~] **Rendition reports** (`EXT-X-RENDITION-REPORT`) + `EXT-X-PRELOAD-HINT:TYPE=MAP` let a player switch renditions without a probe round-trip *(→ RESEARCH.md §Part 5, needs an ABR ladder)*
+- [~] A second **LL-DASH front-end** serves the *same* CMAF chunks via HTTP chunked transfer + `availabilityTimeOffset`, with `prft`/`UTCTiming` boxes for true-latency measurement *(→ RESEARCH.md §Part 5, ambitious)*
+
+### Reliability, discontinuity & conformance testing
+- [~] **RTMP 32-bit timestamp wrap / encoder restart** is detected (a large backward jump) and emits `EXT-X-DISCONTINUITY` + `EXT-X-DISCONTINUITY-SEQUENCE`, resetting `baseMediaDecodeTime` instead of going negative *(→ RESEARCH.md §Part 7)*
+- [~] A missing segment is signalled with **`EXT-X-GAP`** rather than letting the player 404 *(→ RESEARCH.md §Part 7)*
+- [~] Output is gated on Apple's **`mediastreamvalidator`/`hlsreport`** — the canonical LL-HLS conformance check — not just "it plays in Safari" *(→ RESEARCH.md §Part 7)*
+- [~] **Golden-file tests** assert byte-exact init segments and `moof` structures (timestamps patched out) *(→ RESEARCH.md §Part 7)*
+- [~] A **timeline drift property test** asserts Σ(sample durations) == lastDTS − firstDTS across a long synthetic stream — no accumulated rounding error *(→ RESEARCH.md §Part 7)*
 
 ## Suggested order of attack
 1. Get the boring path working: the RTMP listener accepts a TCP connection and the HTTP
