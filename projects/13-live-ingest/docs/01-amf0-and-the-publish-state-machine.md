@@ -124,28 +124,28 @@ them back):
 ffmpeg / OBS                              your Session
      │                                          │ state: Connected
      │  connect("live")  txn=1                  │
-     │────────────────────────────────────────▶│
+     │────────────────────────────────────────▶ │
      │                                          │ (Window Ack Size, Set Peer BW —
-     │◀────────────────────────────────────────│  bookkeeping, then:)
+     │◀──────────────────────────────────────── │  bookkeeping, then:)
      │  _result  txn=1  {code:                  │
      │◀──"NetConnection.Connect.Success"}───────│ state: AppConnected
      │                                          │
      │  releaseStream("testkey"), FCPublish     │ ← optional/legacy: ignore or
-     │────────────────────────────────────────▶│   ack loosely, never crash
+     │────────────────────────────────────────▶ │   ack loosely, never crash
      │                                          │
      │  createStream()  txn=4                   │
-     │────────────────────────────────────────▶│
+     │────────────────────────────────────────▶ │
      │  _result  txn=4  stream_id=1             │
-     │◀────────────────────────────────────────│ state: StreamCreated
+     │◀──────────────────────────────────────── │ state: StreamCreated
      │                                          │
      │  publish("testkey", "live")  on stream 1 │
-     │────────────────────────────────────────▶│ ── authorize("testkey") ──┐
-     │  onStatus {level:"status", code:         │                     pass │
-     │◀──"NetStream.Publish.Start"}─────────────│ state: Publishing  ◀─────┘
+     │────────────────────────────────────────▶ │ ── authorize("testkey") ──┐
+     │  onStatus {level:"status", code:         │                      pass │
+     │◀──"NetStream.Publish.Start"}─────────────│ state: Publishing   ◀─────┘
      │                                          │        (fail ⇒ refuse + close)
-     │  @setDataFrame/onMetaData, then           │
+     │  @setDataFrame/onMetaData, then          │
      │  AUDIO (8) / VIDEO (9) messages forever  │
-     │────────────────────────────────────────▶│ → V3 packager
+     │────────────────────────────────────────▶ │ → V3 packager
 ```
 
 Three replies gate three client behaviors: `_result` to `connect` unblocks
