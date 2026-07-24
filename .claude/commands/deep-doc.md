@@ -49,6 +49,13 @@ assumed background). Aim for a doc a beginner can follow end to end:
 - **Concrete worked examples** — real keys/bytes/paths/values traced through, in
   tables and ASCII diagrams, not prose alone.
 - **An end-to-end trace** — follow one real request/operation through every layer.
+- **"In the real world"** — when the concept has real production analogues, include a
+  section connecting it to how actual systems do it (named tools/services/protocols,
+  e.g. nginx-rtmp, Redis, S3, Postgres WAL, Envoy), what they add on top for
+  production, and where our from-scratch version deliberately stops. Ground each claim
+  concretely (a real config knob, RFC/spec section, error code, or documented
+  behaviour) — not vague hand-waving. Skip this section only if the topic is genuinely
+  project-internal with no external counterpart.
 - **A mental-model summary table** (looks-like vs. actually-is) and a **"where to
   look in the code"** index mapping subtopics → files.
 
