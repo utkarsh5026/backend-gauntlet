@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::debug;
 
 use crate::error::AppError;
 
@@ -81,9 +82,20 @@ where
             c0[0]
         )));
     }
+    debug!(
+        version = format!("{:#04x}", c0[0]),
+        "recv C0 — 1 byte: client's RTMP version"
+    );
 
     let mut c1 = [0u8; HANDSHAKE_SIZE];
     stream.read_exact(&mut c1).await?;
+    let client_time = u32::from_be_bytes([c1[0], c1[1], c1[2], c1[3]]);
+    debug!(
+        bytes = HANDSHAKE_SIZE,
+        client_time,
+        random = hex_preview(&c1[HANDSHAKE_RANDOM_OFFSET..]),
+        "recv C1 — time(4) + zero(4) + 1528B random (the server must echo this back in S2)"
+    );
 
     let now = (SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -111,13 +123,29 @@ where
     stream.write_all(&s0).await?;
     stream.write_all(&s1).await?;
     stream.write_all(&s2).await?;
+    debug!(
+        server_time = u32::from_be_bytes(now),
+        s1_random = hex_preview(&s1[HANDSHAKE_RANDOM_OFFSET..]),
+        s2_echoes = hex_preview(&s2[HANDSHAKE_RANDOM_OFFSET..]),
+        "send S0+S1+S2 — S1 carries our fresh random (client echoes it in C2); \
+         S2 echoes C1's random back"
+    );
 
     let mut c2 = [0u8; HANDSHAKE_SIZE];
     stream.read_exact(&mut c2).await?;
     // Simple handshake: only the random echo is the liveness proof.
     if c2[HANDSHAKE_RANDOM_OFFSET..] != s1[HANDSHAKE_RANDOM_OFFSET..] {
+        debug!(
+            expected = hex_preview(&s1[HANDSHAKE_RANDOM_OFFSET..]),
+            got = hex_preview(&c2[HANDSHAKE_RANDOM_OFFSET..]),
+            "recv C2 — random does NOT match S1: handshake rejected"
+        );
         return Err(AppError::BadRequest("C2 does not echo S1 random".into()));
     }
+    debug!(
+        random = hex_preview(&c2[HANDSHAKE_RANDOM_OFFSET..]),
+        "recv C2 — random echoes S1: liveness proven, handshake OK"
+    );
 
     Ok(())
 }
@@ -544,6 +572,23 @@ where
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf).await?;
     Ok(u32::from_be_bytes(buf))
+}
+
+/// Render the first few bytes of a slice as `de ad be ef …` for handshake debug logs —
+/// 1528-byte random blocks are meaningless in full, but their first bytes let you *see*
+/// the same random travelling out in S1 and back in C2.
+fn hex_preview(bytes: &[u8]) -> String {
+    const SHOWN: usize = 8;
+    let mut out = bytes
+        .iter()
+        .take(SHOWN)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if bytes.len() > SHOWN {
+        out.push_str(" …");
+    }
+    out
 }
 
 #[cfg(test)]
