@@ -4,6 +4,18 @@
     {
       "type": "lldb",
       "request": "launch",
+      "name": "Debug live-ingest",
+      "cargo": {
+        "args": ["build", "--bin=live-ingest", "--package=live-ingest"],
+        "filter": { "name": "live-ingest", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}/projects/13-live-ingest",
+      "envFile": "${workspaceFolder}/projects/13-live-ingest/.env"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
       "name": "Debug url-shortener",
       "cargo": {
         "args": ["build", "--bin=url-shortener", "--package=url-shortener"],
@@ -25,32 +37,11 @@
     {
       "type": "debugpy",
       "request": "launch",
-      "name": "Debug tools/status.py (project 01)",
+      "name": "Debug tools/status.py (project 13)",
       "program": "${workspaceFolder}/tools/status.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "args": ["01"],
-      "justMyCode": true
-    },
-    {
-      "type": "debugpy",
-      "request": "launch",
-      "name": "Debug url-shortener makefile.py",
-      "program": "${workspaceFolder}/projects/01-url-shortener/makefile.py",
-      "cwd": "${workspaceFolder}/projects/01-url-shortener",
-      "envFile": "${workspaceFolder}/projects/01-url-shortener/.env",
-      "console": "integratedTerminal",
-      "args": ["help"],
-      "justMyCode": true
-    },
-    {
-      "type": "debugpy",
-      "request": "launch",
-      "name": "Debug rate-limiter makefile.py",
-      "program": "${workspaceFolder}/projects/02-rate-limiter/makefile.py",
-      "cwd": "${workspaceFolder}/projects/02-rate-limiter",
-      "console": "integratedTerminal",
-      "args": ["help"],
+      "args": ["13"],
       "justMyCode": true
     }
   ]

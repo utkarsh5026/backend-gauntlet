@@ -8,5 +8,5 @@
 ## Learned Workspace Facts
 
 - `rustfmt` and format-on-save do not reformat bodies inside proc macros such as `proptest!`.
-- Active first project is `projects/01-url-shortener`; local dev uses its Makefile (`make verify`, `make dev`) and Docker Compose for Postgres/Redis.
-- Workspace `.vscode` settings point the integrated terminal cwd and env file at `projects/01-url-shortener`.
+- Active project is `projects/13-live-ingest` (RTMP → LL-HLS); no Docker/DB — run with `cargo run -p live-ingest`, optional `web/` player via Bun.
+- Workspace `.vscode` settings point the integrated terminal cwd and env file at `projects/13-live-ingest`.
