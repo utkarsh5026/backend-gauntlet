@@ -8,6 +8,9 @@
 //! **message header** that is *delta-compressed* against the previous chunk on the same
 //! chunk-stream id (fmt 3 repeats it entirely). This module does the socket I/O and
 //! reassembles chunks back into whole [`Message`]s; the codecs/commands inside are V2/V3.
+//!
+//! [`crate::session`] calls [`handshake`] once per connection, then loops on
+//! [`ChunkStreamReader::read_message`].
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -23,6 +26,11 @@ use crate::error::AppError;
 /// The default RTMP chunk size before a `Set Chunk Size` control message changes it.
 pub const DEFAULT_CHUNK_SIZE: usize = 128;
 
+/// Encode a value as a 24-bit big-endian field (timestamps and message lengths on the wire).
+fn u24_be(v: u32) -> [u8; 3] {
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+}
+
 /// The fixed size of each handshake block (C1/S1/C2/S2), in bytes.
 pub const HANDSHAKE_SIZE: usize = 1536;
 
@@ -33,7 +41,7 @@ pub const RTMP_VERSION: u8 = 0x03;
 /// (`time(4) + zero-or-time2(4) + random…`).
 const HANDSHAKE_RANDOM_OFFSET: usize = 8;
 
-// The minimum chunk size is 1 byte.
+/// Lower clamp for [`ChunkStreamReader::set_chunk_size`] (protocol allows 1 byte).
 const MIN_CHUNK_SIZE: usize = 1;
 
 /// One fully reassembled RTMP message: a typed payload on a message stream.
@@ -50,18 +58,157 @@ pub struct Message {
     pub payload: Bytes,
 }
 
+impl Message {
+    /// Build a message with timestamp `0` — the usual choice for protocol-control
+    /// and AMF0 command/`_result` replies during the publish handshake.
+    pub fn new(type_id: impl Into<u8>, stream_id: u32, payload: Bytes) -> Self {
+        Self::with_timestamp(type_id, stream_id, 0, payload)
+    }
+
+    /// Build a message with an explicit absolute timestamp (milliseconds).
+    pub fn with_timestamp(
+        type_id: impl Into<u8>,
+        stream_id: u32,
+        timestamp: u32,
+        payload: Bytes,
+    ) -> Self {
+        Self {
+            type_id: type_id.into(),
+            stream_id,
+            timestamp,
+            payload,
+        }
+    }
+}
+
 /// RTMP message type ids the ingest cares about.
-pub mod msg_type {
-    pub const SET_CHUNK_SIZE: u8 = 1;
-    pub const ABORT: u8 = 2;
-    pub const ACK: u8 = 3;
-    pub const USER_CONTROL: u8 = 4;
-    pub const WINDOW_ACK_SIZE: u8 = 5;
-    pub const SET_PEER_BANDWIDTH: u8 = 6;
-    pub const AUDIO: u8 = 8;
-    pub const VIDEO: u8 = 9;
-    pub const AMF0_DATA: u8 = 18;
-    pub const AMF0_COMMAND: u8 = 20;
+///
+/// Stored on the wire as a raw `u8` ([`Message::type_id`]); convert at dispatch with
+/// [`MsgType::try_from`]. Unknown ids stay as `u8` so forward-compat traffic doesn't
+/// break the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum MsgType {
+    /// Protocol control: new maximum chunk payload size (4-byte BE `u32`).
+    SetChunkSize = 1,
+    /// Protocol control: abort an incomplete message on a chunk-stream id.
+    Abort = 2,
+    /// Protocol control: acknowledgement of bytes received.
+    Ack = 3,
+    /// Protocol control: user-control events (stream begin, ping, …).
+    UserControl = 4,
+    /// Protocol control: window acknowledgement size.
+    WindowAckSize = 5,
+    /// Protocol control: peer bandwidth limit.
+    SetPeerBandwidth = 6,
+    /// Audio message (AAC frames / AudioSpecificConfig after publish).
+    Audio = 8,
+    /// Video message (AVC NALUs / sequence header after publish).
+    Video = 9,
+    /// AMF0 data / metadata (`@setDataFrame`, `onMetaData`, …).
+    Amf0Data = 18,
+    /// AMF0 command RPC (`connect`, `createStream`, `publish`, …).
+    Amf0Command = 20,
+}
+
+impl MsgType {
+    /// The wire `u8` value.
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+impl From<MsgType> for u8 {
+    fn from(value: MsgType) -> Self {
+        value.as_u8()
+    }
+}
+
+impl TryFrom<u8> for MsgType {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::SetChunkSize),
+            2 => Ok(Self::Abort),
+            3 => Ok(Self::Ack),
+            4 => Ok(Self::UserControl),
+            5 => Ok(Self::WindowAckSize),
+            6 => Ok(Self::SetPeerBandwidth),
+            8 => Ok(Self::Audio),
+            9 => Ok(Self::Video),
+            18 => Ok(Self::Amf0Data),
+            20 => Ok(Self::Amf0Command),
+            other => Err(other),
+        }
+    }
+}
+
+/// Common chunk-stream ids used on the wire (1-byte basic-header form, `2..=63`).
+pub mod csid {
+    /// Protocol control messages (window ack, set peer bandwidth, set chunk size, …).
+    pub const PROTOCOL_CONTROL: u8 = 2;
+    /// AMF0 command / `_result` / `onStatus` traffic (typical client/server choice).
+    pub const COMMAND: u8 = 3;
+}
+
+/// RTMP message stream ids (the 4-byte LE field in a fmt-0 header).
+pub mod msg_stream {
+    /// NetConnection — `connect`, `createStream`, and their `_result` replies.
+    pub const NETCONNECTION: u32 = 0;
+    /// First NetStream id assigned by `createStream` (publish / media / `onStatus`).
+    pub const DEFAULT: u32 = 1;
+}
+
+/// Write one [`Message`] as RTMP chunks on `stream` (fmt 0, then fmt 3 continuations).
+///
+/// Uses [`DEFAULT_CHUNK_SIZE`] for payload slicing — fine for control replies and until
+/// the session negotiates a larger outbound chunk size. `csid` is the chunk-stream id
+/// (low 6 bits; this helper only supports the 1-byte basic-header form, `2..=63`).
+pub async fn write_message<S>(stream: &mut S, csid: u8, msg: &Message) -> Result<(), AppError>
+where
+    S: AsyncWrite + Unpin,
+{
+    let len = msg.payload.len();
+    let len_u32 = u32::try_from(len).map_err(|_| {
+        AppError::BadRequest("message payload too large for RTMP length field".into())
+    })?;
+    if len_u32 > 0x00FF_FFFF {
+        return Err(AppError::BadRequest(
+            "message payload exceeds 24-bit RTMP length".into(),
+        ));
+    }
+    if !(2..=63).contains(&csid) {
+        return Err(AppError::BadRequest(format!(
+            "write_message only supports 1-byte csid 2..=63, got {csid}"
+        )));
+    }
+
+    let header = MessageHeaderField::Full {
+        timestamp: msg.timestamp,
+        message_length: len,
+        type_id: msg.type_id,
+        message_stream_id: msg.stream_id,
+    };
+
+    let first = len.min(DEFAULT_CHUNK_SIZE);
+    let mut buf = Vec::with_capacity(1 + 11 + first);
+    buf.push(csid & 0x3f); // fmt = 0
+    buf.extend_from_slice(&header.as_bytes());
+    buf.extend_from_slice(&msg.payload[..first]);
+    stream.write_all(&buf).await?;
+
+    let mut offset = first;
+    while offset < len {
+        let n = (len - offset).min(DEFAULT_CHUNK_SIZE);
+        let mut chunk = Vec::with_capacity(1 + n);
+        chunk.push(0xc0 | (csid & 0x3f)); // fmt = 3
+        chunk.extend_from_slice(&msg.payload[offset..offset + n]);
+        stream.write_all(&chunk).await?;
+        offset += n;
+    }
+
+    Ok(())
 }
 
 /// Perform the RTMP **simple** handshake as the **server** over `stream` (V1).
@@ -70,6 +217,18 @@ pub mod msg_type {
 /// `time(4) + zero-or-time2(4) + random(1528)`. S1 is original (our random);
 /// S2 echoes C1's random with our read time in the time2 field; C2 must echo
 /// S1's random (we check from [`HANDSHAKE_RANDOM_OFFSET`] — time2 is the peer's read time).
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] when C0 is not [`RTMP_VERSION`] or C2's random
+/// does not echo S1. Truncated or closed sockets surface as [`AppError::Other`].
+///
+/// # Examples
+///
+/// ```ignore
+/// // After accept: handshake then ChunkStreamReader::read_message in a loop.
+/// rtmp::handshake(&mut stream).await?;
+/// ```
 pub async fn handshake<S>(stream: &mut S) -> Result<(), AppError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -154,10 +313,15 @@ where
 /// fmt-1/2/3 chunk can inherit the fields it omits.
 #[derive(Debug, Clone, Default)]
 struct ChunkStreamCtx {
+    /// Absolute message timestamp in milliseconds (after deltas / extended ts).
     timestamp: u32,
+    /// Last timestamp delta — re-applied when a fmt-3 chunk starts a *new* message.
     timestamp_delta: u32,
+    /// Declared payload length of the in-flight (or last) message.
     message_length: usize,
+    /// RTMP message type id ([`MsgType`]).
     type_id: u8,
+    /// RTMP message stream id (from fmt 0; inherited thereafter).
     message_stream_id: u32,
     /// Bytes of the in-progress message accumulated so far (across chunks).
     partial: Vec<u8>,
@@ -167,6 +331,7 @@ struct ChunkStreamCtx {
 }
 
 impl ChunkStreamCtx {
+    /// Merge `header` into this csid's inherited state (fmt 0/1/2 paths).
     fn update(&mut self, header: &MessageHeaderField) {
         match header {
             MessageHeaderField::Full {
@@ -257,6 +422,37 @@ impl MessageHeaderField {
             Self::Inherited => {}
         }
     }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Full {
+                timestamp,
+                message_length,
+                type_id,
+                message_stream_id,
+            } => {
+                let mut buf = Vec::with_capacity(11);
+                buf.extend_from_slice(&u24_be(*timestamp));
+                buf.extend_from_slice(&u24_be(*message_length as u32));
+                buf.push(*type_id);
+                buf.extend_from_slice(&message_stream_id.to_le_bytes());
+                buf
+            }
+            Self::SameStream {
+                timestamp_delta,
+                message_length,
+                type_id,
+            } => {
+                let mut buf = Vec::with_capacity(7);
+                buf.extend_from_slice(&u24_be(*timestamp_delta));
+                buf.extend_from_slice(&u24_be(*message_length as u32));
+                buf.push(*type_id);
+                buf
+            }
+            Self::TimestampDelta { timestamp_delta } => u24_be(*timestamp_delta).to_vec(),
+            Self::Inherited => Vec::new(),
+        }
+    }
 }
 
 /// 24-bit timestamp/delta sentinel ⇒ a 4-byte extended timestamp follows.
@@ -267,6 +463,7 @@ const EXTENDED_TS_SENTINEL: u32 = 0x00FF_FFFF;
 struct MessageHeaderFormat(u8);
 
 impl MessageHeaderFormat {
+    /// Whether this is fmt 3 (no message-header bytes; inherit prior csid state).
     const fn is_inherited(self) -> bool {
         self.0 == 3
     }
@@ -275,6 +472,11 @@ impl MessageHeaderFormat {
 impl TryFrom<u8> for MessageHeaderFormat {
     type Error = AppError;
 
+    /// Parse a 2-bit `fmt` from the basic header (must be `0..=3`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::BadRequest`] when `fmt` is outside `0..=3`.
     fn try_from(fmt: u8) -> Result<Self, Self::Error> {
         if fmt < 4 {
             Ok(Self(fmt))
@@ -291,6 +493,7 @@ impl TryFrom<u8> for MessageHeaderFormat {
 struct Csid(u32);
 
 impl Csid {
+    /// Wrap a decoded chunk-stream id (already expanded past the 0/1 escapes).
     const fn new(id: u32) -> Self {
         Self(id)
     }
@@ -299,14 +502,22 @@ impl Csid {
 /// Reassembles the RTMP chunk stream into whole [`Message`]s.
 ///
 /// Holds the per-chunk-stream inheritance state and the current (negotiable) chunk
-/// size. `read_message` pulls chunks off the socket until one message is complete.
+/// size. [`Self::read_message`] pulls chunks off the socket until one message is
+/// complete.
 pub struct ChunkStreamReader {
+    /// Current max payload bytes per chunk ([`DEFAULT_CHUNK_SIZE`] until Set Chunk Size).
     chunk_size: usize,
+    /// Last header + partial payload keyed by [`Csid`].
     contexts: HashMap<Csid, ChunkStreamCtx>,
+    /// Hard cap on declared `message_length` (OOM guard).
     max_message_size: usize,
 }
 
 impl ChunkStreamReader {
+    /// Create a reader that rejects messages larger than `max_message_size`.
+    ///
+    /// Starts at [`DEFAULT_CHUNK_SIZE`]; a mid-stream Set Chunk Size updates the
+    /// boundary via [`Self::set_chunk_size`].
     pub fn new(max_message_size: usize) -> Self {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
@@ -317,6 +528,8 @@ impl ChunkStreamReader {
 
     /// Apply a `Set Chunk Size` control message — the reassembly boundary changes from
     /// here on. Bound it so a publisher can't set an absurd size.
+    ///
+    /// Clamped to [`MIN_CHUNK_SIZE`]..=`max_message_size`.
     pub fn set_chunk_size(&mut self, size: usize) {
         self.chunk_size = size.clamp(MIN_CHUNK_SIZE, self.max_message_size);
     }
@@ -338,6 +551,20 @@ impl ChunkStreamReader {
     ///
     /// `message_length` is range-checked against `max_message_size` before any further
     /// payload is accumulated, so a hostile length cannot OOM the reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::BadRequest`] for malformed headers, oversized lengths,
+    /// starting a new message while one is incomplete, or an overshot payload.
+    /// Truncated sockets and I/O failures surface as [`AppError::Other`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut reader = ChunkStreamReader::new(1 << 20);
+    /// let msg = reader.read_message(&mut stream).await?;
+    /// assert_eq!(msg.type_id, MsgType::Amf0Command.as_u8());
+    /// ```
     pub async fn read_message<S>(&mut self, stream: &mut S) -> Result<Message, AppError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -421,6 +648,11 @@ impl ChunkStreamReader {
     ///
     /// Returns the parsed [`MessageHeaderFormat`] and [`Csid`]. The message header
     /// (if any) is **not** read here — call [`Self::read_message_header`] next.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::BadRequest`] for an invalid `fmt`; short reads become
+    /// [`AppError::Other`].
     async fn read_basic_header<S>(stream: &mut S) -> Result<(MessageHeaderFormat, Csid), AppError>
     where
         S: AsyncRead + Unpin,
@@ -460,6 +692,11 @@ impl ChunkStreamReader {
     ///
     /// Does **not** read an extended timestamp; the caller checks for the `0xFFFFFF`
     /// sentinel on the 24-bit ts/delta and consumes those 4 bytes separately.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O failures as [`AppError::Other`] when the fmt-sized header is
+    /// truncated.
     async fn read_message_header<S>(
         stream: &mut S,
         format: MessageHeaderFormat,
@@ -520,6 +757,11 @@ impl ChunkStreamReader {
     /// When the completed message is `Set Chunk Size` (type id 1), its 4-byte BE
     /// payload is applied via [`Self::set_chunk_size`] **before** returning, so the
     /// new boundary is in effect for the next chunk read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::BadRequest`] if the buffer overshoots `message_length`, the
+    /// csid context is missing, or a Set Chunk Size payload is shorter than 4 bytes.
     fn assemble_chunk(&mut self, csid: Csid, data: &[u8]) -> Result<Option<Message>, AppError> {
         let (msg, new_chunk_size) = {
             let state = self.contexts.get_mut(&csid).ok_or_else(|| {
@@ -539,7 +781,7 @@ impl ChunkStreamReader {
 
             let msg = state.take_message();
 
-            let new_chunk_size = if msg.type_id == msg_type::SET_CHUNK_SIZE {
+            let new_chunk_size = if msg.type_id == MsgType::SetChunkSize.as_u8() {
                 if msg.payload.len() < 4 {
                     return Err(AppError::BadRequest(
                         "Set Chunk Size payload shorter than 4 bytes".into(),
@@ -565,6 +807,7 @@ impl ChunkStreamReader {
     }
 }
 
+/// Read four bytes as a big-endian `u32` (extended timestamps, Set Chunk Size).
 async fn read_u32_be<S>(stream: &mut S) -> Result<u32, AppError>
 where
     S: AsyncRead + Unpin,
@@ -930,7 +1173,7 @@ mod tests {
 
     /// A 24-bit big-endian field (RTMP timestamps and lengths are u24 BE on the wire).
     fn u24(v: u32) -> [u8; 3] {
-        [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+        u24_be(v)
     }
 
     /// One basic-header byte for a small csid (2..=63): `fmt` in the top 2 bits.
@@ -958,14 +1201,48 @@ mod tests {
     async fn single_chunk_message_reassembles() {
         // A message whose length fits inside one chunk (< default 128) is returned whole.
         let mut reader = ChunkStreamReader::new(1 << 20);
-        let mut bytes = fmt0_header(3, 1000, 5, msg_type::AMF0_COMMAND, 1);
+        let mut bytes = fmt0_header(3, 1000, 5, MsgType::Amf0Command.as_u8(), 1);
         bytes.extend_from_slice(&[1, 2, 3, 4, 5]);
 
         let msg = read_one(&mut reader, bytes).await.unwrap();
-        assert_eq!(msg.type_id, msg_type::AMF0_COMMAND);
+        assert_eq!(msg.type_id, MsgType::Amf0Command.as_u8());
         assert_eq!(msg.stream_id, 1);
         assert_eq!(msg.timestamp, 1000);
         assert_eq!(&msg.payload[..], &[1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn write_message_roundtrips_through_reader() {
+        let msg = Message {
+            type_id: MsgType::Amf0Command.as_u8(),
+            stream_id: 0,
+            timestamp: 0,
+            payload: Bytes::from_static(b"hello-amf0-body"),
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, 3, &msg).await.unwrap();
+
+        let mut reader = ChunkStreamReader::new(1 << 20);
+        let got = read_one(&mut reader, buf).await.unwrap();
+        assert_eq!(got.type_id, msg.type_id);
+        assert_eq!(got.stream_id, msg.stream_id);
+        assert_eq!(got.timestamp, msg.timestamp);
+        assert_eq!(got.payload, msg.payload);
+    }
+
+    #[test]
+    fn message_header_full_as_bytes_is_eleven_u24_be() {
+        let bytes = MessageHeaderField::Full {
+            timestamp: 0x010203,
+            message_length: 0x040506,
+            type_id: MsgType::Amf0Command.as_u8(),
+            message_stream_id: 0x090a_0b0c,
+        }
+        .as_bytes();
+        assert_eq!(
+            bytes,
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 20, 0x0c, 0x0b, 0x0a, 0x09]
+        );
     }
 
     #[tokio::test]
@@ -975,7 +1252,7 @@ mod tests {
         let mut reader = ChunkStreamReader::new(1 << 20);
         let payload: Vec<u8> = (0..200).map(|i| i as u8).collect();
 
-        let mut bytes = fmt0_header(3, 1000, 200, msg_type::AUDIO, 5);
+        let mut bytes = fmt0_header(3, 1000, 200, MsgType::Audio.as_u8(), 5);
         bytes.extend_from_slice(&payload[..128]);
         bytes.push(basic(3, 3)); // fmt 3 = continuation of the same message
         bytes.extend_from_slice(&payload[128..]);
@@ -985,7 +1262,7 @@ mod tests {
         assert_eq!(&msg.payload[..], &payload[..]);
         assert_eq!(msg.timestamp, 1000);
         assert_eq!(msg.stream_id, 5);
-        assert_eq!(msg.type_id, msg_type::AUDIO);
+        assert_eq!(msg.type_id, MsgType::Audio.as_u8());
     }
 
     #[tokio::test]
@@ -997,13 +1274,13 @@ mod tests {
         //   fmt 3 — new message, re-applies stored delta 50   (ts 1200, all inherited)
         let mut reader = ChunkStreamReader::new(1 << 20);
 
-        let mut bytes = fmt0_header(3, 1000, 2, msg_type::AUDIO, 5);
+        let mut bytes = fmt0_header(3, 1000, 2, MsgType::Audio.as_u8(), 5);
         bytes.extend_from_slice(&[0xA1, 0xA2]);
 
         bytes.push(basic(1, 3));
         bytes.extend_from_slice(&u24(100)); // ts delta
         bytes.extend_from_slice(&u24(2)); // len
-        bytes.push(msg_type::AUDIO);
+        bytes.push(MsgType::Audio.as_u8());
         bytes.extend_from_slice(&[0xB1, 0xB2]);
 
         bytes.push(basic(2, 3));
@@ -1022,7 +1299,7 @@ mod tests {
         // Every message inherits stream id 5, type 8, length 2.
         for m in &got {
             assert_eq!(m.stream_id, 5);
-            assert_eq!(m.type_id, msg_type::AUDIO);
+            assert_eq!(m.type_id, MsgType::Audio.as_u8());
             assert_eq!(m.payload.len(), 2);
         }
         let ts: Vec<u32> = got.iter().map(|m| m.timestamp).collect();
@@ -1038,7 +1315,7 @@ mod tests {
         let mut bytes = vec![basic(0, 3)];
         bytes.extend_from_slice(&u24(EXTENDED_TS_SENTINEL));
         bytes.extend_from_slice(&u24(2)); // len
-        bytes.push(msg_type::AUDIO);
+        bytes.push(MsgType::Audio.as_u8());
         bytes.extend_from_slice(&1u32.to_le_bytes()); // sid
         bytes.extend_from_slice(&65_536u32.to_be_bytes()); // extended timestamp
         bytes.extend_from_slice(&[0x01, 0x02]);
@@ -1060,7 +1337,7 @@ mod tests {
         let mut bytes = vec![basic(0, 3)];
         bytes.extend_from_slice(&u24(EXTENDED_TS_SENTINEL));
         bytes.extend_from_slice(&u24(130));
-        bytes.push(msg_type::VIDEO);
+        bytes.push(MsgType::Video.as_u8());
         bytes.extend_from_slice(&1u32.to_le_bytes());
         bytes.extend_from_slice(&ext.to_be_bytes());
         bytes.extend_from_slice(&payload[..128]);
@@ -1082,11 +1359,11 @@ mod tests {
         // proof the new boundary took effect (at the default 128 it would misparse).
         let mut reader = ChunkStreamReader::new(1 << 20);
 
-        let mut bytes = fmt0_header(2, 0, 4, msg_type::SET_CHUNK_SIZE, 0);
+        let mut bytes = fmt0_header(2, 0, 4, MsgType::SetChunkSize.as_u8(), 0);
         bytes.extend_from_slice(&4u32.to_be_bytes()); // new chunk size = 4
 
         let data: Vec<u8> = (0x10..0x1A).collect(); // 10 distinct bytes
-        bytes.extend(fmt0_header(3, 0, 10, msg_type::AUDIO, 1));
+        bytes.extend(fmt0_header(3, 0, 10, MsgType::Audio.as_u8(), 1));
         bytes.extend_from_slice(&data[0..4]);
         bytes.push(basic(3, 3));
         bytes.extend_from_slice(&data[4..8]);
@@ -1095,10 +1372,10 @@ mod tests {
 
         let mut stream = std::io::Cursor::new(bytes);
         let scs = reader.read_message(&mut stream).await.unwrap();
-        assert_eq!(scs.type_id, msg_type::SET_CHUNK_SIZE);
+        assert_eq!(scs.type_id, MsgType::SetChunkSize.as_u8());
 
         let msg = reader.read_message(&mut stream).await.unwrap();
-        assert_eq!(msg.type_id, msg_type::AUDIO);
+        assert_eq!(msg.type_id, MsgType::Audio.as_u8());
         assert_eq!(&msg.payload[..], &data[..]);
     }
 
@@ -1107,7 +1384,7 @@ mod tests {
         // A declared length beyond max_message_size must error BEFORE any payload is
         // allocated — the OOM guard. No payload bytes are even supplied.
         let mut reader = ChunkStreamReader::new(100);
-        let bytes = fmt0_header(3, 0, 1000, msg_type::AUDIO, 1); // len 1000 > max 100
+        let bytes = fmt0_header(3, 0, 1000, MsgType::Audio.as_u8(), 1); // len 1000 > max 100
 
         let err = read_one(&mut reader, bytes)
             .await
@@ -1122,9 +1399,9 @@ mod tests {
         let mut reader = ChunkStreamReader::new(1 << 20);
         reader.set_chunk_size(4);
 
-        let mut bytes = fmt0_header(3, 0, 10, msg_type::AUDIO, 1);
+        let mut bytes = fmt0_header(3, 0, 10, MsgType::Audio.as_u8(), 1);
         bytes.extend_from_slice(&[0, 1, 2, 3]); // 4 of 10 bytes → still incomplete
-        bytes.extend(fmt0_header(3, 0, 10, msg_type::AUDIO, 1)); // new message, too soon
+        bytes.extend(fmt0_header(3, 0, 10, MsgType::Audio.as_u8(), 1)); // new message, too soon
 
         let err = read_one(&mut reader, bytes)
             .await
@@ -1136,7 +1413,7 @@ mod tests {
     async fn truncated_chunk_stream_errors() {
         // A header that promises payload the stream doesn't have surfaces an io error.
         let mut reader = ChunkStreamReader::new(1 << 20);
-        let mut bytes = fmt0_header(3, 0, 10, msg_type::AUDIO, 1);
+        let mut bytes = fmt0_header(3, 0, 10, MsgType::Audio.as_u8(), 1);
         bytes.extend_from_slice(&[0, 1, 2]); // only 3 of 10 payload bytes, then EOF
 
         let err = read_one(&mut reader, bytes)
@@ -1156,7 +1433,7 @@ mod tests {
             csid,
             ChunkStreamCtx {
                 message_length: 4,
-                type_id: msg_type::AUDIO,
+                type_id: MsgType::Audio.as_u8(),
                 ..Default::default()
             },
         );

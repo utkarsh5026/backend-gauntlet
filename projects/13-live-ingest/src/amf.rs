@@ -37,6 +37,15 @@ pub mod marker {
     pub const OBJECT_END: u8 = 0x09;
 }
 
+/// NetConnection `objectEncoding` values negotiated in `connect` / `_result`.
+///
+/// `0` = AMF0 only (message types 20/18). `3` would mean AMF3 is also allowed;
+/// this ingest only speaks AMF0.
+pub mod object_encoding {
+    /// AMF0 — Flash 6+; the encoding we implement and advertise on connect.
+    pub const AMF0: f64 = 0.0;
+}
+
 /// A decoded AMF0 value.
 ///
 /// [`Object`](Amf0::Object) preserves keys but not insertion order (`BTreeMap` is
