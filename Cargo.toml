@@ -134,7 +134,7 @@ base64 = "0.22"
 # recommended API. We wrap it behind a push/finish streaming cutter.
 fastcdc = "4"
 # S3 XML wire format (ListBucketResult, multipart init/complete, Error).
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.38", features = ["serialize"] }
 # Arrow's S3 client — aliased in project 06 as `arrow-object-store` so it does
 # not collide with this learning crate's own `object_store` import path.
 # Dev-only interop harness (put/get/list/multipart against a local endpoint).
