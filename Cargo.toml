@@ -87,7 +87,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # NATS JetStream as the durable log between ingest and the consumer. Pure Rust
 # (no C toolchain), so the workspace builds cleanly; the at-least-once semantics
 # map onto Kafka. See projects/05-metrics-pipeline/SPEC.md "Why NATS, not Kafka?".
-async-nats = "0.49"
+async-nats = "0.50"
 # Official ClickHouse client (HTTP interface) — where the rollups land + are read.
 clickhouse = "0.15"
 
