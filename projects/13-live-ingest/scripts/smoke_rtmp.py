@@ -248,9 +248,15 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             ff_exit = -1
             ffmpeg_log.write_text("ffmpeg timed out")
-        info(
-            f"ffmpeg exit: {ff_exit} {_c('2', '(non-zero is expected while V2 is a todo)')}"
+        # Once V2 (the publish state machine) is implemented, ffmpeg exit 0 means it
+        # completed the publish and streamed its media. Before V2 (or on a broken
+        # reply) the server drops the connection and ffmpeg exits non-zero.
+        exit_note = (
+            "published + streamed OK"
+            if ff_exit == 0
+            else "connection dropped before ffmpeg finished (see server log)"
         )
+        info(f"ffmpeg exit: {ff_exit} {_c('2', f'({exit_note})')}")
 
         time.sleep(0.5)  # let the server flush its last log line
 
@@ -312,6 +318,24 @@ def main() -> int:
                 "handshake completed but no message was dispatched — the chunk reader may not"
             )
             warn(f"have parsed the first message. Inspect: {server_log}")
+
+        # V2 milestone: the full connect → createStream → publish dance completed with a
+        # real broadcaster, and ffmpeg accepted every reply (exit 0). Reported, not gated,
+        # so the script still passes on V1-only builds where publish isn't implemented yet.
+        if "publish accepted" in log:
+            ok(
+                "publish accepted — connect → createStream → publish completed with a real "
+                "broadcaster (V2 publish state machine ✓)"
+            )
+            if ff_exit == 0:
+                ok("ffmpeg published and streamed its media without the connection dropping")
+            else:
+                warn(
+                    f"publish was accepted but ffmpeg exited {ff_exit} — a later reply "
+                    "(onStatus / media path) may be malformed. Inspect the server log."
+                )
+        elif re.search(r"publish rejected|publish unauthorized", log):
+            warn("publish was REJECTED — check the stream key / authorize() gate.")
     finally:
         if server and server.poll() is None:
             server.terminate()
