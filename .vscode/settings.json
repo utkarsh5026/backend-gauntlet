@@ -71,8 +71,8 @@
   "ruff.lineLength": 100,
 
   // ---- Terminal (open new terminals in the project we're actively building) ----
-  "terminal.integrated.cwd": "${workspaceFolder}/projects/03-realtime-pubsub",
-  "terminal.integrated.envFile": "${workspaceFolder}/projects/03-realtime-pubsub/.env",
+  "terminal.integrated.cwd": "${workspaceFolder}/projects/13-live-ingest",
+  "terminal.integrated.envFile": "${workspaceFolder}/projects/13-live-ingest/.env",
 
   // ---- Noise reduction ----
   "files.watcherExclude": {

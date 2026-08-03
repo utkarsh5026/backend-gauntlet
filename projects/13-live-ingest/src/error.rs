@@ -34,6 +34,12 @@ pub enum AppError {
     Other(#[from] anyhow::Error),
 }
 
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::Other(err.into())
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {

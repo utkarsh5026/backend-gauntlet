@@ -1,16 +1,34 @@
 {
   "version": "2.0.0",
   "options": {
-    "cwd": "${workspaceFolder}/projects/01-url-shortener",
-    "env": {
-      "DATABASE_URL": "postgres://shortener:shortener@localhost:5432/shortener"
-    }
+    "cwd": "${workspaceFolder}/projects/13-live-ingest"
   },
   "tasks": [
     {
-      "label": "url-shortener: verify",
+      "label": "live-ingest: run",
+      "detail": "cargo run -p live-ingest — RTMP :1935 + HTTP :8080",
       "type": "shell",
-      "command": "make verify",
+      "command": "cargo run -p live-ingest",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "live-ingest: test",
+      "type": "shell",
+      "command": "cargo test -p live-ingest",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "group": {
         "kind": "test",
         "isDefault": true
@@ -23,20 +41,12 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "url-shortener: test",
+      "label": "live-ingest: check",
       "type": "shell",
-      "command": "make test",
-      "group": "test",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
+      "command": "cargo check -p live-ingest",
+      "options": {
+        "cwd": "${workspaceFolder}"
       },
-      "problemMatcher": ["$rustc"]
-    },
-    {
-      "label": "url-shortener: clippy",
-      "type": "shell",
-      "command": "make clippy",
       "group": "build",
       "presentation": {
         "reveal": "always",
@@ -45,9 +55,26 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "url-shortener: fmt",
+      "label": "live-ingest: clippy",
       "type": "shell",
-      "command": "make fmt",
+      "command": "cargo clippy -p live-ingest --all-targets -- -D warnings",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "live-ingest: fmt",
+      "type": "shell",
+      "command": "cargo fmt -p live-ingest",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "group": "none",
       "presentation": {
         "reveal": "silent",
@@ -55,95 +82,16 @@
       }
     },
     {
-      "label": "url-shortener: run",
+      "label": "live-ingest: web (bun)",
+      "detail": "bun run dev — LL-HLS player on :5113 (proxies /live → :8080)",
       "type": "shell",
-      "command": "make run",
-      "group": {
-        "kind": "build",
-        "isDefault": true
+      "command": "bun run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/projects/13-live-ingest/web"
       },
       "presentation": {
         "reveal": "always",
         "panel": "dedicated"
-      },
-      "problemMatcher": ["$rustc"]
-    },
-    {
-      "label": "url-shortener: dev",
-      "type": "shell",
-      "command": "make dev",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
-      },
-      "problemMatcher": ["$rustc"]
-    },
-    {
-      "label": "url-shortener: docker up",
-      "type": "shell",
-      "command": "make deps",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      }
-    },
-    {
-      "label": "url-shortener: migrate",
-      "type": "shell",
-      "command": "make migrate",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "problemMatcher": ["$rustc"]
-    },
-    {
-      "label": "url-shortener: bench (criterion id_gen)",
-      "detail": "cargo bench --bench id_gen — in-process ID-generator micro-benchmark",
-      "type": "shell",
-      "command": "make bench",
-      "group": "test",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
-      },
-      "problemMatcher": ["$rustc"]
-    },
-    {
-      "label": "url-shortener: bench seed",
-      "detail": "node bench/seed.js — bulk-seed N links into Postgres (set N to override)",
-      "type": "shell",
-      "command": "make bench-seed",
-      "group": "test",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "url-shortener: bench smoke",
-      "detail": "node bench/smoke.js — Node-only redirect sanity check (server must be running)",
-      "type": "shell",
-      "command": "make bench-smoke",
-      "group": "test",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "url-shortener: bench load (k6)",
-      "detail": "node bench/run.js — seed + run all k6 redirect scenarios (needs k6 + running server)",
-      "type": "shell",
-      "command": "make bench-load",
-      "group": "test",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
       },
       "problemMatcher": []
     },
@@ -175,10 +123,10 @@
       "problemMatcher": []
     },
     {
-      "label": "workspace: status (project 01)",
-      "detail": "python3 tools/status.py 01 — drill into url-shortener",
+      "label": "workspace: status (project 13)",
+      "detail": "python3 tools/status.py 13 — drill into live-ingest",
       "type": "shell",
-      "command": "python3 tools/status.py 01",
+      "command": "python3 tools/status.py 13",
       "options": {
         "cwd": "${workspaceFolder}"
       },

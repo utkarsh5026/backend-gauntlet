@@ -201,7 +201,11 @@ hmac = "0.12"
 sha1 = "0.10"
 
 # --- observability ---
-tracing = "0.1"
+# `release_max_level_info` statically strips `trace!`/`debug!` call sites from release
+# builds (`cargo build --release`) — they compile to nothing, so verbose per-request or
+# protocol-step tracing costs zero in prod while staying available in dev (`cargo build`,
+# where `debug_assertions` is on). Dev level is still runtime-controlled via `RUST_LOG`.
+tracing = { version = "0.1", features = ["release_max_level_info"] }
 tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "fmt",
