@@ -24,7 +24,7 @@ Scaffolded SPECs, interesting logic left as `todo!()`. No todo apps.
 
 <!-- status-dashboard:start -->
 <p align="center">
-  <img src="assets/status-dashboard.svg?h=38f1d3b67619" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
+  <img src="assets/status-dashboard.svg?h=2e85c8dc8661" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
 </p>
 <!-- status-dashboard:end -->
 
