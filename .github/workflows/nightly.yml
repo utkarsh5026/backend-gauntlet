@@ -61,7 +61,7 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets
       - name: install tools
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-hakari,nextest
       - name: workspace-hack up to date
