@@ -4,14 +4,14 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug live-ingest",
+      "name": "Debug api-gateway",
       "cargo": {
-        "args": ["build", "--bin=live-ingest", "--package=live-ingest"],
-        "filter": { "name": "live-ingest", "kind": "bin" }
+        "args": ["build", "--bin=api-gateway", "--package=api-gateway"],
+        "filter": { "name": "api-gateway", "kind": "bin" }
       },
       "args": [],
-      "cwd": "${workspaceFolder}/projects/13-live-ingest",
-      "envFile": "${workspaceFolder}/projects/13-live-ingest/.env"
+      "cwd": "${workspaceFolder}/projects/10-api-gateway",
+      "envFile": "${workspaceFolder}/projects/10-api-gateway/.env"
     },
     {
       "type": "lldb",
@@ -37,11 +37,11 @@
     {
       "type": "debugpy",
       "request": "launch",
-      "name": "Debug tools/status.py (project 13)",
+      "name": "Debug tools/status.py (project 10)",
       "program": "${workspaceFolder}/tools/status.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "args": ["13"],
+      "args": ["10"],
       "justMyCode": true
     }
   ]

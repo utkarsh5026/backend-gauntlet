@@ -67,8 +67,6 @@ pub struct AppState {
 async fn main() -> anyhow::Result<()> {
     common_config::load_dotenv();
     common_telemetry::init("info,api_gateway=debug");
-
-    // --- config ---------------------------------------------------------------
     let port: u16 = common_config::parse_or("PORT", DEFAULT_PORT);
     let connect_timeout = Duration::from_millis(common_config::parse_or(
         "UPSTREAM_CONNECT_TIMEOUT_MS",
@@ -85,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let config = match common_config::or_default("CONFIG_PATH", "") {
         path if !path.is_empty() => GatewayConfig::load(&path)?,
         _ => {
-            let backends = common_config::or_default("UPSTREAM_BACKENDS", "127.0.0.1:9001")
+            let backends = common_config::or_default("UPSTREAM_BACKENDS", "127.0.0.1:9010")
                 .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -104,8 +102,6 @@ async fn main() -> anyhow::Result<()> {
     connector.set_connect_timeout(Some(connect_timeout));
     connector.set_nodelay(true);
     let client: UpstreamClient = Client::builder(TokioExecutor::new()).build(connector);
-
-    // --- metrics --------------------------------------------------------------
     let prometheus = PrometheusBuilder::new().install_recorder()?;
 
     // TODO(V4): spawn the active health checker once you build it, e.g.

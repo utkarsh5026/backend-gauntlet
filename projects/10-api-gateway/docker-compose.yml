@@ -38,17 +38,27 @@ services:
       - whoami-b
       - whoami-c
 
+  # Host ports are published so you can run the gateway *locally* (`make run`)
+  # against this pool instead of rebuilding the gateway container each change.
+  # Host side only (90NN + pool index, NN=10); the containers stay on :80, so
+  # the in-network `whoami-a:80` URLs the gateway container uses are untouched.
   whoami-a:
     image: traefik/whoami:latest
     command: ["--name", "whoami-a"]
+    ports:
+      - "9010:80"
     restart: unless-stopped
 
   whoami-b:
     image: traefik/whoami:latest
     command: ["--name", "whoami-b"]
+    ports:
+      - "9011:80"
     restart: unless-stopped
 
   whoami-c:
     image: traefik/whoami:latest
     command: ["--name", "whoami-c"]
+    ports:
+      - "9012:80"
     restart: unless-stopped

@@ -59,20 +59,24 @@
   "python.terminal.activateEnvironment": false,
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.diagnosticMode": "workspace",
+  // One entry per project that owns a makefile.py (they import from tools/).
   "python.analysis.extraPaths": [
     "${workspaceFolder}",
     "${workspaceFolder}/tools",
     "${workspaceFolder}/projects/01-url-shortener",
     "${workspaceFolder}/projects/02-rate-limiter",
+    "${workspaceFolder}/projects/03-realtime-pubsub",
     "${workspaceFolder}/projects/04-job-queue",
-    "${workspaceFolder}/projects/06-object-store"
+    "${workspaceFolder}/projects/06-object-store",
+    "${workspaceFolder}/projects/10-api-gateway",
+    "${workspaceFolder}/projects/13-live-ingest"
   ],
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
 
   // ---- Terminal (open new terminals in the project we're actively building) ----
-  "terminal.integrated.cwd": "${workspaceFolder}/projects/13-live-ingest",
-  "terminal.integrated.envFile": "${workspaceFolder}/projects/13-live-ingest/.env",
+  "terminal.integrated.cwd": "${workspaceFolder}/projects/10-api-gateway",
+  "terminal.integrated.envFile": "${workspaceFolder}/projects/10-api-gateway/.env",
 
   // ---- Noise reduction ----
   "files.watcherExclude": {
@@ -90,8 +94,11 @@
     "${workspaceFolder}/tools",
     "${workspaceFolder}/projects/01-url-shortener",
     "${workspaceFolder}/projects/02-rate-limiter",
+    "${workspaceFolder}/projects/03-realtime-pubsub",
     "${workspaceFolder}/projects/04-job-queue",
-    "${workspaceFolder}/projects/06-object-store"
+    "${workspaceFolder}/projects/06-object-store",
+    "${workspaceFolder}/projects/10-api-gateway",
+    "${workspaceFolder}/projects/13-live-ingest"
   ],
   "cursorpyright.analysis.typeCheckingMode": "basic"
 }

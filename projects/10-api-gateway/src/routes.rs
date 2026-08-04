@@ -20,13 +20,11 @@ pub fn router(state: AppState) -> AxumRouter {
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
         .route("/admin/routes", get(list_routes))
-        // Everything else is proxied to an upstream.
         .fallback(proxy_handler)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
-/// Gateway liveness — does not touch any upstream.
 async fn healthz() -> &'static str {
     "ok"
 }
