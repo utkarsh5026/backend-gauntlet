@@ -28,6 +28,10 @@ dev: ## One-window dev stack: deps + server + frontend (make dev NN=01; multi: N
 md: ## View project markdown in glow (make md NN=01 [FILE=SPEC.md])
 	@python3 tools/md.py $(NN) $(if $(FILE),--file $(FILE),)
 
+.PHONY: docs
+docs: ## Read every doc in a browser tab — live-reloads on save (make docs [NN=10] [OPEN=1])
+	@python3 tools/docs.py $(NN) $(if $(PORT),--port $(PORT),) $(if $(OPEN),--open,)
+
 # ── per-project status cards (auto-generated — zero upkeep) ──────────────────
 # Every project under projects/NN-* gets two targets that open its detailed
 # status card:  `make url-shortener`  and the short  `make 01`.
