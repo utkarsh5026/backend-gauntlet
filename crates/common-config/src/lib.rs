@@ -7,6 +7,10 @@
 
 use thiserror::Error;
 
+mod duration;
+
+pub use duration::{duration_or, Count, DurationParseError, TimeUnit};
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("required environment variable `{0}` is not set")]
