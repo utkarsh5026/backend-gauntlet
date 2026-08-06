@@ -102,7 +102,6 @@ make status NN=02                  # drill into one project (verticals + open it
 make trophies                      # 🏆 achievements (auto-derived — never award by hand)
 make infra                         # web panel: per-project Docker deps, up/down, port conflicts
 make dev NN=01                     # one-window dev stack: deps + server + frontend (multi: NN="01 03")
-make docs                          # read every SPEC/CONCEPTS/doc in a browser tab (make docs NN=10)
 make docs                          # read every doc in a browser tab (live-reloads; NN=10 opens that SPEC)
 make md NN=01                      # read one project's markdown in the terminal (glow)
 make hooks                         # once per clone: enable .githooks (fmt before commit/push)
@@ -126,6 +125,13 @@ Per-project `make` targets are implemented in `projects/NN-*/makefile.py`, which
 imports shared runner infrastructure from `tools/makefile_runner.py` (console
 helpers, cargo/docker bundles) and `tools/makefile_help.py` (Rich help tables).
 The per-project `Makefile` is a thin wrapper that forwards to `makefile.py`.
+
+`make docs` is the one tool that lives **outside** this repo: it was generic
+enough to extract, so it is now [tome](https://github.com/utkarsh5026/tome)
+(`uv tool install git+https://github.com/utkarsh5026/tome`). The conventions it
+used to hard-code — SPEC-first reading order, `projects/*` as sidebar sections,
+the ⚔️ tab icon — live in `.tome.json` at the repo root. Change reading behaviour
+there, not in a tool file.
 
 `todo!()` bodies **panic at runtime** by design — that's the worklist, not a bug.
 A clean `cargo check` with only dead-code warnings is the expected scaffold state.
