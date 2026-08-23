@@ -100,5 +100,6 @@
     "${workspaceFolder}/projects/10-api-gateway",
     "${workspaceFolder}/projects/13-live-ingest"
   ],
-  "cursorpyright.analysis.typeCheckingMode": "basic"
+  "cursorpyright.analysis.typeCheckingMode": "basic",
+  "python.languageServer": "None"
 }

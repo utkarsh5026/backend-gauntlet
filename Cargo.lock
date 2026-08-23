@@ -53,6 +53,7 @@ dependencies = [
  "bytes",
  "common-config",
  "common-telemetry",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",

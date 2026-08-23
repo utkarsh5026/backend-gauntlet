@@ -1,81 +1,46 @@
-//! API gateway / L7 reverse proxy — entrypoint and wiring.
+//! API gateway / L7 reverse proxy — binary entrypoint.
 //!
 //! The plumbing (config, the pooled upstream client, the route table, the axum
 //! server, graceful shutdown, `/metrics`) is wired for you. The learning lives in
-//! the modules marked `TODO(Vx)`: the streaming forwarding core (V1, `proxy.rs`),
-//! the routing engine (V2, `router.rs`), the load balancer (V3, `balancer.rs`),
-//! and health checking + circuit breaking (V4, `health.rs`). See SPEC.md.
+//! the modules marked `TODO(Vx)` — see `lib.rs` and `SPEC.md`. This binary is a
+//! thin shell over the `api_gateway` library crate so the proxy path is reachable
+//! from `tests/`.
 //!
 //! Scaffold state: this compiles and serves. `GET /healthz`, `GET /metrics`, and
 //! `GET /admin/routes` work; the first request that must actually be *proxied*
 //! hits a `todo!()` (route match → backend pick → forward) and panics — that panic
 //! message is your worklist.
 
-mod balancer;
-mod config;
-mod error;
-mod health;
-mod proxy;
-mod router;
-mod routes;
-mod tls;
-
 use std::sync::Arc;
-use std::time::Duration;
 
-use axum::body::Body;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use common_config::TimeUnit;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tracing::info;
 
-use config::GatewayConfig;
-use router::Router;
-
-/// The pooled HTTP client used for every upstream request. `hyper-util`'s
-/// `legacy::Client` keeps a per-host connection pool (keep-alive reuse), so the hot
-/// path doesn't pay a TCP handshake per request. The body is axum's, so an inbound
-/// request can be forwarded without copying it.
-pub type UpstreamClient = Client<HttpConnector, Body>;
-
-const DEFAULT_PORT: u16 = 8080;
-/// Bound on how long a single upstream TCP connect may take before it's a 502.
-const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 2_000;
-/// Overall per-request deadline (connect + upstream response), enforced in V1.
-const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 10_000;
-/// Reject a request body larger than this at the edge (security horizontal).
-const DEFAULT_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Shared application state, cloned into every handler. The heavy pieces are behind
-/// an `Arc` (or are themselves cheap handles), so cloning is cheap.
-#[derive(Clone)]
-pub struct AppState {
-    /// Pooled upstream client (V1).
-    pub client: UpstreamClient,
-    /// Route table (V2) → upstream pools (V3) → circuit breakers (V4).
-    pub router: Arc<Router>,
-    /// Renders the Prometheus registry for `GET /metrics`.
-    pub prometheus: PrometheusHandle,
-    /// Overall per-request deadline, applied in the proxy path (V1).
-    pub request_timeout: Duration,
-    /// Per-request body size cap, enforced at the edge (security horizontal).
-    pub max_body_bytes: u64,
-}
+use api_gateway::config::GatewayConfig;
+use api_gateway::router::Router;
+use api_gateway::{
+    routes, upstream_client, AppState, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_PORT, DEFAULT_REQUEST_TIMEOUT_MS,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     common_config::load_dotenv();
     common_telemetry::init("info,api_gateway=debug");
     let port: u16 = common_config::parse_or("PORT", DEFAULT_PORT);
-    let connect_timeout = Duration::from_millis(common_config::parse_or(
+    // `..._MS` names the unit a bare number is read in; an operator can still
+    // override it in the value itself (`REQUEST_TIMEOUT_MS=2s`).
+    let connect_timeout = common_config::duration_or(
         "UPSTREAM_CONNECT_TIMEOUT_MS",
+        TimeUnit::Millis,
         DEFAULT_CONNECT_TIMEOUT_MS,
-    ));
-    let request_timeout = Duration::from_millis(common_config::parse_or(
+    );
+    let request_timeout = common_config::duration_or(
         "REQUEST_TIMEOUT_MS",
+        TimeUnit::Millis,
         DEFAULT_REQUEST_TIMEOUT_MS,
-    ));
+    );
     let max_body_bytes: u64 = common_config::parse_or("MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES);
 
     // Route table: an explicit JSON file (CONFIG_PATH) or a built-in catch-all over
@@ -95,17 +60,11 @@ async fn main() -> anyhow::Result<()> {
     let router = Arc::new(Router::build(&config)?);
     info!(routes = config.routes.len(), "route table built");
 
-    // --- pooled upstream client ----------------------------------------------
-    // A bounded connect timeout keeps a dead backend from hanging the connect; the
-    // pool reuses keep-alive connections so a burst doesn't handshake N times (V1).
-    let mut connector = HttpConnector::new();
-    connector.set_connect_timeout(Some(connect_timeout));
-    connector.set_nodelay(true);
-    let client: UpstreamClient = Client::builder(TokioExecutor::new()).build(connector);
+    let client = upstream_client(connect_timeout);
     let prometheus = PrometheusBuilder::new().install_recorder()?;
 
     // TODO(V4): spawn the active health checker once you build it, e.g.
-    //   let probe = Duration::from_millis(common_config::parse_or("HEALTH_PROBE_MS", 2_000));
+    //   let probe = common_config::duration_or("HEALTH_PROBE_MS", TimeUnit::Millis, 2_000);
     //   tokio::spawn(health::HealthChecker::new(router.clone(), client.clone(), probe).run());
     //
     // TODO(mTLS): when TLS_CERT/TLS_KEY are set, build the rustls server config
