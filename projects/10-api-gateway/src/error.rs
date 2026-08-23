@@ -43,18 +43,15 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
-            AppError::NoRoute => StatusCode::NOT_FOUND,
-            AppError::NoHealthyBackend => StatusCode::SERVICE_UNAVAILABLE,
-            AppError::BadGateway => StatusCode::BAD_GATEWAY,
-            AppError::GatewayTimeout => StatusCode::GATEWAY_TIMEOUT,
-            AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NoRoute => StatusCode::NOT_FOUND,
+            Self::NoHealthyBackend => StatusCode::SERVICE_UNAVAILABLE,
+            Self::BadGateway => StatusCode::BAD_GATEWAY,
+            Self::GatewayTimeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
-        // Log the full error server-side; only the opaque "internal server error"
-        // leaks to the client on a 500 so we don't expose internals. The gateway
-        // errors (502/503/504) carry a safe, useful message.
         if status.is_server_error() {
             tracing::error!(error = %self, "request failed");
         }

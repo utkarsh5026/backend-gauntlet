@@ -1,17 +1,14 @@
 {
   "version": "2.0.0",
   "options": {
-    "cwd": "${workspaceFolder}/projects/13-live-ingest"
+    "cwd": "${workspaceFolder}/projects/10-api-gateway"
   },
   "tasks": [
     {
-      "label": "live-ingest: run",
-      "detail": "cargo run -p live-ingest — RTMP :1935 + HTTP :8080",
+      "label": "api-gateway: run",
+      "detail": "make run — cargo run with .env loaded (gateway on :8080)",
       "type": "shell",
-      "command": "cargo run -p live-ingest",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "command": "make run",
       "group": {
         "kind": "build",
         "isDefault": true
@@ -23,9 +20,20 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "live-ingest: test",
+      "label": "api-gateway: dev",
+      "detail": "make dev — start the whoami backend pool (:9010-:9012), then the gateway",
       "type": "shell",
-      "command": "cargo test -p live-ingest",
+      "command": "make dev",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "api-gateway: test",
+      "type": "shell",
+      "command": "cargo test -p api-gateway",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -41,9 +49,9 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "live-ingest: check",
+      "label": "api-gateway: check",
       "type": "shell",
-      "command": "cargo check -p live-ingest",
+      "command": "cargo check -p api-gateway",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -55,9 +63,9 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "live-ingest: clippy",
+      "label": "api-gateway: clippy",
       "type": "shell",
-      "command": "cargo clippy -p live-ingest --all-targets -- -D warnings",
+      "command": "cargo clippy -p api-gateway --all-targets -- -D warnings",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -69,9 +77,9 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "live-ingest: fmt",
+      "label": "api-gateway: fmt",
       "type": "shell",
-      "command": "cargo fmt -p live-ingest",
+      "command": "cargo fmt -p api-gateway",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -82,13 +90,91 @@
       }
     },
     {
-      "label": "live-ingest: web (bun)",
-      "detail": "bun run dev — LL-HLS player on :5113 (proxies /live → :8080)",
+      "label": "api-gateway: verify",
+      "detail": "make verify — fmt-check → clippy → check → test",
       "type": "shell",
-      "command": "bun run dev",
-      "options": {
-        "cwd": "${workspaceFolder}/projects/13-live-ingest/web"
+      "command": "make verify",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
       },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "api-gateway: backends up",
+      "detail": "make up — start the three whoami echo backends on :9010-:9012",
+      "type": "shell",
+      "command": "make up",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "api-gateway: backends down",
+      "detail": "make down — stop the docker services",
+      "type": "shell",
+      "command": "make down",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "api-gateway: probe spread (V3)",
+      "detail": "make spread — N requests, tally which backend served (load balancing)",
+      "type": "shell",
+      "command": "make spread",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "api-gateway: probe headers (V1)",
+      "detail": "make headers — send hop-by-hop + spoofed X-Forwarded-For, print what the backend saw",
+      "type": "shell",
+      "command": "make headers",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "api-gateway: kill a backend (V4)",
+      "detail": "make kill-backend — stop whoami-b so fail-fast + reroute is observable",
+      "type": "shell",
+      "command": "make kill-backend",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "api-gateway: revive a backend",
+      "detail": "make revive-backend — bring whoami-b back",
+      "type": "shell",
+      "command": "make revive-backend",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "api-gateway: demo (docker)",
+      "detail": "make demo — the fully containerized stack (gateway + pool)",
+      "type": "shell",
+      "command": "make demo",
       "presentation": {
         "reveal": "always",
         "panel": "dedicated"
@@ -123,10 +209,10 @@
       "problemMatcher": []
     },
     {
-      "label": "workspace: status (project 13)",
-      "detail": "python3 tools/status.py 13 — drill into live-ingest",
+      "label": "workspace: status (project 10)",
+      "detail": "python3 tools/status.py 10 — drill into api-gateway",
       "type": "shell",
-      "command": "python3 tools/status.py 13",
+      "command": "python3 tools/status.py 10",
       "options": {
         "cwd": "${workspaceFolder}"
       },

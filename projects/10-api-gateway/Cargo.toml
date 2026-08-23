@@ -51,3 +51,6 @@ workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
 # Property-test the router's longest-prefix precedence (V2) and the balancer's
 # fair-spread invariant (V3).
 proptest.workspace = true
+# The V1 acceptance tests need *slow* bodies — a request/response body that emits
+# its chunks over time — to tell a streaming proxy apart from a buffering one.
+futures-util.workspace = true

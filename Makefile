@@ -28,6 +28,20 @@ dev: ## One-window dev stack: deps + server + frontend (make dev NN=01; multi: N
 md: ## View project markdown in glow (make md NN=01 [FILE=SPEC.md])
 	@python3 tools/md.py $(NN) $(if $(FILE),--file $(FILE),)
 
+# The reader itself lives in its own repo now (github.com/utkarsh5026/tome) —
+# it turned out to be repo-agnostic. `.tome.json` here holds the conventions
+# that used to be hard-coded: SPEC-first ordering and projects/ as sections.
+TOME_INSTALL := uv tool install git+https://github.com/utkarsh5026/tome
+
+.PHONY: docs
+docs: ## Read every doc in a browser tab — live-reloads on save (make docs [NN=10] [OPEN=1])
+	@command -v tome >/dev/null 2>&1 || { \
+		echo "tome is not installed. Install the docs reader with:"; \
+		echo "    $(TOME_INSTALL)"; \
+		echo "  (or: pipx install git+https://github.com/utkarsh5026/tome)"; \
+		exit 1; }
+	@tome $(NN) $(if $(PORT),--port $(PORT),) $(if $(OPEN),--open,)
+
 # ── per-project status cards (auto-generated — zero upkeep) ──────────────────
 # Every project under projects/NN-* gets two targets that open its detailed
 # status card:  `make url-shortener`  and the short  `make 01`.

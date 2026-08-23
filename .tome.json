@@ -1,0 +1,7 @@
+{
+  "title": "backend-gauntlet",
+  "icon": "⚔️",
+  "pinned": ["SPEC", "CONCEPTS", "RESEARCH", "README"],
+  "groupDirs": ["projects"],
+  "theme": "mocha"
+}
