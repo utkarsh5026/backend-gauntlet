@@ -32,11 +32,11 @@ blocked-on: ~            # free text, or ~ for none
 
 ## Vertical challenges (build these yourself — this is the learning)
 
-### V1. A bounded local cache with O(1) eviction — *no `cargo add lru`*
+### V1. A bounded local cache with O(1) eviction — *no `pip install cachetools`*
 Each node needs an in-memory store that is **fast** and **bounded**: gets and puts
 in O(1), and a hard cap so a hot node never OOMs. The naive `HashMap` grows without
 limit; the naive "evict the oldest" scans the whole map (O(n)) on every insert.
-Build the store in `src/store.rs` — start with **LRU**, then make the eviction
+Build the store in `src/distributed_cache/store.py` — start with **LRU**, then make the eviction
 policy swappable so you can add **LFU** and compare.
 
 **Done when ALL true:**
@@ -58,7 +58,7 @@ an admission filter (TinyLFU) so a one-hit-wonder scan can't evict your whole wo
 ### V2. Consistent hashing with virtual nodes — *`key % N` is a trap*
 To spread keys across nodes you might reach for `hash(key) % N`. Add or remove one
 node and **almost every key** remaps to a different node — a total cache flush, an
-outage disguised as a deploy. Build a consistent-hash ring in `src/ring.rs` so that
+outage disguised as a deploy. Build a consistent-hash ring in `src/distributed_cache/ring.py` so that
 adding/removing a node only moves the keys it should, and **virtual nodes** so load
 stays even instead of clumping.
 
@@ -80,7 +80,7 @@ key movement to `O(keys/N)`, and how vnode count trades memory for balance.
 Nodes must discover each other, notice when one dies, and agree on the live set —
 **without** a central registry or ZooKeeper. All-to-all heartbeating is `O(n²)`
 messages and gives false positives under load. Build a SWIM-style membership layer
-in `src/membership.rs`: randomized ping / indirect-ping probing over UDP, a
+in `src/distributed_cache/membership.py`: randomized ping / indirect-ping probing over UDP, a
 suspicion state machine, and gossip-piggybacked dissemination.
 
 **Done when ALL true:**
@@ -103,7 +103,7 @@ incarnation numbers, and the false-positive vs detection-latency tradeoff.
 With sharding alone, losing a node loses its whole shard. Replicate each key to the
 **next N nodes** on the ring, and make any node able to coordinate a request:
 resolve the key's replicas, serve locally if it owns a copy, otherwise forward to a
-replica and proxy the result. Build this in `src/coordinator.rs`.
+replica and proxy the result. Build this in `src/distributed_cache/coordinator.py`.
 
 **Done when ALL true:**
 - [ ] A key is stored on **N distinct replicas** (the ring's N successors); a `PUT` is not acknowledged until it reaches the replica(s) your chosen write policy requires.
@@ -147,6 +147,13 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] Metrics at `/metrics`: **cache hit/miss ratio, entry count & bytes vs capacity, evictions, membership size, and gossip round / suspicion events.**
 - [ ] The **key distribution across nodes** is observable (per-node key count) so you can *see* the ring rebalance when a node joins or leaves.
 
+### Python & runtime
+- [ ] **`pyright` strict passes clean** — every `# type: ignore` carries a comment justifying it.
+- [ ] **No blocking call on the event loop:** the node runs clean under `PYTHONASYNCIODEBUG=1`, and any sync/CPU-bound work is moved to a thread or process pool *deliberately*, with the reason recorded.
+- [ ] **Bounded pools sized on purpose:** the HTTP client's connection limits and timeouts are set together with the expected fan-out — an unbounded pool turns one slow peer into unbounded memory. The reasoning is in `docs/07-design.md`.
+- [ ] **Graceful shutdown** drains in-flight requests on SIGTERM via the app lifespan, and the background gossip task is cancelled and awaited (never orphaned).
+- [ ] **The GIL's cost is measured, not assumed:** the contended store benchmark states whether throughput scales with threads, and if not, why — this is the number that decides whether the store needs sharded locks at all.
+
 ---
 
 ## Cross-cutting scale skills (every project carries these)
@@ -165,8 +172,11 @@ The project is **done when ALL true:**
 3. `docs/07-design.md` records the four decisions the SPEC grades: **eviction policy
    (LRU/LFU + locking), hash function & vnode count, SWIM timings (probe/suspicion/
    fan-out), and replication factor & read/write policy.**
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p distributed-cache`
-   are green; no `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff` clean, `pyright` **strict** with zero errors,
+   and `pytest` passing; no `NotImplementedError` remains on a checked path.
+5. A **profile** is committed: a `py-spy` flamegraph and a `memray` run in
+   `docs/07-benchmarks.md`, naming the top bottleneck. Numbers alone don't close
+   this — you have to know *why* they are what they are.
 
 ## Suggested order of attack
 1. Get one node serving `GET`/`PUT`/`DELETE` straight against an unbounded `HashMap`.
@@ -179,11 +189,11 @@ The project is **done when ALL true:**
 ## Run a local cluster
 ```bash
 # Single node (dev):
-cp .env.example .env
-cargo run -p distributed-cache
+make setup && make sync    # .env from .env.example, then the venv
+make run
 
 # A 3-node cluster (gossip + rebalancing you can watch):
-docker compose up --build          # cache-a (seed) + cache-b + cache-c
+make up                            # cache-a (seed) + cache-b + cache-c
 curl -XPUT  localhost:8071/cache/hello -d 'world'
 curl        localhost:8072/cache/hello     # served from whichever node owns it
 curl        localhost:8073/cluster         # membership view converges across nodes

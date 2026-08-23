@@ -831,28 +831,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "distributed-cache"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "common-config",
- "common-telemetry",
- "hex",
- "proptest",
- "rand 0.9.4",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tower-http",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

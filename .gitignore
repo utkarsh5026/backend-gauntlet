@@ -8,3 +8,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+# uv.lock IS committed — it is the Python side's Cargo.lock.
