@@ -10,7 +10,6 @@ members = [
     "projects/04-job-queue",
     "projects/05-metrics-pipeline",
     "projects/06-object-store",
-    "projects/07-distributed-cache",
     "projects/08-message-broker",
     "projects/09-raft-kv",
     "projects/10-api-gateway",

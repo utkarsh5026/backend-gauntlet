@@ -137,6 +137,11 @@ class ProjectRunner:
     def cargo(self, *args: str, **kwargs: Any) -> int:
         return self.run(["cargo", *args], cwd=self.workspace, **kwargs)
 
+    def uv(self, *args: str, **kwargs: Any) -> int:
+        # Runs from the project dir, not the workspace root: uv resolves the
+        # member from there and uses the root `uv.lock` for versions.
+        return self.run(["uv", *args], cwd=self.project_dir, **kwargs)
+
     def load_dotenv(self) -> dict[str, str]:
         env = dict(os.environ)
         env_file = self.config.env_file
@@ -333,6 +338,68 @@ def register_cargo_checks(runner: ProjectRunner) -> dict[str, Callable[[], None]
         "clippy": clippy,
         "fmt": fmt,
         "fmt_check": fmt_check,
+        "test": test,
+        "verify": verify,
+        "clean": clean,
+    }
+
+
+def register_python_checks(runner: ProjectRunner) -> dict[str, Callable[[], None]]:
+    """Python sibling of `register_cargo_checks` — same task names, same groups.
+
+    A project should feel identical whatever it's written in: `make verify` still
+    means "everything CI would fail on", here fmt-check -> lint -> types -> test.
+    """
+    package = runner.crate.replace("-", "_")
+
+    @runner.task("check", "🔎", "Checks", "Import the package (fast smoke check)")
+    def check() -> None:
+        runner.uv("run", "python", "-c", f"import {package}")
+
+    @runner.task("lint", "📎", "Checks", "ruff lint with warnings denied")
+    def lint() -> None:
+        runner.uv("run", "ruff", "check", ".")
+
+    @runner.task("fmt", "🎨", "Checks", "Format this project's Python")
+    def fmt() -> None:
+        runner.uv("run", "ruff", "format", ".")
+        runner.ok("formatted")
+
+    @runner.task("fmt-check", "🎨", "Checks", "Fail if code is not formatted")
+    def fmt_check() -> None:
+        runner.uv("run", "ruff", "format", "--check", ".")
+
+    @runner.task("types", "🔬", "Checks", "pyright (strict) type-check")
+    def types() -> None:
+        runner.uv("run", "pyright")
+
+    @runner.task("test", "🧪", "Checks", "Run project tests")
+    def test() -> None:
+        runner.uv("run", "pytest", "-q")
+
+    @runner.task("verify", "✔️", "Checks", "Run all static checks + tests")
+    def verify() -> None:
+        runner.step("✔️", "running fmt-check -> lint -> types -> test")
+        fmt_check()
+        lint()
+        types()
+        test()
+        runner.ok("verify: OK")
+
+    @runner.task("clean", "🧹", "Checks", "Remove Python caches")
+    def clean() -> None:
+        for name in (".ruff_cache", ".pytest_cache"):
+            shutil.rmtree(runner.project_dir / name, ignore_errors=True)
+        for cache in runner.project_dir.rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
+        runner.ok("cleaned")
+
+    return {
+        "check": check,
+        "lint": lint,
+        "fmt": fmt,
+        "fmt_check": fmt_check,
+        "types": types,
         "test": test,
         "verify": verify,
         "clean": clean,
@@ -541,6 +608,20 @@ def register_run(runner: ProjectRunner) -> Callable[[], None]:
         setup_fn()
         runner.step("🚀", f"starting {runner.crate}…")
         runner.cargo("run", "-p", runner.crate, env=runner.load_dotenv())
+
+    return run_server
+
+
+def register_python_run(runner: ProjectRunner) -> Callable[[], None]:
+    """Python sibling of `register_run` — runs the project's console script."""
+    setup = runner.tasks.get("setup")
+    setup_fn = setup[0] if setup else lambda: None
+
+    @runner.task("run", "\U0001f680", "Run", "Run the server (loads .env)")
+    def run_server() -> None:
+        setup_fn()
+        runner.step("\U0001f680", f"starting {runner.crate}\u2026")
+        runner.uv("run", runner.crate, env=runner.load_dotenv())
 
     return run_server
 

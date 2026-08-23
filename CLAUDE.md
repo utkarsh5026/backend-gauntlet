@@ -93,6 +93,30 @@ Every project's `SPEC.md` grades on two axes — keep this when scaffolding new 
   **dark theme** and a clean, minimal, uncluttered UI — generous spacing, restrained
   color, good typography; favor shadcn primitives over hand-rolled components. Apply
   this whenever scaffolding or building any web frontend in this repo.
+- **Python projects** (converted by `/pythonize`; the roadmap is progressively
+  moving off Rust — see that command for the full procedure). Conventions:
+  - **uv only** (never pip/poetry). The root `pyproject.toml` is a *virtual* uv
+    workspace root; every project and `packages/common-*` is a member, and the
+    single root **`uv.lock` is committed** — it is the Python side's `Cargo.lock`.
+    Add a member to `[tool.uv.workspace]` when converting a project.
+  - `projects/NN-name/src/<package_name>/` **src layout** (package = crate name
+    with underscores). One module per vertical, plus `main.py` (wiring complete),
+    `config.py` (pydantic-settings), `errors.py` (AppError→HTTP), `routes.py`,
+    `state.py`.
+  - **`raise NotImplementedError` is the Python `todo!()`** — it's the worklist,
+    not a bug, and `tools/status.py` counts it exactly the same way.
+  - `crates/common-*` have Python siblings in **`packages/common-*`** (telemetry,
+    config). Same rule: fully implemented, reused everywhere, don't re-derive.
+  - Stack: **FastAPI + uvicorn, pydantic v2, httpx, structlog, prometheus-client**;
+    tests are **pytest + httpx `ASGITransport`** (not Starlette's `TestClient`);
+    **pyright `strict`** and **ruff** must both be clean.
+  - `make verify` per project = `fmt-check → lint → types → test`, the same gate CI
+    runs. Task runners use `register_python_checks` / `register_python_run` from
+    `tools/makefile_runner.py`.
+  - Because a Python project's ceiling is lower, **boss-fight numbers are not
+    scaled down** on conversion: where CPython can't reach a target, the gap and
+    its cause (GIL, GC, allocation, a blocking call on the loop) is the finding,
+    recorded in that project's `docs/NN-benchmarks.md`.
 
 ## Commands
 

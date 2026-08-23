@@ -1,5 +1,22 @@
-# Tooling config for the repo's stdlib-only Python scripts (tools/status.py,
-# projects/*/makefile.py). No pip dependencies — Ruff is editor/CI lint only.
+# Root of the Python side of the repo.
+#
+# Two jobs:
+#  1. Tooling config for the stdlib-only scripts (tools/status.py,
+#     projects/*/makefile.py). No pip dependencies — Ruff is editor/CI lint only.
+#  2. The **uv workspace** — the direct analogue of the Cargo workspace above it.
+#     Members declare their own deps; the single root `uv.lock` pins every
+#     version, so two projects can never drift onto different lines of a library.
+#     Add a member here when `/pythonize` converts a project.
+#
+# This root is a *virtual* workspace root: no `[project]` table, because the repo
+# root is not itself an installable package.
+
+[tool.uv.workspace]
+members = [
+    "packages/common-telemetry",
+    "packages/common-config",
+    "projects/07-distributed-cache",
+]
 
 [tool.ruff]
 line-length = 100

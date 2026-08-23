@@ -1,5 +1,110 @@
 {
-  // ---- Rust / rust-analyzer ----
+  // ══════════════════════════════════════════════════════════════════════════
+  //  backend-gauntlet · workspace settings
+  //  Look & feel · Editor · Languages · Rust · Python · Terminal · Noise
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── Look & feel ───────────────────────────────────────────────────────────
+  // Nerd Font (same family as the WSL terminal, so glyphs match everywhere).
+  "editor.fontFamily": "'CaskaydiaCove Nerd Font Mono', 'CaskaydiaMono Nerd Font', 'Cascadia Code', Consolas, monospace",
+  "editor.fontLigatures": true,
+  "editor.fontSize": 14,
+  "editor.lineHeight": 1.6,
+  "editor.letterSpacing": 0.2,
+  "editor.padding.top": 14,
+  "editor.padding.bottom": 14,
+  "editor.cursorBlinking": "smooth",
+  "editor.cursorSmoothCaretAnimation": "on",
+  "editor.cursorWidth": 2,
+  "editor.smoothScrolling": true,
+  "editor.roundedSelection": true,
+  // Calm chrome: no minimap, hairline scrollbar, highlight the gutter not the line.
+  "editor.minimap.enabled": false,
+  "editor.renderLineHighlight": "gutter",
+  "editor.overviewRulerBorder": false,
+  "editor.hideCursorInOverviewRuler": true,
+  "editor.scrollbar.verticalScrollbarSize": 10,
+  "editor.scrollbar.horizontalScrollbarSize": 10,
+  "editor.scrollBeyondLastLine": false,
+  // Structure you can read at a glance.
+  "editor.bracketPairColorization.enabled": true,
+  "editor.guides.bracketPairs": "active",
+  "editor.guides.indentation": true,
+  "editor.stickyScroll.enabled": true,
+  "editor.stickyScroll.maxLineCount": 3,
+  "editor.renderWhitespace": "boundary",
+  "editor.semanticHighlighting.enabled": true,
+  "breadcrumbs.enabled": true,
+
+  // ── Workbench ─────────────────────────────────────────────────────────────
+  "workbench.startupEditor": "none",
+  "workbench.list.smoothScrolling": true,
+  "workbench.tree.indent": 14,
+  "workbench.tree.renderIndentGuides": "always",
+  "workbench.editor.labelFormat": "short",
+  "workbench.editor.tabSizing": "shrink",
+  "explorer.compactFolders": false,
+  "explorer.confirmDragAndDrop": false,
+  // Fold the satellite files under the one you actually open.
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "Cargo.toml": "Cargo.lock, rust-toolchain.toml, rustfmt.toml, clippy.toml, deny.toml, .cargo",
+    "pyproject.toml": "uv.lock, poetry.lock, ruff.toml, .python-version, mypy.ini",
+    "Makefile": "makefile.py, makefile_*.py",
+    "SPEC.md": "RESEARCH.md, CONCEPTS.md, NOTES.md, TRANSFER.md",
+    "README.md": "CLAUDE.md, AGENTS.md, LICENSE, .editorconfig, .tome.json",
+    "docker-compose.yml": "docker-compose.*.yml, Dockerfile*, .dockerignore",
+    ".env.example": ".env, .env.*"
+  },
+
+  // ── Editor behaviour ──────────────────────────────────────────────────────
+  "editor.formatOnSave": true,
+  "editor.rulers": [100],
+  "editor.codeActionsOnSave": {
+    "source.fixAll.rust": "explicit",
+    "source.organizeImports.rust": "explicit"
+  },
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // Error Lens: inline diagnostics that read as a note, not a billboard.
+  "errorLens.fontStyleItalic": true,
+  "errorLens.messageBackgroundMode": "none",
+  "errorLens.gutterIconsEnabled": true,
+  "errorLens.delay": 300,
+  "errorLens.enabledDiagnosticLevels": ["error", "warning"],
+
+  // ── Per-language ──────────────────────────────────────────────────────────
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.rulers": [],
+    "editor.renderWhitespace": "none",
+    "editor.quickSuggestions": { "other": false, "comments": false, "strings": false },
+    "files.trimTrailingWhitespace": false
+  },
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4,
+    "editor.rulers": [100],
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+
+  // ── Rust / rust-analyzer ──────────────────────────────────────────────────
   "rust-analyzer.check.command": "clippy",
   // Only check the crate being edited, not all 24 workspace members on every save.
   // `make check` / CI still cover the whole workspace.
@@ -22,45 +127,29 @@
     "SQLX_OFFLINE": "true"
   },
 
-  // ---- Editor ----
-  "editor.formatOnSave": true,
-  "editor.rulers": [100],
-  "editor.codeActionsOnSave": {
-    "source.fixAll.rust": "explicit",
-    "source.organizeImports.rust": "explicit"
-  },
-  "files.trimTrailingWhitespace": true,
-  "files.insertFinalNewline": true,
-
-  "[rust]": {
-    "editor.defaultFormatter": "rust-lang.rust-analyzer",
-    "editor.formatOnSave": true
-  },
-  "[toml]": {
-    "editor.defaultFormatter": "tamasfe.even-better-toml"
-  },
-  "[markdown]": {
-    "editor.wordWrap": "on",
-    "files.trimTrailingWhitespace": false
-  },
-  "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter",
-    "editor.formatOnSave": true,
-    "editor.tabSize": 4,
-    "editor.rulers": [100],
-    "editor.codeActionsOnSave": {
-      "source.fixAll.ruff": "explicit",
-      "source.organizeImports.ruff": "explicit"
-    }
-  },
-
-  // ---- Python (stdlib scripts: status.py, projects/*/makefile.py) ----
+  // ── Python (stdlib scripts: status.py, projects/*/makefile.py) ────────────
   "python.defaultInterpreterPath": "/usr/bin/python3",
   "python.terminal.activateEnvironment": false,
+  "python.languageServer": "Default",
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.diagnosticMode": "workspace",
   // One entry per project that owns a makefile.py (they import from tools/).
+  // Keep this list and `cursorpyright.analysis.extraPaths` below in lockstep —
+  // Cursor's fork reads the `cursorpyright.*` copy, VS Code reads this one.
   "python.analysis.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/tools",
+    "${workspaceFolder}/projects/01-url-shortener",
+    "${workspaceFolder}/projects/02-rate-limiter",
+    "${workspaceFolder}/projects/03-realtime-pubsub",
+    "${workspaceFolder}/projects/04-job-queue",
+    "${workspaceFolder}/projects/06-object-store",
+    "${workspaceFolder}/projects/10-api-gateway",
+    "${workspaceFolder}/projects/13-live-ingest"
+  ],
+  "cursorpyright.analysis.typeCheckingMode": "basic",
+  "cursorpyright.analysis.diagnosticMode": "workspace",
+  "cursorpyright.analysis.extraPaths": [
     "${workspaceFolder}",
     "${workspaceFolder}/tools",
     "${workspaceFolder}/projects/01-url-shortener",
@@ -74,11 +163,25 @@
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
 
-  // ---- Terminal (open new terminals in the project we're actively building) ----
+  // ── Terminal (opens in the project we're actively building) ───────────────
   "terminal.integrated.cwd": "${workspaceFolder}/projects/10-api-gateway",
   "terminal.integrated.envFile": "${workspaceFolder}/projects/10-api-gateway/.env",
+  // Same Nerd Font as Windows Terminal, so the tmux powerline statusline renders.
+  "terminal.integrated.fontFamily": "'CaskaydiaCove Nerd Font Mono', 'CaskaydiaMono Nerd Font', monospace",
+  "terminal.integrated.fontSize": 13,
+  "terminal.integrated.lineHeight": 1.2,
+  "terminal.integrated.cursorBlinking": true,
+  "terminal.integrated.cursorStyle": "line",
+  "terminal.integrated.smoothScrolling": true,
+  "terminal.integrated.minimumContrastRatio": 4.5,
 
-  // ---- Noise reduction ----
+  // ── Noise reduction ───────────────────────────────────────────────────────
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "**/*.egg-info": true
+  },
   "files.watcherExclude": {
     "**/target/**": true,
     "**/__pycache__/**": true,
@@ -87,19 +190,5 @@
   "search.exclude": {
     "**/target": true,
     "**/__pycache__": true
-  },
-  "cursorpyright.analysis.diagnosticMode": "workspace",
-  "cursorpyright.analysis.extraPaths": [
-    "${workspaceFolder}",
-    "${workspaceFolder}/tools",
-    "${workspaceFolder}/projects/01-url-shortener",
-    "${workspaceFolder}/projects/02-rate-limiter",
-    "${workspaceFolder}/projects/03-realtime-pubsub",
-    "${workspaceFolder}/projects/04-job-queue",
-    "${workspaceFolder}/projects/06-object-store",
-    "${workspaceFolder}/projects/10-api-gateway",
-    "${workspaceFolder}/projects/13-live-ingest"
-  ],
-  "cursorpyright.analysis.typeCheckingMode": "basic",
-  "python.languageServer": "None"
+  }
 }

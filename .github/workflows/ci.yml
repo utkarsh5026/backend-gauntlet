@@ -35,6 +35,7 @@ jobs:
       packages: ${{ steps.resolve.outputs.packages }}
       frontend_any: ${{ steps.resolve.outputs.frontend_any }}
       frontend_dirs: ${{ steps.resolve.outputs.frontend_dirs }}
+      python_any: ${{ steps.filter.outputs.python }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
@@ -47,6 +48,12 @@ jobs:
           filters: |
             any:
               - '**'
+            python:
+              - 'projects/**/*.py'
+              - 'projects/**/pyproject.toml'
+              - 'packages/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
       - name: Resolve package / frontend scope
         id: resolve
         env:
@@ -107,6 +114,42 @@ jobs:
         run: |
           cargo hakari generate --diff --quiet
           cargo hakari manage-deps --dry-run --quiet
+
+  python:
+    name: ruff + pyright + pytest
+    needs: changes
+    if: needs.changes.outputs.python_any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: sync the uv workspace
+        # --frozen: the committed uv.lock is authoritative, exactly like the
+        # Rust side builds against Cargo.lock. A stale lock fails here.
+        run: uv sync --all-packages --frozen
+      - name: shared packages
+        run: |
+          uv run ruff format --check packages
+          uv run ruff check packages
+      - name: per-project verify
+        # Same gate as `make verify` in each project, so green here means green
+        # locally. Scoped per project because each owns its ruff/pyright config.
+        run: |
+          set -euo pipefail
+          for proj in projects/*/pyproject.toml; do
+            dir=$(dirname "$proj")
+            echo "::group::$dir"
+            (
+              cd "$dir"
+              uv run ruff format --check .
+              uv run ruff check .
+              uv run pyright
+              uv run pytest -q
+            )
+            echo "::endgroup::"
+          done
 
   test:
     name: nextest
@@ -210,13 +253,14 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, secrets, lint, test, frontend, supply-chain]
+    needs: [changes, secrets, lint, python, test, frontend, supply-chain]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate job results
         env:
           SECRETS: ${{ needs.secrets.result }}
           LINT: ${{ needs.lint.result }}
+          PYTHON: ${{ needs.python.result }}
           TEST: ${{ needs.test.result }}
           FRONTEND: ${{ needs.frontend.result }}
           DENY: ${{ needs.supply-chain.result }}
@@ -224,10 +268,11 @@ jobs:
         run: |
           set -euo pipefail
           ok() { [ "$1" = "success" ] || [ "$1" = "skipped" ]; }
-          echo "changes=$CHANGES secrets=$SECRETS lint=$LINT test=$TEST frontend=$FRONTEND deny=$DENY"
+          echo "changes=$CHANGES secrets=$SECRETS lint=$LINT python=$PYTHON test=$TEST frontend=$FRONTEND deny=$DENY"
           [ "$CHANGES" = "success" ]
           [ "$SECRETS" = "success" ]
           ok "$LINT"
+          ok "$PYTHON"
           ok "$TEST"
           ok "$FRONTEND"
           ok "$DENY"

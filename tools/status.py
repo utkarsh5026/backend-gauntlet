@@ -5,8 +5,9 @@ A dependency-free dashboard that answers "where am I across every project?"
 without a tracker you have to hand-maintain. It never drifts because it reads
 the two sources of truth that ARE the work:
 
-  * vertical challenges  ← `todo!()` markers in each vertical's `src/*.rs`
-                            (a vertical is "done" once its module has no todo!())
+  * vertical challenges  ← worklist markers in each vertical's `src/*.rs`|`src/*.py`
+                            (`todo!()` / `raise NotImplementedError`; a vertical is
+                            "done" once its module has none left)
   * horizontal checklist ← `- [ ]` / `- [x]` checkboxes in that project's SPEC.md
   * from-the-field backlog ← `- [~]` / `- [✔]` in SPEC's "From the field" section
                             (shown ungraded in detail view when present; never
@@ -92,10 +93,12 @@ STATE_STYLE = {
 
 
 VERTICAL_RE = re.compile(r"^### (V\d+)\.\s*(.+?)\s*$", re.MULTILINE)
-SRC_RE = re.compile(r"src/([\w/]+\.rs)")
+SRC_RE = re.compile(r"src/([\w/]+\.(?:rs|py))")
 FRONTMATTER_RE = re.compile(r"<!--\s*status:(.*?)-->", re.DOTALL)
 EMPHASIS_RE = re.compile(r"[*_`]")
-TODO_RE = re.compile(r"\btodo!\s*\(")
+# The worklist marker in either language: Rust `todo!()`, Python `raise
+# NotImplementedError`. A vertical is "done" once its module has neither.
+TODO_RE = re.compile(r"\btodo!\s*\(|\braise\s+NotImplementedError\b")
 CHECK_DONE_RE = re.compile(r"-\s*\[x\]", re.IGNORECASE)
 CHECK_OPEN_RE = re.compile(r"-\s*\[ \]")
 CHECK_ITEM_RE = re.compile(r"-\s*\[([ xX])\]\s*(.+)")  # captures state + text
@@ -150,6 +153,13 @@ class Vertical:
         if self.path is None or not self.path.exists():
             return None
         return len(TODO_RE.findall(self.path.read_text()))
+
+    @property
+    def todo_label(self) -> str:
+        """What the worklist marker is called in this module's language."""
+        if self.module and self.module.endswith(".py"):
+            return "NotImplementedError"
+        return "todo!()"
 
     @property
     def state(self) -> str:
@@ -728,7 +738,7 @@ def detail(p: Project, full: bool = False) -> None:
         elif todos == 0:
             note = f"{C.DIM}{v.module}{C.RESET}"
         else:
-            note = f"{C.YELLOW}{v.module} · {todos} todo!(){C.RESET}"
+            note = f"{C.YELLOW}{v.module} · {todos} {v.todo_label}{C.RESET}"
         print(f"  {glyph}  {C.BOLD}{v.title}{C.RESET}  {note}")
         crit = v.criteria
         cd = sum(1 for d, _ in crit if d)
@@ -768,7 +778,7 @@ def detail(p: Project, full: bool = False) -> None:
     if cur is not None:
         bits = []
         if cur.todos:
-            bits.append(f"{cur.todos} todo!() in {cur.module}")
+            bits.append(f"{cur.todos} {cur.todo_label} in {cur.module}")
         open_crit = sum(1 for d, _ in cur.criteria if not d)
         if open_crit:
             bits.append(f"{open_crit} acceptance box(es) left")
