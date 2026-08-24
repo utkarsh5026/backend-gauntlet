@@ -15,6 +15,7 @@
 members = [
     "packages/common-telemetry",
     "packages/common-config",
+    "projects/02-rate-limiter",
     "projects/07-distributed-cache",
 ]
 
