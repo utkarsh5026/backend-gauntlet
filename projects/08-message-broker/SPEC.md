@@ -13,7 +13,7 @@ blocked-on: ~            # free text, or ~ for none
 > partitions, read by cursor.** This project builds that log from scratch. It's
 > Tier 4 because the hard parts — durable sequential writes, seeking into a
 > multi-gigabyte file by logical offset, and at-least-once delivery across a
-> consumer group — are exactly the parts a `cargo add rdkafka` would hide.
+> consumer group — are exactly the parts a `pip install aiokafka` would hide.
 
 ## What it does (the easy part)
 - `POST /topics` `{name, partitions}` → create a topic with N partition logs.
@@ -41,7 +41,7 @@ records living in a directory of fixed-size **segment** files (`…0000.log`,
 `…4096.log`, named by the base offset they start at). Producing appends a
 length-and-CRC-framed record to the tail of the active segment and returns a
 monotonic offset; when the active segment fills, it **rolls** to a new one.
-Reads never mutate. Build it in `src/log.rs`.
+Reads never mutate. Build it in `src/message_broker/log.py`.
 
 The trap is durability under a crash. A write is not "done" when `write()`
 returns — it's done when the bytes and the directory entry are on the platter.
@@ -56,6 +56,7 @@ truncated on recovery*, never handed to a consumer as if it were real.
 - [ ] Segment filenames **encode their base offset**, so the segment holding a given offset is found without opening every file.
 - [ ] A **crash mid-append** (a torn tail frame) is truncated on recovery — the log reopens at a clean record boundary, losing at most the in-flight write, never a completed one.
 - [ ] The **fsync / durability policy** is a *deliberate, documented* choice (per-append vs. batched every N records / T ms), not an accident of whatever the OS flushed.
+- [ ] The durability step **never runs on the event loop** — an fsync that parks the loop stalls every other connection, and a fetch is measurably unaffected by a concurrent append burst.
 
 **Proof:** round-trip + restart-recovery tests; a torn-tail test (write a partial
 frame, reopen, assert clean truncation); a corruption test (flip a byte → read
@@ -75,7 +76,7 @@ there. Alongside each segment, maintain a **sparse index**: `(relative_offset �
 byte_position)` entries written roughly every `index_interval_bytes`. To resolve
 a fetch at offset K: pick the segment (base offset ≤ K), binary-search its index
 for the largest indexed offset ≤ K, `seek` to that byte position, then scan
-forward the last few records to K. Build it in `src/index.rs`.
+forward the last few records to K. Build it in `src/message_broker/index.py`.
 
 **Done when ALL true:**
 - [ ] A fetch from an **arbitrary offset** returns the record at that offset and everything after it — correct regardless of how deep into the segment it lands.
@@ -85,7 +86,7 @@ forward the last few records to K. Build it in `src/index.rs`.
 - [ ] A fetch at an offset **at or past the log end** returns "no records yet" cleanly — the tailing-consumer case — not an error and not a hang.
 
 **Proof:** a seek test asserting a mid-log fetch scans ≤ one interval of bytes
-(instrument the read) rather than full-scanning; an index-rebuild test (rm the
+(instrument the read) rather than full-scanning; an index-rebuild test (delete the
 index → reads still work); a `bench/` comparing fetch-from-offset latency **with
 vs. without** the index as the log grows.
 
@@ -98,19 +99,21 @@ A topic is **N independent logs** (partitions). Producing to a topic picks one
 partition: by **key** (same key → same partition, forever) when the record has a
 key, or spread (round-robin) when it doesn't. Order is total **within** a
 partition and **undefined across** partitions — that's the deal that buys
-horizontal throughput. Offsets are **per-partition**. Build it in `src/topic.rs`.
+horizontal throughput. Offsets are **per-partition**. Build it in
+`src/message_broker/topic.py`.
 
 **Done when ALL true:**
 - [ ] A topic created with N partitions has **N independent logs**; each produced record lands in **exactly one** of them.
-- [ ] Records with the **same key always route to the same partition** — a stable mapping that holds for the life of the topic.
+- [ ] Records with the **same key always route to the same partition** — a stable mapping that holds for the life of the topic, **across broker restarts and separate processes**, not just within one run.
 - [ ] **Keyless records spread** across partitions — no single partition is hot by default.
 - [ ] **Per-partition order is total**: within one partition, consume order == produce order. No ordering is claimed across partitions (and the design doc says so out loud).
 - [ ] **Offsets are per-partition**, not global — each partition owns its own 0…n offset space.
 
 **Proof:** tests for key→partition stability (same key, many produces, one
-partition), keyless spread (roughly even across partitions), and per-partition
-FIFO; a `docs/08-design.md` note on the partitioner and why partition count is
-fixed at create time (changing N remaps every key).
+partition — and the *same* partition in a freshly started process), keyless
+spread (roughly even across partitions), and per-partition FIFO; a
+`docs/08-design.md` note on the partitioner, the hash it uses and why that hash,
+and why partition count is fixed at create time (changing N remaps every key).
 
 *Concept to internalize:* why per-key ordering is the only ordering guarantee
 worth making, how partition count caps consumer parallelism, and why re-partitioning
@@ -123,7 +126,7 @@ time), and the group **durably commits** how far it has read per partition — t
 bookmark that survives a restart. A consumer fetches from its last committed
 offset, processes, then commits. If it dies before committing, another member
 re-reads from the last commit: **at-least-once**, never silent loss. Build it in
-`src/group.rs`.
+`src/message_broker/group.py`.
 
 **Done when ALL true:**
 - [ ] A group's **committed offset per (topic, partition) is durable** — it survives a broker restart, so a returning consumer resumes there, not from 0.
@@ -163,9 +166,16 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] **Name & size validation:** topic names and keys become **path components** on disk — reject path-traversal / illegal names, and enforce a **max record size** so one client can't stream you out of disk. Each with a test.
 
 ### Observability
-- [ ] `tracing` span per request (via `common-telemetry`), with a request id.
+- [ ] A structured span per request (via `common_telemetry`), with a request id.
 - [ ] Structured logs on the events that matter: **segment roll**, **retention delete**, **group rebalance**.
 - [ ] Metrics at `/metrics`: **produce rate & bytes-in**, **per-partition log-end offset**, and **consumer group lag** (log-end offset − committed offset) — lag is *the* broker health metric.
+
+### Python & the runtime
+- [ ] **pyright strict passes clean** — every `# type: ignore` carries a justifying comment.
+- [ ] **No blocking call on the event loop** — runs clean under `PYTHONASYNCIODEBUG=1`; any sync I/O (and every `fsync` in this project is one) is in a thread/process pool deliberately.
+- [ ] **Bounded pool sized on purpose** — the fsync/writer thread pool size and the partition count are tuned *together*, with the reasoning in the design doc.
+- [ ] **Graceful shutdown** drains in-flight requests on SIGTERM via the FastAPI lifespan.
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in `docs/08-benchmarks.md`, naming the top bottleneck.
 
 ### Cross-cutting scale skills
 - [ ] Appends to one partition **serialize** (single writer) while reads stay concurrent — the contention model is deliberate, not incidental.
@@ -180,12 +190,18 @@ The project is **done when ALL true:**
    (records/s, MB/s) at the chosen fsync policy; **fetch-from-offset latency with
    vs. without** the sparse index as the log grows; **end-to-end throughput vs.
    partition count**.
-3. `docs/08-design.md` records the four decisions the SPEC grades: the **on-disk
+3. `docs/08-benchmarks.md` also carries a **profile**, not just numbers: a
+   `py-spy` flamegraph and a `memray` run naming the top bottleneck, and — where
+   a target was missed — *why* (GIL contention? GC pauses? allocation churn in
+   the framing? a blocking call left on the loop?). Numbers alone don't close
+   this; you have to know why they are what they are.
+4. `docs/08-design.md` records the four decisions the SPEC grades: the **on-disk
    record/segment frame + fsync policy** (V1), the **index sparsity interval**
    (V2), the **partitioning function** (V3), and the **delivery guarantee + commit
    ordering** (V4).
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p message-broker`
-   are green; no `todo!()` remains on a checked path.
+5. `make verify` is green — `ruff format --check`, `ruff check`, `pyright`
+   (strict) and `pytest` — and no `raise NotImplementedError` remains on a
+   checked path.
 
 ## Suggested order of attack
 1. Boring path: one partition = one growing file; append, and fetch by scanning
@@ -198,10 +214,13 @@ The project is **done when ALL true:**
    across members, then prove at-least-once with a crash-before-commit test.
 6. Retention, auth + validation, and the metrics (produce rate, log-end offset,
    lag).
-7. Benchmark, document, tune.
+7. Benchmark, profile, document, tune.
 
 ## Run it
 ```bash
 cp .env.example .env        # then adjust DATA_DIR / segment size if you like
-cargo run -p message-broker # no external deps — the filesystem IS the log
+uv sync                     # or: make sync
+make run                    # no external deps — the filesystem IS the log
+make walk                   # create a topic, produce a batch, fetch it back
+make tree                   # see the segments the broker laid down on disk
 ```

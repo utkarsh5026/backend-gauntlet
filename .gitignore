@@ -12,3 +12,7 @@ __pycache__/
 .pytest_cache/
 .hypothesis/
 # uv.lock IS committed — it is the Python side's Cargo.lock.
+
+# Project 08's broker state: the filesystem IS the log, so `make run` lays
+# down segment files under DATA_DIR. Never commit them.
+projects/*/data/

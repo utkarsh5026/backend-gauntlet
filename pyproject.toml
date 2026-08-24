@@ -17,6 +17,7 @@ members = [
     "packages/common-config",
     "projects/02-rate-limiter",
     "projects/07-distributed-cache",
+    "projects/08-message-broker",
 ]
 
 [tool.ruff]

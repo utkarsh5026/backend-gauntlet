@@ -21,15 +21,17 @@ import sys
 from pathlib import Path
 
 # (cargo package name, project dir relative to repo root)
+# Rust projects only. A project converted by `/pythonize` must be removed from
+# this list when it leaves the Cargo workspace — otherwise a change to its
+# `src/` still resolves here and CI runs `cargo clippy -p <name>` for a package
+# that no longer exists. The Python side is scoped by the `python` paths-filter
+# in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
     ("url-shortener", "projects/01-url-shortener"),
-    ("rate-limiter", "projects/02-rate-limiter"),
     ("realtime-pubsub", "projects/03-realtime-pubsub"),
     ("job-queue", "projects/04-job-queue"),
     ("metrics-pipeline", "projects/05-metrics-pipeline"),
     ("object-store", "projects/06-object-store"),
-    ("distributed-cache", "projects/07-distributed-cache"),
-    ("message-broker", "projects/08-message-broker"),
     ("raft-kv", "projects/09-raft-kv"),
     ("api-gateway", "projects/10-api-gateway"),
     ("vod-streaming", "projects/11-vod-streaming"),
