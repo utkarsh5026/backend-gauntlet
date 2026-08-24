@@ -16,3 +16,7 @@ __pycache__/
 # Project 08's broker state: the filesystem IS the log, so `make run` lays
 # down segment files under DATA_DIR. Never commit them.
 projects/*/data/
+
+# Project 24's sandbox scratch: one directory per execution environment under
+# SANDBOX_ROOT, created on cold start and removed when the environment is reaped.
+projects/*/run/
