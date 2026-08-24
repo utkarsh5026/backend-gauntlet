@@ -1,10 +1,10 @@
 // Thin client for the project-20 full-text search HTTP API.
 //
 // All requests go through the Vite proxy prefix `/api` (see vite.config.ts),
-// which strips the prefix and forwards to the Rust backend (default :9200). That
+// which strips the prefix and forwards to the search engine (default :9200). That
 // keeps the browser same-origin, so no CORS layer is needed on the backend.
 //
-// The endpoints map 1:1 onto src/routes.rs:
+// The endpoints map 1:1 onto src/full_text_search/routes.py:
 //   GET    /healthz                          liveness
 //   GET    /search?q=&size=                  rank documents (public)   → SearchResponse
 //   POST   /documents        {id?, text}     index one doc (V1)        → { shard, doc_id }
@@ -15,12 +15,12 @@
 //   GET    /_stats                            per-shard + aggregate stats
 //
 // Write/admin routes are gated behind an API key once the security horizontal is
-// built (see the TODOs in routes.rs). The backend does not check it yet, but we
+// built (see the TODOs in routes.py). The backend does not check it yet, but we
 // send `X-API-Key` when one is configured so the UI keeps working after it lands.
 
 export const BASE = '/api'
 
-// ── Response shapes (mirror src/doc.rs + src/shard.rs serde) ──────────────────
+// ── Response shapes (mirror src/full_text_search/doc.py + shard.py) ───────────
 
 /** One ranked hit. `doc_id` is shard-local, hence the `shard` tag. `id`/`text`
  *  are the stored fields — present only when the segment kept them. */
@@ -94,7 +94,7 @@ async function fetchOk(method: string, url: string, init?: RequestInit): Promise
   try {
     res = await fetch(url, { method, ...init })
   } catch {
-    throw new ApiError(0, 'network error — is the search engine running? (PORT=9200 cargo run -p full-text-search)')
+    throw new ApiError(0, 'network error — is the search engine running? (cd .. && make run)')
   }
   return expectOk(res)
 }

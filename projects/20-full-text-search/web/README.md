@@ -13,12 +13,12 @@ near-real-time refresh and segment merging.
 
 ## Run
 
-The console talks to the Rust backend through a Vite proxy under `/api`, so the
+The console talks to the search engine through a Vite proxy under `/api`, so the
 browser stays same-origin (no CORS needed on the backend).
 
 ```bash
 # 1. Start the search engine (project root). Default port 9200.
-cargo run -p full-text-search
+make run
 
 # 2. Start the console (this folder).
 bun install
@@ -41,7 +41,7 @@ Point at a non-default backend with `SEARCH_URL=http://host:port bun run dev`.
 
 The backend returns each hit's stored `text` but **no highlight offsets**, so the
 console recovers what to `<mark>` by re-running an *approximation* of the server
-analyzer (`src/analyzer.rs`) on the query — lowercase, split on word boundaries,
+analyzer (`src/full_text_search/analyzer.py`) on the query — lowercase, split on word boundaries,
 drop the same English stop-words — and wrapping matching words. See
 `src/highlight.tsx`. If you add a stemmer server-side (a V1 stretch), teach the
 highlighter the same stemmer or it will drift from what actually matched.

@@ -15,7 +15,11 @@
 members = [
     "packages/common-telemetry",
     "packages/common-config",
+    "projects/02-rate-limiter",
     "projects/07-distributed-cache",
+    "projects/08-message-broker",
+    "projects/20-full-text-search",
+    "projects/23-dynamodb-core",
 ]
 
 [tool.ruff]

@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 // The search engine speaks plain HTTP at the root (/search, /documents, /_stats…).
 // We proxy everything under /api to it and strip the prefix, so the browser only
-// ever talks to the Vite dev origin — no CORS layer needed on the Rust backend.
+// ever talks to the Vite dev origin — no CORS layer needed on the backend.
 //
 // Default port is 9200 (project 20 — the Elasticsearch HTTP-port convention).
 // Override with SEARCH_URL=http://host:port when starting dev.

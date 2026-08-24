@@ -8,8 +8,11 @@ a startup error naming the offending variable.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from common_config import BaseConfig
 from pydantic import Field, field_validator, model_validator
+from pydantic_settings import NoDecode
 
 from .node import Address, Node
 from .store import EvictionPolicy
@@ -31,8 +34,15 @@ class Settings(BaseConfig):
     node_id: str = ""
     """Stable ring identity. Defaults to `advertise_host:port` when unset."""
 
-    seeds: list[Address] = []
-    """Seed peers to join through. Empty = this node is the first / standalone."""
+    seeds: Annotated[list[Address], NoDecode] = []
+    """Seed peers to join through. Empty = this node is the first / standalone.
+
+    `NoDecode` is load-bearing. pydantic-settings treats any `list[...]` field as
+    "complex" and runs `json.loads` on the raw environment string *in the source*,
+    before any validator sees it — so `SEEDS=host:7071,host:7072` dies with a
+    `JSONDecodeError` at startup. It hides well, because an empty `SEEDS=` is
+    skipped entirely and the standalone default boots fine; only a real cluster
+    breaks."""
 
     # --- local store (V1) ---
     cache_capacity: int = Field(default=100_000, gt=0)
@@ -48,7 +58,11 @@ class Settings(BaseConfig):
     @field_validator("seeds", mode="before")
     @classmethod
     def _split_seeds(cls, raw: object) -> object:
-        """Accept `SEEDS="host:port,host:port"` from the environment."""
+        """Accept `SEEDS="host:port,host:port"` from the environment.
+
+        Only ever sees the raw string because the field is annotated `NoDecode`
+        — see the note on the field itself.
+        """
         if not isinstance(raw, str):
             return raw
         return [Address.parse(part) for part in raw.split(",") if part.strip()]
