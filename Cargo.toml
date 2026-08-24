@@ -124,7 +124,7 @@ url = "2"
 sha2 = "0.10"
 md-5 = "0.10"
 hex = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 # Project 06 (object store) From-the-field: FastCDC / Gear-hash content-defined
 # chunking for chunk-level dedup (`src/cdc.rs`). Pure Rust; v2020 is the
 # recommended API. We wrap it behind a push/finish streaming cutter.
