@@ -122,7 +122,7 @@ url = "2"
 # `base64` decodes client-supplied Content-MD5 / x-amz-checksum-* headers (raw
 # digest bytes on the wire, not the hex Digest/ETag we store).
 sha2 = "0.10"
-md-5 = "0.10"
+md-5 = "0.11"
 hex = "0.4"
 base64 = "0.22"
 # Project 06 (object store) From-the-field: FastCDC / Gear-hash content-defined
