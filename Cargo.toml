@@ -141,7 +141,7 @@ arrow-object-store = { package = "object_store", version = "0.12", features = ["
 # O(log n) dissemination and even failure-detection load across the cluster.
 # Raft (project 09) needs it too: the *randomized* election timeout is what breaks
 # split votes — every follower waits a different interval before standing.
-rand = "0.9"
+rand = "0.10"
 
 # --- HTTP client (project 09 — Raft KV: node-to-node RPC) ---
 # Each node POSTs RequestVote / AppendEntries / InstallSnapshot to its peers. The
