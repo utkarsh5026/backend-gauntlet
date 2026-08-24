@@ -119,6 +119,28 @@ Horizontals = protocols, caching, security, observability — woven into every S
 
 </details>
 
+<details>
+<summary><b>☁️ Tier 8 — Cloud primitives</b> · rebuild the AWS you use daily</summary>
+
+| # | Project | What you build |
+|:-:|---------|----------------|
+| 23 | **DynamoDB data plane** | Partition/sort keys, GSI/LSI, conditional writes, hot partitions, streams |
+| 24 | **Lambda compute** | Runtime API, execution environments, sandbox, concurrency, event source mapping |
+| 25 | **IAM + STS** | SigV4 signing, policy evaluation, identity vs resource policies, AssumeRole |
+| 26 | **Edge CDN** | Cache keys, request collapsing, stale-while-revalidate, range caching, invalidation |
+| 27 | **Event router** (EventBridge) | Content-based rule matching, per-target isolation, retry + DLQ, archive & replay |
+| 28 | **KMS + secrets** | Envelope encryption, data key caching, rotation by re-wrap, grants, audit log |
+
+<sub>23's streams feed 24's event source mapping, and 27 slots between them — the same seams the
+real services use. 25 is the security horizontal for the whole tier: point it at 23, 24, and 06.
+Distribution stays out of scope here; that's 07 and 09. Suggested order: 23 → 24 → 25 → 27 → 26 → 28.</sub>
+
+<sub><b>Candidates</b> (unnumbered until claimed): authoritative DNS (Route 53) ·
+container scheduler + reconciliation loop (ECS) · columnar query over object storage (Athena) ·
+declarative infra with plan/diff/drift (CloudFormation).</sub>
+
+</details>
+
 ---
 
 ## 🚀 Start
