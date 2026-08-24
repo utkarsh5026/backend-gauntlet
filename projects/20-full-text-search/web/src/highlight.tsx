@@ -3,7 +3,7 @@
 // The backend returns the stored `text` but no highlight offsets — so we recover
 // which words to <mark> by re-running (an approximation of) the server analyzer on
 // the query and wrapping any word in the text whose analyzed form matches a query
-// term. This deliberately mirrors src/analyzer.rs so "what gets highlighted" tracks
+// term. This deliberately mirrors src/full_text_search/analyzer.py so "what gets highlighted" tracks
 // "what actually matched": lowercase → split on non-word chars → drop the same
 // English stop-words → keep tokens ≥ 1 char.
 //
@@ -14,7 +14,7 @@
 
 import * as React from 'react'
 
-// Mirror of DEFAULT_STOPWORDS in src/analyzer.rs — keep in lockstep.
+// Mirror of DEFAULT_STOPWORDS in src/full_text_search/analyzer.py — keep in lockstep.
 const STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
   'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',

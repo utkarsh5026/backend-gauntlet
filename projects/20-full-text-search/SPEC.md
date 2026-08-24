@@ -15,7 +15,7 @@ blocked-on: ~            # free text, or ~ for none
 > or one machine can handle*. This project builds that core from scratch. It's Tier 7
 > because it spans all four pillars at once: on-disk data structures (segments +
 > mmap), ranking math (BM25), caching (the query cache), and distributed systems
-> (scatter-gather across shards) — the parts a `cargo add tantivy` would hide.
+> (scatter-gather across shards) — the parts a `pip install whoosh` would hide.
 
 ## What it does (the easy part)
 - `POST /documents` `{id?, text}` → index a document; returns its `(shard, doc_id)`.
@@ -43,7 +43,7 @@ is the pipeline that does it: tokenize (split on word boundaries), normalize
 (lowercase / case-fold), filter (drop stop-words and too-short tokens), optionally
 stem (`running` → `run`). Whatever it does *defines what matches* — if it lowercases,
 `Rust` finds `rust`; if it strips stop-words, a search for `the` finds nothing. Build
-it in `src/analyzer.rs`.
+it in `src/full_text_search/analyzer.py`.
 
 The trap is asymmetry. The **same analyzer must run at index time and query time**.
 Index `"Running"` as `running` but analyze the query as `Running`, and the lookup
@@ -56,9 +56,11 @@ so it's symmetric by construction — your job is to make the pipeline itself co
 - [ ] The **same analyzer** is provably used for indexing and querying — not two code paths that can drift.
 - [ ] Each pipeline stage (lowercasing, stop-words, min-length, any stemming) is a **deliberate, documented** choice, and its effect is observable (toggling it changes which queries match).
 
-**Proof:** unit tests for a fixed input → expected term stream; a property test for
-idempotence (`prop_analyze_is_idempotent`); a match test showing an indexed doc and a
-query analyze to overlapping terms; `docs/20-design.md` states the analysis contract.
+**Proof:** pytest cases for a fixed input → expected term stream; a hypothesis
+property test for idempotence (`test_analyze_is_idempotent`); a match test showing an
+indexed doc and a query analyze to overlapping terms; `docs/20-design.md` states the
+analysis contract — including the Unicode normalization form and whether case folding
+uses `casefold` or `lower`.
 
 *Concept to internalize:* why analysis, not string matching, is what search is; the
 recall-vs-precision tradeoff each filter makes; and why index-time == query-time
@@ -70,13 +72,14 @@ The heart of the engine. Build the **inverted index** — `term → sorted posti
 (doc id + term frequency)` — and make it live on disk as **immutable segments**.
 Newly indexed documents buffer in memory; a *refresh* flushes them into a brand-new
 segment file that is never modified again; a shard is an ordered pile of segments. A
-[`SegmentReader`] answers a query by `mmap`ing its file and parsing postings straight
-out of the mapped bytes — the OS page cache serves hot terms, and a 10 GiB segment
-never has to sit in the heap. Build it in `src/segment.rs`.
+[`SegmentReader`] answers a query by memory-mapping its file and parsing postings
+straight out of the mapped bytes — the OS page cache serves hot terms, and a 10 GiB
+segment never has to sit in the heap. Build it in `src/full_text_search/segment.py`.
 
 The two ideas doing the work: **immutability** (concurrent search needs no locks;
-merging is safe) and **mmap** (you read a `&[u8]` view of the file, not the whole file
-into RAM). The trap is the on-disk format — a sorted term dictionary you can
+merging is safe) and **mmap** (you read a `memoryview` window onto the file, not the
+whole file into RAM — and slicing the `mmap` itself *copies*, which is the trap that
+makes this criterion easy to fail silently). The other trap is the on-disk format — a sorted term dictionary you can
 binary-search in the mapped bytes, postings you can decode in place, and a footer that
 tells the reader where everything is.
 
@@ -84,7 +87,7 @@ tells the reader where everything is.
 - [ ] After flushing documents to a segment and reopening it, `postings(term)` returns **exactly the documents that contained the term**, doc-id-sorted, with the right term frequencies.
 - [ ] A search **finds a document only after a refresh** — a just-indexed, un-refreshed document is not yet searchable (the near-real-time contract), and this is documented.
 - [ ] Segments are **immutable**: indexing more documents creates *new* segment files and never rewrites an existing one (observable as growing file count).
-- [ ] A query is answered **without reading the whole segment into memory** — postings are read from the `mmap` (resident set stays far below segment size for a cold, large segment).
+- [ ] A query is answered **without reading the whole segment into memory** — postings are read through a `memoryview` over the map, and the resident set stays far below segment size for a cold, large segment (measure it; `mmap` slicing copies, so this is not free).
 - [ ] A **truncated or byte-flipped segment** is detected on open/read and surfaces as an error, never as wrong postings.
 
 **Proof:** flush→reopen→`postings` round-trip tests; a test asserting a doc is
@@ -105,10 +108,10 @@ BM25 refines TF-IDF with two corrections: **term-frequency saturation** (`k1` �
 10th occurrence counts far less than the 1st) and **document-length normalization**
 (`b` — a long document shouldn't win by sheer size). A document's score is the sum,
 over the query's terms, of `idf(t) · saturated, length-normalized tf`. Build it in
-`src/bm25.rs`.
+`src/full_text_search/bm25.py`.
 
 The trap is the top-`k`: with a million matching documents you must **not** sort them
-all — keep only the best `k` with a bounded heap as you score.
+all — keep only the best `k` with a bounded heap (`heapq`) as you score.
 
 **Done when ALL true:**
 - [ ] Results are **ranked**, best-first: a document where the query terms are frequent and the document is focused ranks above one where they're rare and buried.
@@ -117,7 +120,7 @@ all — keep only the best `k` with a bounded heap as you score.
 - [ ] A term appearing in **fewer documents** (higher IDF) contributes more than a common one at equal TF.
 - [ ] Only the **top `k`** are materialized — the full matching set is never sorted (verifiable on a large corpus by memory/time staying bounded in `k`, not in hits).
 
-**Proof:** property tests for TF-monotonicity (`prop_score_monotone_in_tf`) and the
+**Proof:** property tests for TF-monotonicity (`test_score_monotone_in_tf`) and the
 length penalty; a hand-computed tiny-corpus ranking the code reproduces; a `bench/`
 showing top-k latency independent of the match-set size. `docs/20-design.md` records
 the `k1`/`b` choice and why.
@@ -133,7 +136,7 @@ climbs. **Merging** compacts many small segments into one larger immutable segme
 retires the inputs (the same idea as LSM compaction). **Deletes** ride along: since
 segments are immutable, a delete records a **tombstone** in a [`LiveDocs`] overlay that
 search skips; the space is only reclaimed when a merge rewrites the segment and drops
-the dead docs. Build it in `src/merge.rs`.
+the dead docs. Build it in `src/full_text_search/merge.py`.
 
 **Done when ALL true:**
 - [ ] Merging N segments yields **one segment whose live postings equal the union of the inputs'** — nothing lost, nothing resurrected, ordering preserved.
@@ -143,7 +146,7 @@ the dead docs. Build it in `src/merge.rs`.
 - [ ] Search results are **unchanged across a merge** (a merge is transparent to correctness — it only changes layout and speed).
 
 **Proof:** a property test that a merge preserves exactly the live postings
-(`prop_merge_preserves_live_docs`); a delete-then-search test (gone immediately); a
+(`test_merge_preserves_live_docs`); a delete-then-search test (gone immediately); a
 force-merge test (one segment, results identical); `docs/20-design.md` states the
 merge policy and the delete/tombstone model.
 
@@ -157,7 +160,7 @@ a restart.
 One index on one core tops out. **Shard** the corpus across N independent indexes,
 route each document to one shard, and turn a search into a **scatter-gather**: fan the
 query out to every shard *concurrently*, take each shard's local top-`k`, and merge
-them into a global top-`k`. Build the coordinator in `src/shard.rs`.
+them into a global top-`k`. Build the coordinator in `src/full_text_search/shard.py`.
 
 Three subtleties are the whole point: (1) you only need `k` from each shard (the global
 winner is in some shard's top-k); (2) a gather is only as fast as the **slowest shard**
@@ -169,7 +172,7 @@ that a two-phase query would fix.
 **Done when ALL true:**
 - [ ] A document is routed to **exactly one shard**, and the same client id always lands in the same shard (stable routing); keyless docs spread across shards.
 - [ ] A search **consults every shard** and returns a correct global top-`k` — a document in any shard can appear in the results.
-- [ ] Shards are queried **concurrently**, not in a sequential loop — total search time tracks the *slowest* shard, not the *sum* of shards (observable as latency staying ~flat as shard count rises for a fixed corpus).
+- [ ] Shards are queried **concurrently**, not in a sequential loop — total search time tracks the *slowest* shard, not the *sum* of shards (observable as latency staying ~flat as shard count rises for a fixed corpus). `asyncio.gather` over CPU-bound work is *not* enough on CPython: the vehicle is a deliberate choice, and if it can't reach flat, the ceiling and its cause are recorded in `docs/20-benchmarks.md`.
 - [ ] The **cross-shard scoring caveat** (per-shard IDF) is documented, with the accepted tradeoff or the two-phase fix stated.
 
 **Proof:** a routing test (id→shard stability + keyless spread); a correctness test (a
@@ -201,7 +204,7 @@ Each item is **done when its criterion is observably true** — same rule as the
 
 ### Caching
 - [ ] **Query cache:** a repeated query is served from the cache without touching any
-  shard (a cache hit does zero scoring) — `src/cache.rs`.
+  shard (a cache hit does zero scoring) — `src/full_text_search/cache.py`.
 - [ ] **Invalidation is correct:** a refresh, merge, or delete invalidates cached
   results so search never returns a stale hit for a document that changed.
 - [ ] The **cache policy is documented** in `docs/20-design.md` (what's keyed, the
@@ -225,6 +228,29 @@ Each item is **done when its criterion is observably true** — same rule as the
   indexed**, and **merges** — the segment-count gauge is *the* "am I merging enough"
   signal.
 
+### Python & runtime
+- [ ] **`pyright` strict passes clean** — every `# type: ignore` carries a comment
+  justifying it.
+- [ ] **No blocking call on the event loop:** the engine runs clean under
+  `PYTHONASYNCIODEBUG=1`. Every segment write, merge and stored-field read is either
+  `await`ed off the loop or is a documented, measured exception — this project is
+  mostly filesystem I/O and CPU, so it is the one most easily got wrong.
+- [ ] **Bounded pool sized on purpose:** the thread (or process) pool the fan-out and
+  the segment writes use has a deliberate size, tuned *together* with `SHARD_COUNT`,
+  and the reasoning is in `docs/20-design.md`. An unbounded pool turns a burst of
+  refreshes into a burst of concurrent fsyncs.
+- [ ] **Graceful shutdown** drains in-flight requests on SIGTERM via the FastAPI
+  lifespan, the background refresher is cancelled and awaited (never orphaned), and
+  every `SegmentReader` map is closed rather than left to the garbage collector.
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/20-benchmarks.md`, naming the top bottleneck. Expect the V3 scoring loop; if
+  it is something else, that is the finding.
+- [ ] **The GIL's cost is measured, not assumed:** the benchmark states whether
+  scatter-gather latency is flat or linear in shard count, and if linear, which cause
+  (interpreted bytecode holding the GIL, pickling across processes, allocation) — this
+  is the number that decides whether shards should be threads, processes, or a
+  free-threaded build.
+
 ### Cross-cutting scale skills
 - [ ] Concurrent searches read the **immutable segments lock-free**; indexing serializes
   into the in-memory buffer — the contention model is deliberate, not incidental.
@@ -242,8 +268,11 @@ The project is **done when ALL true:**
    contract** (V1), the **on-disk segment format + mmap read path** (V2), the **BM25
    `k1`/`b` choice** (V3), the **merge policy + delete model** (V4), and the **sharding
    function + cross-shard scoring tradeoff** (V5) — plus the **query-cache policy**.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p full-text-search` are
-   green; no `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff` clean, `pyright` **strict** with zero errors, and
+   `pytest` passing; no `NotImplementedError` remains on a checked path.
+5. A **profile** is committed: a `py-spy` flamegraph and a `memray` run in
+   `docs/20-benchmarks.md`, naming the top bottleneck. Numbers alone don't close
+   this — you have to know *why* they are what they are.
 
 ## 🐉 Boss fight — The Long Tail
 
@@ -254,11 +283,18 @@ The project is **done when ALL true:**
 > as its slowest shard, and the hot queries re-score from scratch every time. The Long
 > Tail is the query mix that finds all four.
 
-**Arena:** `bench/` load test (`oha` or `k6`) against a **release build**
-(`cargo run --release`), with a corpus of **≥ 1,000,000 documents** pre-indexed and a
-background writer continuously indexing + refreshing during the run. Queries follow a
-Zipfian distribution (a small hot set + a long unique tail). Two runs: query-cache on
-vs. off.
+**Arena:** `bench/` load test (`oha` or `k6`) against the engine run the way it ships
+(`make run` — uvicorn on uvloop, **not** `--reload`), with a corpus of
+**≥ 1,000,000 documents** pre-indexed and a background writer continuously indexing +
+refreshing during the run. Queries follow a Zipfian distribution (a small hot set + a
+long unique tail). Two runs: query-cache on vs. off.
+
+> These targets are the ones the Rust scaffold carried, and they are **not scaled down
+> for CPython**. Where the interpreter cannot reach one, the gap *is* the result: record
+> where it topped out and what stopped it — the GIL serialising the fan-out, GC pauses
+> under a million live postings, allocation churn in the scoring loop, or a blocking
+> call still sitting on the event loop. A boss you lost for a reason you can name and
+> measure is worth more than one you beat by moving the goalposts.
 
 **The boss falls when ALL true:**
 - [ ] ≥ **2,000 searches/sec** sustained for 60s over the ≥ 1M-document corpus.
@@ -274,8 +310,8 @@ vs. off.
 noted, corpus + query generator and commands reproducible via `bench/`).
 
 ## Suggested order of attack
-1. Boring path: index into an in-memory `HashMap<Term, Vec<(DocId, tf)>>`, score with
-   a naive loop, no disk, one shard. Prove index → refresh → search round-trips and
+1. Boring path: index into an in-memory `dict[str, list[tuple[int, int]]]`, score
+   with a naive loop, no disk, one shard. Prove index → refresh → search round-trips and
    ranks sanely.
 2. **V1:** the analyzer — make index-time and query-time analysis identical.
 3. **V2:** the on-disk segment — flush the buffer to an immutable file, read postings
@@ -289,9 +325,15 @@ noted, corpus + query generator and commands reproducible via `bench/`).
 
 ## Run it
 ```bash
-cp .env.example .env        # then adjust INDEX_DIR / SHARD_COUNT if you like
-cargo run -p full-text-search   # no external deps — the filesystem IS the index
+make setup && make sync     # .env from .env.example, then the venv
+make run                    # no external deps — the filesystem IS the index
+
+# the near-real-time loop, one step at a time:
+make index                  # bulk-index a tiny sample corpus
+make search Q=rust          # …returns nothing yet: nothing has been refreshed
+make refresh                # flush the buffers into segments
+make search Q=rust          # …now it does
 ```
 
-[`SegmentReader`]: src/segment.rs
-[`LiveDocs`]: src/merge.rs
+[`SegmentReader`]: src/full_text_search/segment.py
+[`LiveDocs`]: src/full_text_search/merge.py

@@ -278,6 +278,14 @@ updates:
       prefix: "chore(deps)"
 
   - package-ecosystem: docker
+    directory: "/projects/20-full-text-search"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: docker
     directory: "/projects/21-workflow-engine"
     schedule:
       interval: weekly
