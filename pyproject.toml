@@ -20,6 +20,7 @@ members = [
     "projects/08-message-broker",
     "projects/20-full-text-search",
     "projects/23-dynamodb-core",
+    "projects/24-lambda-compute",
 ]
 
 [tool.ruff]
