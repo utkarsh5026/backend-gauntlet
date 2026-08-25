@@ -48,7 +48,7 @@ Here is the implementation everyone writes first:
 ```python
 while True:
     now = time.time()
-    for message in every_message:          # <-- the problem
+    for message in every_message:  # <-- the problem
         if message.visible_after <= now:
             make_available(message)
     await asyncio.sleep(0.05)
@@ -85,7 +85,8 @@ async def visibility_timer(message, seconds):
     await asyncio.sleep(seconds)
     make_available(message)
 
-asyncio.create_task(visibility_timer(m, 30))     # one task per message
+
+asyncio.create_task(visibility_timer(m, 30))  # one task per message
 ```
 
 This *feels* right — it's what `asyncio` is for, and there is no scan anywhere. But you

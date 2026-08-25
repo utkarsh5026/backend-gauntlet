@@ -62,7 +62,7 @@ The number above is only real if waiting is free. The version that is not free:
 
 ```python
 deadline = now + wait_time
-while now < deadline:                # busy-wait
+while now < deadline:  # busy-wait
     messages = queue.take(max)
     if messages:
         return messages

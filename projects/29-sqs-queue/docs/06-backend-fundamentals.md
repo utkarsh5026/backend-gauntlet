@@ -225,7 +225,7 @@ you know why.
 The exact version is a walk:
 
 ```python
-available = sum(1 for m in queue.messages.values() if m.state is AVAILABLE)   # O(n)
+available = sum(1 for m in queue.messages.values() if m.state is AVAILABLE)  # O(n)
 ```
 
 At a million messages, with Prometheus scraping every 15 seconds, you have made
