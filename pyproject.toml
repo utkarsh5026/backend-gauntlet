@@ -22,6 +22,7 @@ members = [
     "projects/23-dynamodb-core",
     "projects/24-lambda-compute",
     "projects/25-iam-sts",
+    "projects/29-sqs-queue",
 ]
 
 [tool.ruff]

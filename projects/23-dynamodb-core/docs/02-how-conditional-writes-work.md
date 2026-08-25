@@ -107,6 +107,7 @@ class ConditionalCheckFailed(AppError):
     Deliberately **not** retryable: the write was correctly refused, and the caller
     must re-read and decide again.
     """
+
     status_code = 409
     error_code = "ConditionalCheckFailedException"
 ```
@@ -181,8 +182,8 @@ A `ConditionExpression` doesn't arrive as a string. It arrives as *three* things
 @dataclass(slots=True)
 class ConditionExpression:
     expression: str
-    names: dict[str, str] = ...      # "#s" -> "status"
-    values: dict[str, AttributeValue] = ...   # ":v" -> {"N": "3"}
+    names: dict[str, str] = ...  # "#s" -> "status"
+    values: dict[str, AttributeValue] = ...  # ":v" -> {"N": "3"}
 ```
 
 So `"#s = :v"` plus `{"#s": "status"}` plus `{":v": {"S": "SHIPPED"}}`.
