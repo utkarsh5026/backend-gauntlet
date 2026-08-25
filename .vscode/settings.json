@@ -1,15 +1,8 @@
 {
-  // ══════════════════════════════════════════════════════════════════════════
-  //  backend-gauntlet · workspace settings
-  //  Look & feel · Editor · Languages · Rust · Python · Terminal · Noise
-  // ══════════════════════════════════════════════════════════════════════════
-
-  // ── Look & feel ───────────────────────────────────────────────────────────
-  // Nerd Font (same family as the WSL terminal, so glyphs match everywhere).
-  "editor.fontFamily": "'CaskaydiaCove Nerd Font Mono', 'CaskaydiaMono Nerd Font', 'Cascadia Code', Consolas, monospace",
+  "editor.fontFamily": "'Source Code Pro', 'CaskaydiaCove Nerd Font Mono', 'CaskaydiaMono Nerd Font', 'Cascadia Code', Consolas, monospace",
   "editor.fontLigatures": true,
   "editor.fontSize": 14,
-  "editor.lineHeight": 1.6,
+  "editor.lineHeight": 1.8,
   "editor.letterSpacing": 0.2,
   "editor.padding.top": 14,
   "editor.padding.bottom": 14,
@@ -35,7 +28,6 @@
   "editor.renderWhitespace": "boundary",
   "editor.semanticHighlighting.enabled": true,
   "breadcrumbs.enabled": true,
-
   // ── Workbench ─────────────────────────────────────────────────────────────
   "workbench.startupEditor": "none",
   "workbench.list.smoothScrolling": true,
@@ -57,24 +49,26 @@
     "docker-compose.yml": "docker-compose.*.yml, Dockerfile*, .dockerignore",
     ".env.example": ".env, .env.*"
   },
-
   // ── Editor behaviour ──────────────────────────────────────────────────────
   "editor.formatOnSave": true,
-  "editor.rulers": [100],
+  "editor.rulers": [
+    100
+  ],
   "editor.codeActionsOnSave": {
     "source.fixAll.rust": "explicit",
     "source.organizeImports.rust": "explicit"
   },
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
-
   // Error Lens: inline diagnostics that read as a note, not a billboard.
   "errorLens.fontStyleItalic": true,
   "errorLens.messageBackgroundMode": "none",
   "errorLens.gutterIconsEnabled": true,
   "errorLens.delay": 300,
-  "errorLens.enabledDiagnosticLevels": ["error", "warning"],
-
+  "errorLens.enabledDiagnosticLevels": [
+    "error",
+    "warning"
+  ],
   // ── Per-language ──────────────────────────────────────────────────────────
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
@@ -87,14 +81,20 @@
     "editor.wordWrap": "on",
     "editor.rulers": [],
     "editor.renderWhitespace": "none",
-    "editor.quickSuggestions": { "other": false, "comments": false, "strings": false },
+    "editor.quickSuggestions": {
+      "other": false,
+      "comments": false,
+      "strings": false
+    },
     "files.trimTrailingWhitespace": false
   },
   "[python]": {
     "editor.defaultFormatter": "ms-python.black-formatter",
     "editor.formatOnSave": true,
     "editor.tabSize": 4,
-    "editor.rulers": [100],
+    "editor.rulers": [
+      100
+    ],
     "editor.codeActionsOnSave": {
       "source.fixAll.ruff": "explicit",
       "source.organizeImports.ruff": "explicit"
@@ -103,14 +103,17 @@
   "[jsonc]": {
     "editor.defaultFormatter": "vscode.json-language-features"
   },
-
   // ── Rust / rust-analyzer ──────────────────────────────────────────────────
   "rust-analyzer.check.command": "clippy",
   // Only check the crate being edited, not all 24 workspace members on every save.
   // `make check` / CI still cover the whole workspace.
   "rust-analyzer.check.workspace": false,
   "rust-analyzer.check.allTargets": true,
-  "rust-analyzer.check.extraArgs": ["--", "-D", "warnings"],
+  "rust-analyzer.check.extraArgs": [
+    "--",
+    "-D",
+    "warnings"
+  ],
   "rust-analyzer.cargo.buildScripts.enable": true,
   "rust-analyzer.cargo.features": "all",
   "rust-analyzer.procMacro.enable": true,
@@ -126,7 +129,6 @@
   "rust-analyzer.cargo.extraEnv": {
     "SQLX_OFFLINE": "true"
   },
-
   // ── Python (stdlib scripts: status.py, projects/*/makefile.py) ────────────
   "python.defaultInterpreterPath": "/usr/bin/python3",
   "python.terminal.activateEnvironment": false,
@@ -162,7 +164,6 @@
   ],
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
-
   // ── Terminal (opens in the project we're actively building) ───────────────
   "terminal.integrated.cwd": "${workspaceFolder}/projects/10-api-gateway",
   "terminal.integrated.envFile": "${workspaceFolder}/projects/10-api-gateway/.env",
@@ -174,7 +175,6 @@
   "terminal.integrated.cursorStyle": "line",
   "terminal.integrated.smoothScrolling": true,
   "terminal.integrated.minimumContrastRatio": 4.5,
-
   // ── Noise reduction ───────────────────────────────────────────────────────
   "files.exclude": {
     "**/__pycache__": true,

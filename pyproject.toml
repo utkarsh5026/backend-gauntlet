@@ -21,6 +21,7 @@ members = [
     "projects/20-full-text-search",
     "projects/23-dynamodb-core",
     "projects/24-lambda-compute",
+    "projects/25-iam-sts",
 ]
 
 [tool.ruff]
