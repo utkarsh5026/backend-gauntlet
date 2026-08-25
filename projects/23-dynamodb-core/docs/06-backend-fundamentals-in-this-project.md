@@ -58,8 +58,10 @@ thing"* — build against your node, then point the same code at real DynamoDB.
 async def data_plane(request: Request, state: StateDep, x_target: TargetHeader = None) -> Response:
     ...
     match x_target:
-        case "PutItem":  ...
-        case "GetItem":  ...
+        case "PutItem":
+            ...
+        case "GetItem":
+            ...
         case _:
             raise ValidationError(f"unknown operation {x_target!r}")
 ```
@@ -229,7 +231,8 @@ The fix is a comparison that always examines every byte. Python ships one:
 
 ```python
 import hmac
-hmac.compare_digest(provided, expected)   # verified: present, returns True/False
+
+hmac.compare_digest(provided, expected)  # verified: present, returns True/False
 ```
 
 The SPEC asks for a *documented decision*, not blind adoption — because it's worth

@@ -82,7 +82,7 @@ That's the "integration seam" the SPEC keeps calling it.
 @dataclass(slots=True)
 class StreamRecord:
     sequence_number: str
-    event_name: EventName        # INSERT | MODIFY | REMOVE
+    event_name: EventName  # INSERT | MODIFY | REMOVE
     key: ItemKey
     created_at: float
     old_image: Item | None = None
@@ -246,7 +246,9 @@ The endpoint is already wired in [routes.py](../src/dynamodb_core/routes.py):
 
 ```python
 @public_router.get("/streams/{table_name}")
-async def read_stream(table_name: str, state: StateDep, iterator: str, limit: int = 100) -> Response:
+async def read_stream(
+    table_name: str, state: StateDep, iterator: str, limit: int = 100
+) -> Response:
     """Read a batch of change records — the seam a consumer polls."""
 ```
 

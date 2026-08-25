@@ -32,7 +32,7 @@ Start with the naive design, because it's the one everybody reaches for first.
 attribute they like."**
 
 ```python
-items = {}                       # key -> item
+items = {}  # key -> item
 items[("cust#1", "order#1")] = {...}
 
 # and to query:
@@ -108,7 +108,7 @@ order.
 ```python
 class KeySchema(BaseModel):
     partition_key: str
-    sort_key: str | None = None      # None => simple key: one item per partition
+    sort_key: str | None = None  # None => simple key: one item per partition
 ```
 
 Picture one partition of an orders table, `pk = "cust#1"`:
