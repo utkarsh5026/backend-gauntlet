@@ -130,10 +130,13 @@ Horizontals = protocols, caching, security, observability — woven into every S
 | 26 | **Edge CDN** | Cache keys, request collapsing, stale-while-revalidate, range caching, invalidation |
 | 27 | **Event router** (EventBridge) | Content-based rule matching, per-target isolation, retry + DLQ, archive & replay |
 | 28 | **KMS + secrets** | Envelope encryption, data key caching, rotation by re-wrap, grants, audit log |
+| 29 | **Managed queue service** (SQS) | Receipt handles, FIFO message groups, dedup window, long polling |
 
 <sub>23's streams feed 24's event source mapping, and 27 slots between them — the same seams the
 real services use. 25 is the security horizontal for the whole tier: point it at 23, 24, and 06.
-Distribution stays out of scope here; that's 07 and 09. Suggested order: 23 → 24 → 25 → 27 → 26 → 28.</sub>
+29 is 27's canonical target and 04 seen from the other side — 04 owns the substrate (SKIP LOCKED,
+durable rows), 29 owns the protocol a stranger's workers talk to. Distribution stays out of scope
+here; that's 07 and 09. Suggested order: 23 → 24 → 25 → 27 → 26 → 28 → 29.</sub>
 
 <sub><b>Candidates</b> (unnumbered until claimed): authoritative DNS (Route 53) ·
 container scheduler + reconciliation loop (ECS) · columnar query over object storage (Athena) ·
