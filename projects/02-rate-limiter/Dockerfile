@@ -3,7 +3,7 @@
 # Both stages sit on the same base image so the virtualenv built in `build` has
 # valid interpreter paths when copied into `runtime` — a venv is not relocatable
 # across different Python installs.
-FROM python:3.13-slim-bookworm AS build
+FROM python:3.14-slim-bookworm AS build
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -20,7 +20,7 @@ RUN uv sync --package rate-limiter --frozen --no-dev --no-install-project
 COPY projects/02-rate-limiter/ projects/02-rate-limiter/
 RUN uv sync --package rate-limiter --frozen --no-dev
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 # curl is only here for the compose/orchestrator healthcheck (GET /healthz).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
