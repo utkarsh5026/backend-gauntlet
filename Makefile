@@ -4,6 +4,14 @@
 
 .DEFAULT_GOAL := status
 
+.PHONY: setup
+setup: ## One-command dev environment setup (uv, Python, .venv, .env files)
+	@python3 bootstrap.py $(ARGS)
+
+.PHONY: doctor
+doctor: ## Diagnose the dev environment without changing anything
+	@python3 bootstrap.py --check
+
 .PHONY: status
 status: ## Progress dashboard across all projects (pass NN to drill in: make status NN=02)
 	@python3 tools/status.py $(NN)

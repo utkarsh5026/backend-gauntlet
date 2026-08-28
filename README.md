@@ -148,6 +148,25 @@ declarative infra with plan/diff/drift (CloudFormation).</sub>
 
 ## 🚀 Start
 
+Fresh clone? One command sets up the whole Python side — installs `uv` if it's
+missing, fetches the pinned Python, builds the workspace `.venv`, and seeds every
+project's `.env`. Works on Linux, macOS and Windows, and is safe to re-run:
+
+```bash
+python bootstrap.py            # or: make setup
+python bootstrap.py --check    # diagnose only, changes nothing  (make doctor)
+```
+
+Then pick a project:
+
+```bash
+cd projects/23-dynamodb-core
+make run                       # 8 projects are Python; see the Roadmap above
+make verify                    # fmt-check → lint → types → test (the CI gate)
+```
+
+The Rust half is separate — for a Rust project:
+
 ```bash
 cd projects/01-url-shortener
 docker compose up -d
