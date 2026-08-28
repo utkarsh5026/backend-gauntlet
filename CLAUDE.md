@@ -121,6 +121,8 @@ Every project's `SPEC.md` grades on two axes — keep this when scaffolding new 
 ## Commands
 
 ```bash
+make setup                         # one-command dev env bootstrap (python bootstrap.py)
+make doctor                        # diagnose the dev env, change nothing (--check)
 make status                        # progress dashboard across all projects
 make status NN=02                  # drill into one project (verticals + open items)
 make trophies                      # 🏆 achievements (auto-derived — never award by hand)

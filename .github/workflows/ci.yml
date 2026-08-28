@@ -54,6 +54,8 @@ jobs:
               - 'packages/**'
               - 'pyproject.toml'
               - 'uv.lock'
+              - 'bootstrap.py'
+              - 'tools/tests/**'
       - name: Resolve package / frontend scope
         id: resolve
         env:
@@ -133,6 +135,14 @@ jobs:
         run: |
           uv run ruff format --check packages
           uv run ruff check packages
+      - name: bootstrap script
+        # bootstrap.py is what a new contributor runs before anything else works,
+        # so it is held to the same bar as the projects it sets up.
+        run: |
+          uv run ruff format --check bootstrap.py tools/tests
+          uv run ruff check bootstrap.py tools/tests
+          uv run pyright bootstrap.py
+          uv run pytest -q tools/tests
       - name: per-project verify
         # Same gate as `make verify` in each project, so green here means green
         # locally. Scoped per project because each owns its ruff/pyright config.
