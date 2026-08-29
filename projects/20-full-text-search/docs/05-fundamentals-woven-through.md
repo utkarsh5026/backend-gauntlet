@@ -79,11 +79,11 @@ than a miss, because a miss costs milliseconds while a stale hit *returns a
 document the user deleted* (or hides one they just added past its refresh).
 What changes the searchable set? Exactly three events, all of which you built:
 
-| Event | Why cached results go stale |
-| --- | --- |
-| **refresh** (V2) | New docs became searchable; a cached top-k may now be missing a better hit |
-| **merge** (V4) | Tombstoned docs physically vanish; also transparent to results — but paired with deletes it matters |
-| **delete** (V4) | A cached result may contain the tombstoned doc — the worst kind of stale |
+| Event                  | Why cached results go stale                                                                          |
+| ---------------------- | ---------------------------------------------------------------------------------------------------- |
+| **refresh** (V2) | New docs became searchable; a cached top-k may now be missing a better hit                           |
+| **merge** (V4)   | Tombstoned docs physically vanish; also transparent to results — but paired with deletes it matters |
+| **delete** (V4)  | A cached result may contain the tombstoned doc — the worst kind of stale                            |
 
 The scaffold already calls [`invalidate_all`](../src/cache.rs) from
 `refresh_all` and `force_merge` (see [shard.rs](../src/shard.rs)) — the simple,
@@ -191,14 +191,14 @@ Your work is wiring the **call sites** — the `TODO(observability)` markers in
 [shard.rs](../src/shard.rs) and [index.rs](../src/index.rs). Each series earns
 its place by answering a question you'll actually ask during the boss fight:
 
-| Metric | The question it answers | The moment you'll need it |
-| --- | --- | --- |
-| `search_searches_total` | How much traffic? | The 2,000/sec target is this counter's rate |
-| `search_duration_seconds` (histogram) | What does the *slow* experience look like? | p99 ≤ 50 ms is a quantile of this — averages hide the tail (V5's whole lesson) |
-| `search_query_cache_lookups_total{outcome}` | Is the cache earning its memory? | hit ratio ≥ 80% = `hit / (hit + miss)` |
-| `search_segments{shard}` (gauge) | Am I merging enough? | **The** health gauge: climbs on refresh, drops on merge; drifting up = V4's policy is losing |
-| `search_documents_indexed_total` | Is the background writer alive? | The boss fight indexes continuously — a flat line here invalidates the run |
-| `search_merges_total` | Are merges actually happening? | Cross-check the segment gauge: bounded segments + zero merges = you're not indexing |
+| Metric                                        | The question it answers                     | The moment you'll need it                                                                          |
+| --------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `search_searches_total`                     | How much traffic?                           | The 2,000/sec target is this counter's rate                                                        |
+| `search_duration_seconds` (histogram)       | What does the*slow* experience look like? | p99 ≤ 50 ms is a quantile of this — averages hide the tail (V5's whole lesson)                   |
+| `search_query_cache_lookups_total{outcome}` | Is the cache earning its memory?            | hit ratio ≥ 80% =`hit / (hit + miss)`                                                           |
+| `search_segments{shard}` (gauge)            | Am I merging enough?                        | **The** health gauge: climbs on refresh, drops on merge; drifting up = V4's policy is losing |
+| `search_documents_indexed_total`            | Is the background writer alive?             | The boss fight indexes continuously — a flat line here invalidates the run                        |
+| `search_merges_total`                       | Are merges actually happening?              | Cross-check the segment gauge: bounded segments + zero merges = you're not indexing                |
 
 Two habits the checklist encodes beyond the numbers: a `tracing` span per
 request with a request id (already layered via `common-telemetry` in the
@@ -212,16 +212,16 @@ fight criterion above is read off these series, not off a stopwatch.
 
 ## 6. Mental-model summary
 
-| Idea | One-line version |
-| --- | --- |
-| Result cache | Memoize the *whole* pipeline at the coordinator: `(k, query) → merged hits`; a hit does zero scoring. |
-| Zipf | A tiny hot head makes caching pay; the one-off tail keeps the engine honest. Hit ratio is a workload property. |
-| Invalidation | A cached result is a claim about an index-moment; refresh/merge/delete end the moment — nuke on epoch, and a stale hit is worse than a miss. |
-| Single-flight (stretch) | One miss does the work; the other 99 concurrent misses wait for it. |
-| Input caps | Every request-shaped number gets a ceiling at the edge: doc bytes bound write cost, query terms bound fan-out. |
-| Contention model | Immutable segments → lock-free reads; one buffer writer per shard → confined write contention. On purpose, stated. |
-| Graceful shutdown | Drain + final refresh, or an explicit "un-refreshed ≠ durable" contract. Never the implicit maybe. |
-| The six metrics | Traffic, latency histogram (p99), cache ratio, segment gauge, docs indexed, merges — each maps to a boss-fight criterion. |
+| Idea                    | One-line version                                                                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Result cache            | Memoize the*whole* pipeline at the coordinator: `(k, query) → merged hits`; a hit does zero scoring.                                     |
+| Zipf                    | A tiny hot head makes caching pay; the one-off tail keeps the engine honest. Hit ratio is a workload property.                                |
+| Invalidation            | A cached result is a claim about an index-moment; refresh/merge/delete end the moment — nuke on epoch, and a stale hit is worse than a miss. |
+| Single-flight (stretch) | One miss does the work; the other 99 concurrent misses wait for it.                                                                           |
+| Input caps              | Every request-shaped number gets a ceiling at the edge: doc bytes bound write cost, query terms bound fan-out.                                |
+| Contention model        | Immutable segments → lock-free reads; one buffer writer per shard → confined write contention. On purpose, stated.                          |
+| Graceful shutdown       | Drain + final refresh, or an explicit "un-refreshed ≠ durable" contract. Never the implicit maybe.                                           |
+| The six metrics         | Traffic, latency histogram (p99), cache ratio, segment gauge, docs indexed, merges — each maps to a boss-fight criterion.                    |
 
 ## 7. Where you'll build this
 

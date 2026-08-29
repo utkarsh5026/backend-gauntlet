@@ -78,6 +78,10 @@
     "editor.defaultFormatter": "tamasfe.even-better-toml"
   },
   "[markdown]": {
+    // Prettier was silently re-flowing hand-tuned tables in SPEC.md / docs/ on
+    // every save (padding every cell to column width). The prose here is written
+    // by hand — leave it alone.
+    "editor.formatOnSave": false,
     "editor.wordWrap": "on",
     "editor.rulers": [],
     "editor.renderWhitespace": "none",
@@ -89,7 +93,7 @@
     "files.trimTrailingWhitespace": false
   },
   "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
     "editor.tabSize": 4,
     "editor.rulers": [
@@ -108,14 +112,36 @@
   // Only check the crate being edited, not all 24 workspace members on every save.
   // `make check` / CI still cover the whole workspace.
   "rust-analyzer.check.workspace": false,
-  "rust-analyzer.check.allTargets": true,
   "rust-analyzer.check.extraArgs": [
     "--",
     "-D",
     "warnings"
   ],
   "rust-analyzer.cargo.buildScripts.enable": true,
-  "rust-analyzer.cargo.features": "all",
+  // Only 06-object-store defines [features] (test-only helpers), so "all" bought
+  // nothing across 21 crates while inflating the crate graph. Flip back to "all"
+  // if you start gating real code behind features.
+  "rust-analyzer.cargo.features": [],
+  // Don't build every test/bench/example target just to lint on save.
+  "rust-analyzer.check.allTargets": false,
+  // Skip the on-open warm-up that eagerly primes all 21 workspace members.
+  "rust-analyzer.cachePriming.enable": false,
+  // Leave cores for the Python side and Docker instead of saturating all 16.
+  "rust-analyzer.numThreads": 6,
+  // The Rust side never needs to see the Python projects or any frontend.
+  "rust-analyzer.files.excludeDirs": [
+    ".venv",
+    "site",
+    "packages",
+    "projects/02-rate-limiter",
+    "projects/07-distributed-cache",
+    "projects/08-message-broker",
+    "projects/20-full-text-search",
+    "projects/23-dynamodb-core",
+    "projects/24-lambda-compute",
+    "projects/25-iam-sts",
+    "projects/29-sqs-queue"
+  ],
   "rust-analyzer.procMacro.enable": true,
   "rust-analyzer.lens.run.enable": true,
   "rust-analyzer.lens.debug.enable": true,
@@ -129,38 +155,40 @@
   "rust-analyzer.cargo.extraEnv": {
     "SQLX_OFFLINE": "true"
   },
-  // ── Python (stdlib scripts: status.py, projects/*/makefile.py) ────────────
-  "python.defaultInterpreterPath": "/usr/bin/python3",
+  // ── Python ────────────────────────────────────────────────────────────────
+  // The uv workspace installs every member editable into the ROOT .venv (3.13).
+  // Pointing at /usr/bin/python3 (3.10) made Pylance fail to resolve fastapi,
+  // pydantic, botocore… -> thousands of phantom diagnostics and a huge index.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "python.terminal.activateEnvironment": false,
-  "python.languageServer": "Default",
+  "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
-  "python.analysis.diagnosticMode": "workspace",
-  // One entry per project that owns a makefile.py (they import from tools/).
-  // Keep this list and `cursorpyright.analysis.extraPaths` below in lockstep —
-  // Cursor's fork reads the `cursorpyright.*` copy, VS Code reads this one.
+  // `workspace` re-analyses every .py in all 26 projects on every keystroke —
+  // it was costing ~2.6 GB of RSS. `make verify` / CI still run pyright strict
+  // over the whole project, which is where the real gate belongs.
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  // Keep the indexer out of everything that isn't hand-written source.
+  "python.analysis.exclude": [
+    "**/target/**",
+    "**/node_modules/**",
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "**/.ruff_cache/**",
+    "**/.mypy_cache/**",
+    "**/.pytest_cache/**",
+    "site/**",
+    "**/web/**"
+  ],
+  // `makefile.py` inserts `tools/` on sys.path itself, so only that one entry is
+  // load-bearing — the per-project paths that used to be here were dead weight
+  // (uv installs each project editable, so its own imports already resolve).
   "python.analysis.extraPaths": [
-    "${workspaceFolder}",
-    "${workspaceFolder}/tools",
-    "${workspaceFolder}/projects/01-url-shortener",
-    "${workspaceFolder}/projects/02-rate-limiter",
-    "${workspaceFolder}/projects/03-realtime-pubsub",
-    "${workspaceFolder}/projects/04-job-queue",
-    "${workspaceFolder}/projects/06-object-store",
-    "${workspaceFolder}/projects/10-api-gateway",
-    "${workspaceFolder}/projects/13-live-ingest"
+    "${workspaceFolder}/tools"
   ],
   "cursorpyright.analysis.typeCheckingMode": "basic",
-  "cursorpyright.analysis.diagnosticMode": "workspace",
+  "cursorpyright.analysis.diagnosticMode": "openFilesOnly",
   "cursorpyright.analysis.extraPaths": [
-    "${workspaceFolder}",
-    "${workspaceFolder}/tools",
-    "${workspaceFolder}/projects/01-url-shortener",
-    "${workspaceFolder}/projects/02-rate-limiter",
-    "${workspaceFolder}/projects/03-realtime-pubsub",
-    "${workspaceFolder}/projects/04-job-queue",
-    "${workspaceFolder}/projects/06-object-store",
-    "${workspaceFolder}/projects/10-api-gateway",
-    "${workspaceFolder}/projects/13-live-ingest"
+    "${workspaceFolder}/tools"
   ],
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
@@ -176,19 +204,40 @@
   "terminal.integrated.smoothScrolling": true,
   "terminal.integrated.minimumContrastRatio": 4.5,
   // ── Noise reduction ───────────────────────────────────────────────────────
+  // Sizes that matter here: node_modules 544 MB across 11 frontends, .venv 197 MB
+  // / 12.7k files, target/ 1.4 GB, site/ 263 MB. Watching those in WSL2 is what
+  // makes the whole window feel sticky.
   "files.exclude": {
     "**/__pycache__": true,
     "**/.mypy_cache": true,
     "**/.ruff_cache": true,
+    "**/.pytest_cache": true,
     "**/*.egg-info": true
   },
   "files.watcherExclude": {
     "**/target/**": true,
+    "**/.venv/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true,
     "**/__pycache__/**": true,
-    "**/.git/objects/**": true
+    "**/.ruff_cache/**": true,
+    "**/.mypy_cache/**": true,
+    "**/.pytest_cache/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true
   },
   "search.exclude": {
     "**/target": true,
-    "**/__pycache__": true
-  }
+    "**/.venv": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/__pycache__": true,
+    "**/.sqlx": true,
+    "Cargo.lock": true,
+    "uv.lock": true,
+    "**/bun.lock": true
+  },
+  // Ripgrep already honours .gitignore; make the quick-open picker do the same.
+  "search.useIgnoreFiles": true,
+  "search.followSymlinks": false
 }

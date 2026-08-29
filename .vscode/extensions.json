@@ -1,17 +1,41 @@
 {
+  // Keep this list minimal on purpose. Every extra Python extension spawns
+  // another language server against the same 26 projects; every extra Rust one
+  // re-walks a 1.4 GB target/. See `unwantedRecommendations` for the traps.
   "recommendations": [
+    // Rust
     "rust-lang.rust-analyzer",
-    "ms-python.python",
-    "charliermarsh.ruff",
-    "tamasfe.even-better-toml",
     "vadimcn.vscode-lldb",
-    "usernamehw.errorlens",
-    "ms-azuretools.vscode-docker",
     "fill-labs.dependi",
+    // Python — Pylance is the ONLY type checker; ruff is the ONLY linter+formatter
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+    "charliermarsh.ruff",
+    // Shared
+    "tamasfe.even-better-toml",
     "editorconfig.editorconfig",
-    "serayuzgur.crates"
+    "usernamehw.errorlens",
+    "ms-azuretools.vscode-containers"
   ],
   "unwantedRecommendations": [
-    "rust-lang.rust"
+    // Legacy Rust extension — superseded by rust-analyzer.
+    "rust-lang.rust",
+    // Duplicate crates.io version lens; dependi already covers Cargo.toml.
+    "serayuzgur.crates",
+    // Three Python type checkers on one workspace is three full analyses.
+    // Pylance is the one we keep; these two are the same engine or a rival one.
+    "ms-pyright.pyright",
+    "ms-python.mypy-type-checker",
+    // Ruff formats Python here (`[tool.ruff.format]`, line-length 100).
+    // Black would fight it and reformat to 88.
+    "ms-python.black-formatter",
+    // No notebooks in this repo, but the bundle activates on any Python workspace.
+    "ms-toolsai.jupyter",
+    // Auto-configures by dry-running make across all 26 project Makefiles.
+    "ms-vscode.makefile-tools",
+    // No C/C++ or CMake in this repo; cmake-tools scans the workspace on open.
+    "ms-vscode.cmake-tools",
+    "ms-vscode.cpp-devtools"
   ]
 }
