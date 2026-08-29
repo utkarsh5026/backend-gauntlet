@@ -190,6 +190,15 @@
   "cursorpyright.analysis.extraPaths": [
     "${workspaceFolder}/tools"
   ],
+  // Mypy is not this repo's type checker. Pylance is, and `make verify` + CI
+  // enforce `pyright` strict — a second checker with its own defaults only
+  // produces diagnostics nothing gates on. `ms-python.mypy-type-checker` is
+  // already in extensions.json's unwantedRecommendations, but that suppresses
+  // the *recommendation* only: an installed copy still runs, and Insiders keeps
+  // a separate extension dir where one can arrive unnoticed. The extension has
+  // no `enabled` flag, so ignoring every .py is its documented off switch.
+  // To remove it outright: Extensions -> Mypy Type Checker -> Disable (Workspace).
+  "mypy-type-checker.ignorePatterns": ["**/*.py"],
   "ruff.configurationPreference": "filesystemFirst",
   "ruff.lineLength": 100,
   // ── Terminal (opens in the project we're actively building) ───────────────
