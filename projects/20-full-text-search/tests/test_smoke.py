@@ -1,10 +1,11 @@
 """Scaffold smoke tests — proof the wiring is sound before any vertical exists.
 
-These are deliberately *not* acceptance tests for V1-V5. They assert the plumbing
-(the app boots, the shards are created, stats and metrics render, validation runs
-at the edge) and they pin the scaffold's contract: indexing and searching raise
-`NotImplementedError` until you build them. When you implement V1, the last two
-tests here are the first things that should fail — delete them then.
+These are deliberately *not* acceptance tests for V1-V5 (V1's live in
+`test_analyzer.py`). They assert the plumbing — the app boots, the shards are
+created, stats and metrics render, validation runs at the edge — and they pin how
+far a request currently gets through the worklist. V1 has landed, so the last two
+tests track the new frontier: a document now analyzes and buffers, and both
+flushing it and searching for it stop in the verticals below.
 """
 
 from __future__ import annotations
@@ -86,13 +87,23 @@ def test_routing_is_stable_across_processes(engine: ShardedIndex) -> None:
     assert {engine.route(None) for _ in range(4)} == {0, 1}
 
 
-async def test_indexing_is_still_a_todo(client: httpx.AsyncClient) -> None:
-    """The scaffold's worklist, pinned. Delete this once V1 lands."""
+async def test_indexing_buffers_but_flushing_is_still_a_todo(
+    client: httpx.AsyncClient,
+) -> None:
+    """The frontier after V1: the analyzer runs and the document lands in the
+    in-memory buffer, so the write is accepted. Making it *searchable* means
+    writing a segment, which is V2 — so the refresh that would flush it is where
+    the worklist now starts."""
+    response = await client.post("/documents", json={"text": "hello world"})
+    assert response.status_code == 201
+
+    assert (await client.get("/_stats")).json()["total_segments"] == 0
     with pytest.raises(NotImplementedError):
-        await client.post("/documents", json={"text": "hello world"})
+        await client.post("/_refresh")
 
 
 async def test_search_is_still_a_todo(client: httpx.AsyncClient) -> None:
-    """Search hits V1's analyzer before it ever reaches the fan-out."""
+    """Search no longer stops at V1 — the query analyzes cleanly and the request
+    now reaches the scatter-gather, which is V5."""
     with pytest.raises(NotImplementedError):
         await client.get("/search", params={"q": "hello"})
