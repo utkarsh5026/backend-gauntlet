@@ -1,5 +1,5 @@
 <!-- status:
-state: not-started       # active | paused | blocked | done | not-started
+state: active            # active | paused | blocked | done | not-started
 blocked-on: ~            # free text, or ~ for none
 -->
 
@@ -51,10 +51,10 @@ misses every document, silently. This project shares one analyzer between both p
 so it's symmetric by construction — your job is to make the pipeline itself correct.
 
 **Done when ALL true:**
-- [ ] A document and a query that a human would call a match produce an **overlapping term set** (case, punctuation, and — if enabled — stop-words don't break the match).
-- [ ] Analysis is **idempotent**: re-analyzing the joined output of the analyzer yields the same terms (it's a fixed point on its own output).
-- [ ] The **same analyzer** is provably used for indexing and querying — not two code paths that can drift.
-- [ ] Each pipeline stage (lowercasing, stop-words, min-length, any stemming) is a **deliberate, documented** choice, and its effect is observable (toggling it changes which queries match).
+- [x] A document and a query that a human would call a match produce an **overlapping term set** (case, punctuation, and — if enabled — stop-words don't break the match).
+- [x] Analysis is **idempotent**: re-analyzing the joined output of the analyzer yields the same terms (it's a fixed point on its own output).
+- [x] The **same analyzer** is provably used for indexing and querying — not two code paths that can drift.
+- [x] Each pipeline stage (lowercasing, stop-words, min-length, any stemming) is a **deliberate, documented** choice, and its effect is observable (toggling it changes which queries match).
 
 **Proof:** pytest cases for a fixed input → expected term stream; a hypothesis
 property test for idempotence (`test_analyze_is_idempotent`); a match test showing an
