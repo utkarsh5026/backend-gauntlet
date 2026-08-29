@@ -123,10 +123,11 @@ it or consume one input character and try again:
 
 ```python
 def naive(p, s):
-    if not p:  return not s
-    if p[0] == '*':
+    if not p:
+        return not s
+    if p[0] == "*":
         return naive(p[1:], s) or (bool(s) and naive(p, s[1:]))
-    return bool(s) and (p[0] in ('?', s[0])) and naive(p[1:], s[1:])
+    return bool(s) and (p[0] in ("?", s[0])) and naive(p[1:], s[1:])
 ```
 
 Correct. Now feed it a pattern that cannot match, so it must exhaust every
