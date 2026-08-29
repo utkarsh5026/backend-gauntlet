@@ -45,12 +45,32 @@ a token the tokenizer would split again, it won't.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Final
 
 from .doc import AnalyzedDoc, Term
 
 __all__ = ["DEFAULT_STOPWORDS", "Analyzer", "AnalyzerConfig"]
+
+_NORMAL_FORM: Final = "NFC"
+"""The Unicode normal form every term is in, at both ends of the pipeline.
+
+NFC and not NFKC. Compatibility folding would additionally collapse fullwidth
+`\uff32\uff55\uff53\uff54` to `Rust`, `\u2460` to `1` and `x\u00b2` to `x2` — recall bought by
+conflating characters a user may have typed deliberately. That is a larger claim
+than caseless matching, and this analyzer does not make it.
+
+Note what NFKC is *not* needed for: `casefold` already folds the `\ufb01` ligature to
+`fi` on its own, because full case folding decomposes it. The compatibility
+question is only ever about the rest.
+"""
+
+_TOKEN_RE: Final = re.compile(r"\w+")
+"""Compiled once at import, not per call — this runs on every document indexed
+and every query served."""
 
 DEFAULT_STOPWORDS: frozenset[str] = frozenset(
     {
@@ -105,33 +125,64 @@ class Analyzer:
     """
 
     def __init__(self, config: AnalyzerConfig | None = None) -> None:
-        self.config = config if config is not None else AnalyzerConfig()
+        self._config = config if config is not None else AnalyzerConfig()
 
     def analyze(self, text: str) -> list[Term]:
         """Analyze `text` into an ordered stream of terms. **The core of V1.**
 
-        Called from BOTH indexing and querying — keep it pure, and keep it a
-        fixed point on its own output.
+        Called from BOTH indexing and querying — pure, and a fixed point on its
+        own output. The stages sit in this order for reasons, not by habit:
 
-        TODO(V1): the analysis pipeline. A reasonable order:
-          1. Normalize the *string* — `unicodedata.normalize` to one form, so
-             two spellings of the same grapheme cannot become two terms.
-          2. Tokenize — split into candidate tokens on word boundaries.
-             `str.split()` is the starting point and is wrong for punctuation;
-             `re.findall(r"\\w+", text)` is the usual next step. Compile the
-             pattern once at module level, not per call — this runs on every
-             document and every query. Decide what you do about `"can't"`,
-             `"C++"` and CJK, and document it.
-          3. Normalize the *tokens* — `str.casefold()` when `config.lowercase`.
-          4. Filter — drop tokens shorter than `config.min_token_len` and any in
-             `config.stopwords` (a `frozenset`, so membership is O(1)).
-          5. (Optional stretch) stem — collapse `running`/`ran`/`runs` → `run`.
+        1.  **Normalize the whole string to NFC, before tokenizing.** Not merely
+            so that two spellings of `café` hash alike: the token pattern would
+            *truncate* the decomposed spelling, because a combining accent is
+            not a `\\w` character. The accent is not merely separated, it is
+            dropped.
 
-        Order matters and is preserved: the returned list is the token *stream*,
-        with positions implied by index. Phrase queries (a stretch) need those
-        positions, so do not silently return a set.
+                NFC  "café"  ->  ["café"]     # é is a single character
+                NFD  "café"  ->  ["cafe"]     # the accent ends the token, and is lost
+
+        2.  **Tokenize** on `\\w+`. This is the contract's blunt edge, and it is
+            worth being explicit about what it costs: `can't` becomes `can` +
+            `t`, `C++` becomes `c`, `foo_bar` survives whole (`_` is a word
+            character), and CJK — which has no spaces — returns as one enormous
+            token. Acceptable for the English corpus this is benchmarked on; a
+            real segmenter is the upgrade path.
+
+        3.  **Case-fold**, not `lower()` — `casefold` is what Unicode defines
+            for caseless *matching*, so `Straße` and `STRASSE` become one term
+            rather than two that never meet.
+
+        4.  **Re-assert NFC on the folded token.** The subtle step, and the one
+            that makes idempotence structural instead of lucky: `casefold` is
+            not closed under normalization. `casefold("\u1e9b\u0323")` returns
+            `\u1e61\u0323`, which is *not* NFC — so a second pass over this
+            function's own output would normalize it to `\u1e69` and yield a
+            different term. Folding after normalizing partially undoes the
+            normalizing, so the form has to be re-established here.
+            `is_normalized` is a cheap scan that skips the copy for the
+            overwhelming majority of tokens, which are already in form.
+
+        5.  **Filter** — length before stop-list, because an `int` comparison is
+            cheaper than hashing a string to probe a set.
+
+        Order is preserved and the result is a `list`, never a `set`: positions
+        are implied by index, which is what a phrase query (stretch) needs.
         """
-        raise NotImplementedError("V1: tokenize + normalize + filter `text` into the term stream")
+        config = self._config
+        raw_tokens: list[str] = _TOKEN_RE.findall(unicodedata.normalize(_NORMAL_FORM, text))
+
+        terms: list[Term] = []
+        for raw in raw_tokens:
+            term = raw.casefold() if config.lowercase else raw
+            if not unicodedata.is_normalized(_NORMAL_FORM, term):
+                term = unicodedata.normalize(_NORMAL_FORM, term)
+            if len(term) < config.min_token_len:
+                continue
+            if config.remove_stopwords and term in config.stopwords:
+                continue
+            terms.append(term)
+        return terms
 
     def analyze_doc(self, text: str) -> AnalyzedDoc:
         """Analyze a document for indexing: run `analyze`, then collapse the

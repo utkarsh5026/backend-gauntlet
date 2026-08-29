@@ -112,7 +112,7 @@ it discards the instance message and returns the *class default*.
 ```python
 if exc.status_code >= 500:
     log.error("request failed", error=str(exc), kind=type(exc).__name__)
-    message = type(exc).message   # authored by us; known safe
+    message = type(exc).message  # authored by us; known safe
 ```
 
 The detail goes to the log, where you can see it; the caller gets a string you wrote
@@ -205,7 +205,9 @@ The SPEC asks for a number, not a belief. The method:
 
 ```python
 # hash the SAME total bytes in every row; vary only the chunk size and thread count
-def bench(nbytes, nthreads): ...   # threads × loops of hashlib.sha256(b"x"*nbytes)
+def bench(nbytes, nthreads): ...  # threads × loops of hashlib.sha256(b"x"*nbytes)
+
+
 # scaling = t(1 thread) / t(4 threads).   ~1.0 → GIL held.   >1 → GIL released.
 ```
 
