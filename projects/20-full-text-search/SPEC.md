@@ -337,3 +337,155 @@ make search Q=rust          # …now it does
 
 [`SegmentReader`]: src/full_text_search/segment.py
 [`LiveDocs`]: src/full_text_search/merge.py
+
+## 🔬 From the field
+
+<!-- Adoption backlog distilled from RESEARCH.md by /harvest. NOT graded:
+     [~] = open, [✔] = adopted — not counted toward graded progress;
+     shown under FROM THE FIELD in status detail.
+     Tick a box when the idea has actually landed in this project. -->
+
+### Analysis & query semantics
+
+- [~] An exact/`keyword` field bypasses the analyzer entirely — a SKU, email or
+  external id is indexed verbatim and matches only as a whole literal, so
+  `A-100` never tokenizes into `a` + `100` *(→ RESEARCH.md §Part 1)*
+- [~] Stop-word removal is a measured choice, not a reflex: with the list off,
+  BM25 saturation plus a near-zero IDF is shown to cost little relevance, while
+  queries that are *made* of stop-words stop silently returning nothing — the
+  reason Lucene largely stopped removing them by default *(→ RESEARCH.md §Part 1)*
+- [~] Changing the analyzer is a reindex, not an edit: the engine refuses to
+  serve an index whose stored analysis contract differs from the running one,
+  and the documented upgrade path is build-new → atomically swap an alias
+  *(→ RESEARCH.md §Part 1)*
+- [~] Tokenization reaches text `\w+` cannot: UAX#29 word boundaries (or cheap
+  CJK bigrams) turn a space-free CJK string into more than one term
+  *(→ RESEARCH.md §Part 1)*
+- [~] A distinct query-time analyzer exists as the *one* sanctioned asymmetry —
+  edge-n-grams at index time, plain terms at query time — giving autocomplete
+  without loosening the symmetry rule anywhere else *(→ RESEARCH.md §Part 1)*
+
+### Segment format & postings
+
+- [~] The segment header carries a codec magic + format version, so a segment
+  written by an older layout is rejected with a clear "unsupported version"
+  error instead of being misparsed into plausible-looking wrong postings
+  *(→ RESEARCH.md §Part 2)*
+- [~] Postings are stored in fixed 128-doc blocks, delta-encoded and
+  variable-byte packed, decoded through `memoryview`/NumPy rather than one
+  integer at a time in Python *(→ RESEARCH.md §Part 2 & Recommendations)*
+- [~] Skip pointers let a query jump whole blocks: advancing to a target doc id
+  decodes only the block that can contain it, and a counter proves blocks were
+  skipped rather than scanned *(→ RESEARCH.md §Part 2)*
+- [~] The term dictionary is front-coded — `search`/`searcher`/`searching` store
+  the shared prefix once — and the on-disk dictionary shrinks measurably on a
+  real vocabulary *(→ RESEARCH.md §Part 2)*
+- [~] `LiveDocs` uses Roaring-style containers (array / bitmap / run chosen per
+  2^16 chunk) so a shard with three deletes costs bytes, not a corpus-wide
+  bitmap *(→ RESEARCH.md §Part 2 & 6)*
+- [~] Stored fields (what a hit displays) and the columnar norms block live in
+  separate regions — a scoring pass never pages in document text it will not
+  return *(→ RESEARCH.md §Part 2)*
+- [~] The read path advises the kernel: random access for postings lookups,
+  sequential for a merge scan, and the difference shows up in page-fault counts
+  *(→ RESEARCH.md §Part 3)*
+
+### Ranking
+
+- [~] Document length is stored as a single quantized byte and scoring reads a
+  precomputed 256-entry length-norm table, so per-document scoring is one array
+  lookup rather than a division *(→ RESEARCH.md §Part 4 & Recommendations)*
+- [~] The norm byte's contract is documented and tested as *monotonic only*: two
+  documents of length 1000 and 1024 may collapse to the same norm, and that is
+  accepted rather than treated as a bug *(→ RESEARCH.md §Part 4)*
+- [~] IDF never goes negative — a term present in more than half the corpus
+  still contributes a non-negative score, via the
+  `log(1 + (N − df + 0.5)/(df + 0.5))` form *(→ RESEARCH.md §Key Findings & Part 4)*
+- [~] Each 128-doc block carries a max-score upper bound and a WAND/MAXSCORE
+  pass skips blocks that cannot enter the heap — enabled by default only after
+  the pruned top-k is proven identical to the unpruned one
+  *(→ RESEARCH.md §Part 4)*
+- [~] Per-field scoring combines field term frequencies *before* saturation
+  (BM25F) rather than summing per-field BM25 scores, so a title hit and a body
+  hit on the same term don't double-count *(→ RESEARCH.md §Part 4)*
+- [~] A second ranker, if one is ever added, is fused by Reciprocal Rank Fusion
+  on rank position (`k=60`) instead of by normalizing incompatible score scales
+  *(→ RESEARCH.md §Part 11)*
+
+### Indexing lifecycle & merge
+
+- [~] Refresh interval is a measured throughput knob: a bulk load with the
+  interval raised (or refresh off) is benchmarked against the 1s default, and
+  the segment-count and throughput difference is recorded
+  *(→ RESEARCH.md §Part 5)*
+- [~] Tombstones survive a restart — deletes are persisted as their own
+  generation beside the segment, so a crash after a delete never resurrects the
+  document *(→ RESEARCH.md §Part 6)*
+- [~] The merge policy floors tiny segments to a minimum size and caps the
+  largest merged segment, so neither a long tail of one-doc segments nor a
+  single unmergeable giant can form *(→ RESEARCH.md §Part 6)*
+- [~] A merge is also triggered by *dead-doc density*, not only by segment
+  count: a segment past a documented deleted percentage is rewritten to reclaim
+  its space *(→ RESEARCH.md §Part 6)*
+- [~] `_forcemerge` is gated and documented as a quiesced-index admin operation,
+  with the footgun stated — on a live index it produces one huge segment that
+  then accumulates unreclaimable deletes *(→ RESEARCH.md §Part 6 & Recommendations)*
+- [~] Write amplification is measured: the benchmark reports how many times an
+  average document is rewritten as it climbs merge tiers *(→ RESEARCH.md §Part 6)*
+
+### Sharding & the tail
+
+- [~] Global `df`/`N` are computed across the local shards before scoring, so
+  every shard scores with identical collection statistics — the accuracy a
+  distributed engine pays a DFS round-trip for, free on one machine
+  *(→ RESEARCH.md §Part 7 & Recommendations)*
+- [~] A per-shard timeout returns partial results rather than failing the whole
+  search, and the response states which shards were omitted
+  *(→ RESEARCH.md §Part 7)*
+- [~] A hedged request fires to a duplicate shard reader after a fixed delay,
+  and the benchmark reports the p99 improvement against the extra request
+  volume it costs *(→ RESEARCH.md §Part 7)*
+- [~] Deep pagination uses a `search_after` cursor, so page 500 never forces
+  every shard to build and return a 500-page result set *(→ RESEARCH.md §Part 7)*
+
+### Caching
+
+- [~] The cache is keyed at the granularity of the immutable unit: adding a new
+  segment leaves entries for existing segments valid, so a refresh no longer
+  drops the whole cache — the fix when the hit ratio sits below the 80% target
+  *(→ RESEARCH.md §Part 8 & Recommendations)*
+- [~] Concurrent misses on the same hot key coalesce through a single
+  `asyncio.Future` — one search runs, the rest await it — so the refresh that
+  invalidates a white-hot query doesn't trigger a stampede
+  *(→ RESEARCH.md §Part 8)*
+
+### CPython runtime
+
+- [~] Postings live in packed buffers (`array`/`struct`/NumPy over
+  `memoryview`), never as millions of small Python objects — GC pause time drops
+  out of p99 and the before/after is shown *(→ RESEARCH.md §Part 9)*
+- [~] `gc.freeze()` is called once the static index is loaded, so long-lived
+  segment data leaves the collector's scan set *(→ RESEARCH.md §Part 9)*
+- [~] The scoring loop is allocation-free on the hot path — preallocated heap,
+  reused buffers — verified by a `memray` run showing no per-posting allocation
+  *(→ RESEARCH.md §Part 9)*
+- [~] If shards become processes, each worker owns its own shard's `mmap` and
+  returns only the top-k; postings are never pickled across the boundary
+  *(→ RESEARCH.md §Part 9 & Recommendations)*
+- [~] The scoring loop is run on a free-threaded build (3.14t) against the same
+  corpus on the standard build, and the multiplier — plus the single-thread
+  penalty — is recorded rather than assumed
+  *(→ RESEARCH.md §Part 9 & Caveats)*
+- [~] A native scoring kernel (PyO3/Cython) is prototyped for the inner BM25
+  loop and measured against the pure-Python one — the honest ceiling on what
+  CPython can do here *(→ RESEARCH.md §Part 9)*
+
+### Measurement & relevance
+
+- [~] The load generator is open-model: latency is measured against each
+  request's *intended* send time and recorded into an HdrHistogram over ≥5000
+  samples, so a stall lands in p99 instead of vanishing into coordinated
+  omission *(→ RESEARCH.md §Part 10)*
+- [~] Relevance is scored, not eyeballed: a small labeled query set yields an
+  nDCG/MRR number a ranking change can be checked against
+  *(→ RESEARCH.md §Part 10)*
