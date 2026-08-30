@@ -77,14 +77,14 @@ export function AddDocuments({ onDone, onFail }: Props) {
         placeholder="Type or paste any text — a paragraph, a note, an article…"
         rows={3}
       />
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="flex flex-col gap-2 @sm:flex-row">
         <Input
           value={id}
           onChange={(e) => setId(e.target.value)}
-          placeholder="Name it (optional) — e.g. my-note"
-          className="font-mono text-sm"
+          placeholder="Name it (optional)"
+          className="min-w-0 font-mono text-sm"
         />
-        <Button onClick={addOne} disabled={busy !== null || !text.trim()} className="sm:w-32">
+        <Button onClick={addOne} disabled={busy !== null || !text.trim()} className="@sm:w-32">
           <Plus className="size-4" />
           {busy === 'one' ? 'Adding…' : 'Add'}
         </Button>

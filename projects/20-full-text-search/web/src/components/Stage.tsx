@@ -30,7 +30,10 @@ export function Stage({ n, id, title, status, children }: Props) {
         <StatusPill status={status} vertical={info.vertical} />
       </header>
 
-      <div className="px-5 py-4">
+      {/* A container for the step's own controls: they should lay themselves out
+          against the width of THIS card, which the drawer can shrink, not against
+          the window's. */}
+      <div className="@container px-5 py-4">
         <p className="text-muted-foreground mb-4 text-sm leading-relaxed">{info.does}</p>
         {children}
         {status === 'notBuilt' && <NotBuiltNote id={id} />}

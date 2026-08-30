@@ -22,12 +22,16 @@ export function Pipeline({ stats }: Props) {
   const segments = stats?.total_segments ?? 0
 
   return (
-    <section className="bg-card/50 rounded-xl border p-5">
+    <section className="@container bg-card/50 rounded-xl border p-5">
       <h2 className="text-muted-foreground mb-4 text-xs font-medium tracking-wide uppercase">
         Where your documents are right now
       </h2>
 
-      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
+      {/* `@lg` asks how wide THIS card is, not how wide the window is. `sm:`
+          would keep the row on at any viewport ≥640px even when the column had
+          been squeezed to 300px by the drawer, and the two boxes — which cannot
+          shrink past their own min-content — would spill out the right edge. */}
+      <div className="flex flex-col items-stretch gap-3 @lg:flex-row @lg:items-center">
         <Box
           icon={<MemoryStick className="size-4" />}
           count={waiting}
@@ -38,7 +42,7 @@ export function Pipeline({ stats }: Props) {
         />
 
         <div className="text-muted-foreground flex shrink-0 flex-col items-center gap-1 px-1">
-          <ArrowRight className="size-5 rotate-90 sm:rotate-0" />
+          <ArrowRight className="size-5 rotate-90 @lg:rotate-0" />
           <span className="text-[11px] whitespace-nowrap">refresh</span>
         </div>
 
@@ -77,12 +81,12 @@ function Box({
   tone: keyof typeof TONES
 }) {
   return (
-    <div className={`flex-1 rounded-lg border p-4 transition-colors ${TONES[tone]}`}>
+    <div className={`min-w-0 flex-1 rounded-lg border p-4 transition-colors ${TONES[tone]}`}>
       <div className="mb-2 flex items-center gap-2">
         {icon}
         <span className="text-foreground text-sm font-medium">{title}</span>
       </div>
-      <div className="flex items-baseline gap-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-1.5">
         <span className="text-foreground font-mono text-3xl leading-none font-semibold tabular-nums">
           {count.toLocaleString()}
         </span>
