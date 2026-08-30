@@ -5,8 +5,8 @@
 > metrics systems assumed.
 >
 > This prepares you for **V1** in [SPEC.md](../SPEC.md) — the parser and
-> fingerprint you'll build in [parse.rs](../src/parse.rs), on top of the types
-> in [model.rs](../src/model.rs). Card 1 in [CONCEPTS.md](../CONCEPTS.md) is the
+> fingerprint you'll build in [parse.py](../src/metrics_pipeline/parse.py), on top of the types
+> in [model.py](../src/metrics_pipeline/model.py). Card 1 in [CONCEPTS.md](../CONCEPTS.md) is the
 > checklist this doc exists to unlock.
 
 ---
@@ -43,7 +43,7 @@ answer real questions with it:
 So the model needs **dimensions you can filter and group by** (host, region),
 separated from **what is measured** (cpu) and **the observation itself** (a
 value at a time). That's the whole data model, and it's already in
-[model.rs](../src/model.rs):
+[model.py](../src/metrics_pipeline/model.py):
 
 ```rust
 pub struct Series {
@@ -65,7 +65,7 @@ Datadog — all of them are this model with different syntax.
 
 ## 2. The wire format: one line, several points
 
-Your parser's input ([parse.rs](../src/parse.rs)) is a *line protocol*, the
+Your parser's input ([parse.py](../src/metrics_pipeline/parse.py)) is a *line protocol*, the
 InfluxDB shape:
 
 ```
@@ -79,7 +79,7 @@ cpu,host=a,region=us         usage=0.91,sys=0.12      1719600000
 Three space-separated sections. Note the asymmetry: tags ride with the
 measurement (comma-joined, no space), fields are their own section, timestamp
 is optional (default: ingest time — a V1 decision the doc-comment in
-[model.rs](../src/model.rs) calls out).
+[model.py](../src/metrics_pipeline/model.py) calls out).
 
 **One line with N fields expands to N `MetricPoint`s** — `usage` and `sys` are
 different things being observed, so each is its own point (and its own series):
@@ -91,7 +91,7 @@ different things being observed, so each is its own point (and its own series):
 
 *How* the field name folds into the series — into the measurement (`cpu_usage`)
 or as a reserved tag (`__field__=usage`) — is **your** modelling choice, flagged
-in the [`MetricPoint` docs](../src/model.rs). Both work; what matters is that
+in the [`MetricPoint` docs](../src/metrics_pipeline/model.py). Both work; what matters is that
 the choice is *canonical* (one rule, applied everywhere), because it feeds the
 fingerprint below.
 
@@ -103,8 +103,8 @@ A **series** is "measurement + exact tag set". `cpu{host=a}` and `cpu{host=b}`
 are different series — different lines on the graph, different rollup buckets,
 different rows in ClickHouse. Every later stage keys on this identity, so it
 needs a stable, compact form: a `u64` fingerprint
-([`SeriesId`](../src/model.rs)), which you'll compute in
-[`fingerprint()`](../src/parse.rs) — currently a `todo!()`.
+([`SeriesId`](../src/metrics_pipeline/model.py)), which you'll compute in
+[`fingerprint()`](../src/metrics_pipeline/parse.py) — currently a `NotImplementedError`.
 
 Here's the trap. Two agents send the *same* series with tags in different
 order:
@@ -131,11 +131,11 @@ Corruption mode #2 is the mirror image: a sloppy canonicalization that maps two
 unrelated data into one line.
 
 The fix is in the `Series` invariant already documented in
-[model.rs](../src/model.rs): **tags are sorted by key before hashing.** Then
+[model.py](../src/metrics_pipeline/model.py): **tags are sorted by key before hashing.** Then
 both agents' lines canonicalize to `cpu|host=a|region=us` and collide on
 purpose. Sorting is not a tidiness nicety — it's what makes identity exist.
 
-One more subtlety the [`fingerprint()` notes](../src/parse.rs) name: you need a
+One more subtlety the [`fingerprint()` notes](../src/metrics_pipeline/parse.py) name: you need a
 **separator** between hashed parts. Without one, different splits concatenate
 to the same bytes and *collide by construction* — again real values:
 
@@ -175,7 +175,7 @@ Now one engineer adds `user_id` as a tag, with 50,000 active users:
 ```
 
 A 50,000× explosion from one tag. Every one of those series wants an entry in
-the in-memory rollup map ([rollup.rs](../src/rollup.rs) — its doc-comment calls
+the in-memory rollup map ([rollup.py](../src/metrics_pipeline/rollup.py) — its doc-comment calls
 that map "the OOM canary"), an index entry in the store, a row per window in
 ClickHouse. This is the classic way real metrics systems die, and it's so real
 that Datadog *bills* per distinct series.
@@ -203,7 +203,7 @@ defend.
 
 ## 5. Malformed lines: reject *and count*
 
-The parser is the front door, and [parse.rs](../src/parse.rs) is explicit: a
+The parser is the front door, and [parse.py](../src/metrics_pipeline/parse.py) is explicit: a
 malformed line is a hard error, never silently skipped, never allowed to
 poison the batch. But rejection alone isn't enough — the SPEC says reject **and
 count**. Why the counter matters: a client that ships a broken agent version
@@ -255,10 +255,10 @@ purpose.
 
 ## 8. Where you'll build this
 
-- [`fingerprint()`](../src/parse.rs) — the canonical hash (`todo!()`).
-- [`parse()`](../src/parse.rs) — line protocol → `Vec<MetricPoint>`, with
-  validation caps (`todo!()`).
-- The tests sketched at the bottom of [parse.rs](../src/parse.rs): tag order
+- [`fingerprint()`](../src/metrics_pipeline/parse.py) — the canonical hash (`NotImplementedError`).
+- [`parse()`](../src/metrics_pipeline/parse.py) — line protocol → `Vec<MetricPoint>`, with
+  validation caps (`NotImplementedError`).
+- The tests sketched at the bottom of [parse.py](../src/metrics_pipeline/parse.py): tag order
   must **not** change the id, tag values **must**, malformed lines error
   without panicking.
 

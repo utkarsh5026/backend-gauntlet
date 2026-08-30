@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — The time-series data model & cardinality *(V1 · `src/parse.rs`, `src/model.rs`)*
+## 🧠 Card 1 — The time-series data model & cardinality *(V1 · `src/metrics_pipeline/parse.py`, `src/metrics_pipeline/model.py`)*
 
 **The problem.** "cpu is at 91% on host-a in us-east" needs a shape. Get the shape wrong and every later stage is wrong: if `cpu{host=a,region=us}` and `cpu{region=us,host=a}` hash to different identities, one real series splits into two and every graph shows half the truth. And the shape has a hidden cost function: every distinct tag combination is a new *series* the pipeline must track in memory, forever-ish. One engineer adds `user_id` as a tag and your 500-series system becomes a 5-million-series system by lunch.
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — Windowed aggregation & the percentile trap *(V2 · `src/rollup.rs`)*
+## 🧠 Card 2 — Windowed aggregation & the percentile trap *(V2 · `src/metrics_pipeline/rollup.py`)*
 
 **The problem.** A dashboard asks "p99 latency, per service, last 6 hours". Scanning raw points is billions of rows per query — you must pre-aggregate as data flows. Count/sum/min/max fold happily into running values. But percentiles are a trap with teeth: **you cannot average percentiles**. The p99 of two windows' p99s is a meaningless number, and every naive rollup that stores "the p99" per minute produces confidently wrong graphs when it rolls up to hours.
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🧠 Card 3 — The batched, at-least-once sink *(V3 · `src/sink.rs`)*
+## 🧠 Card 3 — The batched, at-least-once sink *(V3 · `src/metrics_pipeline/sink.py`)*
 
 **The problem.** Column stores (ClickHouse) are built for few, huge inserts; one INSERT per rollup row will fall over long before real throughput. So you batch. But batching interacts with durability: you're consuming from a broker, and if you ack before the batch is written, a crash loses data; if you ack after, a crash between write and ack means the batch is *re-delivered* — duplicates. Pick your poison: at-most-once loses, at-least-once duplicates. (Exactly-once remains a myth here too.)
 
@@ -67,19 +67,19 @@
 
 **Depth probes:**
 - What does graceful shutdown flush, and why is a crash mid-batch *fine* (redelivery) while a clean shutdown dropping a batch is a bug?
-- Where did the broker earn its place — what does NATS/Kafka give here that a `tokio::mpsc` channel between ingest and rollup can't? (Durability across restarts, replay, decoupled deploys.)
+- Where did the broker earn its place — what does NATS/Kafka give here that an in-process `asyncio.Queue` between ingest and rollup can't? (Durability across restarts, replay, decoupled deploys.)
 
 **Trap:** tuning batch size for peak traffic only. The *time* trigger exists for the quiet hours — without it, an idle pipeline holds the last few rollups hostage indefinitely.
 
 ---
 
-## 🧠 Card 4 — Live fan-out over SSE: the *other* backpressure *(V4 · `src/sse.rs`)*
+## 🧠 Card 4 — Live fan-out over SSE: the *other* backpressure *(V4 · `src/metrics_pipeline/sse.py`)*
 
 **The problem.** Dashboards want windows pushed live. One stream of closed windows must reach N browser tabs — and one of those tabs is backgrounded on a laptop that's asleep. If that dead-slow subscriber can apply backpressure to the pipeline, your *durable storage path* now runs at the speed of someone's suspended Chrome tab. The exact mechanism that saved you in V3 would kill you here.
 
 **The idea.** Recognize there are **two backpressure regimes** and data must be classified into one: the durable path must *never drop* (so it slows the producer), the live path must *never slow the producer* (so it drops). For the live view: broadcast fan-out where each subscriber gets a bounded view, and laggards are dropped or conflated. SSE is the right transport: one-directional, plain HTTP, `text/event-stream` frames with event ids, built-in reconnect (`retry:`) and resume (`Last-Event-ID`).
 
-**In the wild:** Grafana Live, GitHub's event streams, LLM token streaming (SSE everywhere), `tokio::sync::broadcast`'s lagged-receiver semantics are exactly this policy encoded in a type.
+**In the wild:** Grafana Live, GitHub's event streams, LLM token streaming (SSE everywhere). Runtimes that ship a broadcast channel (Go's fan-out idiom, Tokio's lagged receiver) encode exactly this shedding policy in a type; in Python you write it out by hand, which is arguably the better way to learn it.
 
 **You own it when you can explain:**
 - [ ] The two-regimes rule and how to classify any given stream (would a gap corrupt state, or just miss a frame the next update replaces?).

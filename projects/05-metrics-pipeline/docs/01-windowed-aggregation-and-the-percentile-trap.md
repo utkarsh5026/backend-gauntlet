@@ -5,8 +5,8 @@
 > time window is "done". No prior knowledge of stream processing assumed.
 >
 > This prepares you for **V2** in [SPEC.md](../SPEC.md) — the rollup engine
-> you'll build in [rollup.rs](../src/rollup.rs), producing
-> [`RollupRow`](../src/model.rs)s from [`Aggregate`](../src/model.rs)s. Card 2
+> you'll build in [rollup.py](../src/metrics_pipeline/rollup.py), producing
+> [`RollupRow`](../src/metrics_pipeline/model.py)s from [`Aggregate`](../src/metrics_pipeline/model.py)s. Card 2
 > in [CONCEPTS.md](../CONCEPTS.md) is the checklist this doc unlocks.
 
 ---
@@ -43,7 +43,7 @@ into 60-second windows and those same 6 hours become:
 That's the whole idea of a rollup: **do the `GROUP BY` while the data flows
 past, so the query never meets the firehose.** The engine that does it is the
 piece you'd normally get from Flink, Materialize, or a TSDB — and it's what
-[rollup.rs](../src/rollup.rs) scaffolds.
+[rollup.py](../src/metrics_pipeline/rollup.py) scaffolds.
 
 ---
 
@@ -68,7 +68,7 @@ Real values (unix seconds, 60 s windows — verified arithmetic):
 | 1719599999 | 1719599940 | the window before |
 
 Every point in `[start, start + 60s)` shares one bucket key — exactly the
-[`WindowKey { series_id, window_start }`](../src/model.rs) the scaffold defines.
+[`WindowKey { series_id, window_start }`](../src/metrics_pipeline/model.py) the scaffold defines.
 
 ```
 tumbling (this project):        sliding/hopping (not this project):
@@ -88,7 +88,7 @@ multiple of that; know the distinction, build the tumbling one.
 
 For each open bucket, keep **running** aggregates, updated in one pass as each
 point arrives — the fields already laid out in
-[`Aggregate`](../src/model.rs):
+[`Aggregate`](../src/metrics_pipeline/model.py):
 
 | Point arrives (value) | count | sum | min | max | last |
 | --- | --- | --- | --- | --- | --- |
@@ -169,15 +169,15 @@ The SPEC offers you two families, and choosing is the V2 design decision:
 
 Either satisfies V2. What the SPEC requires is only: *mergeable*,
 *constant-ish space per series*, and a **measured** error bound (the tests
-sketched in [rollup.rs](../src/rollup.rs) ask you to feed a known distribution
+sketched in [rollup.py](../src/metrics_pipeline/rollup.py) ask you to feed a known distribution
 and assert the reported quantile is within your bound — and that two merged
 sketches answer for the combined distribution). Which one you build, and how,
 is yours — `/hint` for nudges, `/quest` to build it against acceptance tests.
 
 The scaffold points at exactly where it lands: the
-`TODO(V2)` inside [`Aggregate`](../src/model.rs) ("You cannot store the
+`TODO(V2)` inside [`Aggregate`](../src/metrics_pipeline/model.py) ("You cannot store the
 percentile itself… Store the *distribution*"), surfacing as `p50`/`p99` in
-[`RollupRow`](../src/model.rs) when a window closes.
+[`RollupRow`](../src/metrics_pipeline/model.py) when a window closes.
 
 ---
 
@@ -190,14 +190,14 @@ it?
 The standard answer is a **watermark**: pick a grace period `G` and declare
 *"no points older than `now − G` are coming."* A window `[start, start+60s)`
 closes when `now ≥ start + 60s + G` — precisely the rule
-[`flush_ready()`](../src/rollup.rs) asks you to implement, with `G` =
+[`flush_ready()`](../src/metrics_pipeline/rollup.py) asks you to implement, with `G` =
 `GRACE_SECS=10` from [.env.example](../.env.example). A point that arrives
 *after* its window flushed is **late**, and you need a policy:
 
 | Grace too eager (small G) | Grace too lazy (large G) |
 | --- | --- |
 | Late points miss their window → undercounted history | Live graphs lag: a window isn't visible until `start + 60s + G` |
-| | Open-window map holds more state → memory grows (this map *is* your RAM footprint — [`open_windows()`](../src/rollup.rs) is the gauge) |
+| | Open-window map holds more state → memory grows (this map *is* your RAM footprint — [`open_windows()`](../src/metrics_pipeline/rollup.py) is the gauge) |
 
 For the late points themselves: **drop and count** (a `points_late` counter —
 cheap, honest, the common default) or **re-open the window** (accurate, but
@@ -205,7 +205,7 @@ now a "closed" window can change after being written and pushed — everything
 downstream must cope). The SPEC leaves the policy to you; what it does not
 allow is the silent third option, letting stale windows sit in the map
 forever — that's the unbounded-memory failure the doc-comment on
-[`Rollup.open`](../src/rollup.rs) warns about.
+[`Rollup.open`](../src/metrics_pipeline/rollup.py) warns about.
 
 One honest scaffold note: `flush_ready(now)` compares windows against
 *wall-clock* time — a processing-time watermark. Real stream processors
@@ -245,15 +245,15 @@ concept.
 
 ## 9. Where you'll build this
 
-- [`Rollup::ingest()`](../src/rollup.rs) — snap to window, upsert the running
-  aggregate, feed the sketch (`todo!()`).
-- [`Rollup::flush_ready()`](../src/rollup.rs) — the watermark flush
-  (`todo!()`).
-- [`Rollup::drain_all()`](../src/rollup.rs) — graceful-shutdown drain
-  (`todo!()`).
+- [`Rollup::ingest()`](../src/metrics_pipeline/rollup.py) — snap to window, upsert the running
+  aggregate, feed the sketch (`NotImplementedError`).
+- [`Rollup::flush_ready()`](../src/metrics_pipeline/rollup.py) — the watermark flush
+  (`NotImplementedError`).
+- [`Rollup::drain_all()`](../src/metrics_pipeline/rollup.py) — graceful-shutdown drain
+  (`NotImplementedError`).
 - The sketch field itself — the `TODO(V2)` in
-  [`Aggregate`](../src/model.rs).
-- The tests sketched in [rollup.rs](../src/rollup.rs): window boundaries,
+  [`Aggregate`](../src/metrics_pipeline/model.py).
+- The tests sketched in [rollup.py](../src/metrics_pipeline/rollup.py): window boundaries,
   watermark timing, late-point policy, and the sketch's measured error +
   mergeability.
 
