@@ -35,6 +35,22 @@ export function queryTerms(query: string): Set<string> {
   return terms
 }
 
+/** Split text the way the engine's analyzer would, keeping order and duplicates.
+ *
+ *  `queryTerms` returns a Set because matching only cares about membership; the
+ *  document inspector wants the token *stream* — order and repeats included,
+ *  since a repeated term is exactly what BM25's term-frequency component counts.
+ *  Same caveat as the rest of this file: an approximation of analyzer.py, not the
+ *  source of truth. */
+export function tokenStream(text: string): { token: string; kept: boolean }[] {
+  const out: { token: string; kept: boolean }[] = []
+  for (const m of text.matchAll(WORD)) {
+    const token = m[0].toLowerCase()
+    out.push({ token, kept: !STOPWORDS.has(token) })
+  }
+  return out
+}
+
 /**
  * Split `text` into React nodes, wrapping every word that matches a query term in
  * a <mark>. Separators (spaces, punctuation) are preserved verbatim so the snippet

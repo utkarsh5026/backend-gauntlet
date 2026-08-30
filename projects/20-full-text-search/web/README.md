@@ -1,9 +1,13 @@
 # full-text-search — web console
 
-A React + TypeScript + Tailwind + shadcn/ui search console for the project-20 BM25
-full-text search engine. A search box with **client-highlighted BM25 results** — the
-demo-day artifact — plus an index/admin panel so you can fill the index and watch
-near-real-time refresh and segment merging.
+A React + TypeScript + Tailwind + shadcn/ui console for the project-20 BM25
+full-text search engine, laid out as the three steps the engine actually runs:
+**add documents → make them searchable → search**. Two live counters at the top
+show where your documents are (waiting in memory vs. written to disk), which is
+the whole near-real-time story in one picture. Because the backend is a scaffold,
+each step reports its own state — a `500` from an unbuilt vertical is rendered as
+an amber *"you haven't written this yet"* card naming the file to open, not a red
+error.
 
 ## Stack
 
@@ -29,13 +33,48 @@ Point at a non-default backend with `SEARCH_URL=http://host:port bun run dev`.
 
 ## Using it
 
-1. **Seed sample corpus** (right panel) to bulk-index ~12 demo documents about
-   search internals, then it auto-refreshes so they're searchable.
-2. Search for `inverted index`, `bm25 ranking`, `rust async`, or `merge segments`.
-   Results are ranked by BM25 score (relevance bar + numeric score) with matched
-   query terms highlighted in each snippet.
-3. Index your own documents, delete a hit (hover → trash), or run **refresh** /
-   **force-merge** and watch the stats bar update.
+The page is one column, top to bottom — do the steps in order.
+
+1. **Where your documents are right now.** Two boxes: *waiting in memory* and *on
+   disk, searchable*. Adding documents makes the left number climb; refreshing
+   moves it to the right. Nothing else on the page explains "buffered vs segment"
+   as well as watching those numbers change.
+2. **Step 1 — Add documents.** *Load 12 example documents* bulk-indexes a demo
+   corpus about search internals, or paste your own text. It deliberately does
+   **not** auto-refresh: the documents sit in memory, unfindable, until you do
+   step 2 yourself. That gap is the lesson.
+3. **Click any document** in the *Documents you added* list to read it in the
+   right-hand panel — full text, plus the token stream the engine actually
+   indexes (lowercased, stop words struck through). Search hits open the same
+   panel. Escape closes it.
+4. **Step 2 — Make them searchable.** One *Refresh* button, which flushes memory
+   into a segment file on disk (V2).
+5. **Step 3 — Search.** Try `inverted index`, `bm25 ranking`, or `merge segments`.
+   Each hit leads with the document text, matched words highlighted, and carries a
+   quiet footer with its relevance bar, BM25 score and which shard answered.
+   Hover a hit to delete it (V4).
+6. **More** (collapsed at the bottom) holds the per-shard table and segment
+   merging — real, but not part of the main loop, so it stays out of the way.
+
+Each step's header pill reads `working`, `not built yet · V2`, or `untested`.
+On load the console probes `GET /search` once — a read, so it cannot change the
+index — to fill in step 3's state. It never probes refresh: an empty-buffer
+refresh returns early without touching the segment writer, so it would falsely
+report a working V2.
+
+## Why the document list is client-side
+
+The engine has **no endpoint that lists or fetches a document** — and that is the
+data structure talking, not a missing feature. An inverted index maps *terms to
+documents*, so it answers "which docs contain `bm25`?" in one lookup and "show me
+document 7" not at all. The only document text the API ever returns is the stored
+field on a search hit.
+
+So `src/lib/docstore.ts` keeps the console's own record of what it sent, in
+`localStorage`. It is a browser-side notebook, not a view of the index: a document
+indexed with `curl` will not appear in it, and restarting the engine before a
+refresh leaves entries naming documents the engine no longer has. *Clear list*
+resets it.
 
 ## How highlighting works
 
@@ -51,6 +90,8 @@ highlighter the same stemmer or it will drift from what actually matched.
 - Write/admin routes (index, bulk, delete, refresh, force-merge) are slated to sit
   behind an API key once the security horizontal is built. The console sends
   `X-API-Key` from the header field when set; the backend ignores it until then.
-- Scaffold reality: the backend's `search`/index paths hit `todo!()` until you build
-  V1–V5, so a live search will 500 (a panic) until those verticals land. Everything
-  in the UI is wired to the real endpoints and will light up as you implement them.
+- Scaffold reality: the backend raises `NotImplementedError` until you build
+  V2–V5, so refresh and search return 500 until those verticals land. The console
+  maps endpoint → vertical in `src/lib/stages.ts` and turns those 500s into the
+  amber "not built yet" cards; everything is wired to the real endpoints and
+  lights up as you implement them.
