@@ -37,28 +37,29 @@ blocked-on: ~            # free text, or ~ for none
 - A `GET /healthz` for liveness.
 
 > The broker (NATS JetStream here; Kafka is the same shape) and ClickHouse are
-> **dependencies** — you `cargo add` a client for each. The point of the project
+> **dependencies** — you `uv add` a client for each. The point of the project
 > is everything *between* them: the parse, the rollup engine, the batched
 > at-least-once sink, and the backpressured fan-out. Those are the parts a hosted
 > metrics platform (Datadog / Prometheus + Cortex / InfluxDB) is really selling.
 >
-> **Why NATS, not Kafka?** Purely a build-cleanliness call — the canonical Kafka
-> client (`rdkafka`) needs a C toolchain (`cmake` + librdkafka) this repo doesn't
-> assume, while `async-nats` is pure Rust. JetStream gives you the same
-> primitives the verticals reason about: a **durable, replayable log**, a
-> **consumer with explicit acks and redelivery**, and **at-least-once** delivery.
-> Everything in V3 transfers to Kafka unchanged; the broker is not the lesson.
-> (Project 08 — *mini message broker* — is where you build the log itself.)
+> **Why NATS, not Kafka?** JetStream gives you exactly the primitives the
+> verticals reason about — a **durable, replayable log**, a **consumer with
+> explicit acks and redelivery**, and **at-least-once** delivery — with a client
+> (`nats-py`) that is pure Python and a broker that starts in one container.
+> `aiokafka` would work too and everything in V3 transfers to it unchanged; the
+> broker is deliberately not the lesson. (Project 08 — *mini message broker* —
+> is where you build the log itself.)
 
 ---
 
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. The ingest parser + the time-series data model — *what a "metric" actually is*
-In `src/parse.rs`, turn a wire line into typed points — and decide the data model
-that the rest of the pipeline is built on (`src/model.rs` holds the types).
+In `src/metrics_pipeline/parse.py`, turn a wire line into typed points — and
+decide the data model the rest of the pipeline is built on
+(`src/metrics_pipeline/model.py` holds the types).
 - Parse a line protocol — `cpu,host=a,region=us usage=0.91,sys=0.12 1719600000`
-  — into one [`MetricPoint`](src/model.rs) per field: a **measurement**, a set of
+  — into one [`MetricPoint`](src/metrics_pipeline/model.py) per field: a **measurement**, a set of
   **tags** (the dimensions you filter/group by), a **value**, and a **timestamp**
   (default to ingest time when absent). Be strict: a malformed line must be
   *rejected and counted*, never allowed to poison the batch downstream.
@@ -67,7 +68,9 @@ that the rest of the pipeline is built on (`src/model.rs` holds the types).
   need a stable **fingerprint** (a hash over the measurement + tags **sorted by
   key**, so `a=1,b=2` and `b=2,a=1` collide on purpose) to key every later stage
   by. Get the canonicalization wrong and you either split one series into many or
-  merge two — both silently corrupt every graph.
+  merge two — both silently corrupt every graph. Note that the builtin `hash()`
+  is disqualified here: CPython salts string hashing per process, so the same
+  series would fingerprint differently after every restart.
 - Stare at **cardinality**: the number of distinct series is the product of every
   tag's distinct values. One unbounded tag (a request-id, a raw URL) turns one
   metric into millions of series and is the classic way to OOM a metrics system.
@@ -79,7 +82,7 @@ timestamp), series identity as a tag-set fingerprint and why canonical ordering
 is load-bearing, and cardinality as the cost function of the whole system.
 
 ### V2. The rollup engine — *streaming windowed aggregation, and why you can't average a percentile*
-In `src/rollup.rs`, build the core: fold the point stream into per-series,
+In `src/metrics_pipeline/rollup.py`, build the core: fold the point stream into per-series,
 per-window **aggregates** online, and emit each window when it closes. This is the
 piece you'd normally get from a stream processor (Flink / Materialize) or a TSDB.
 - Bucket each point by `(series_id, window_start)` where `window_start` snaps the
@@ -106,8 +109,9 @@ pass, bounded-memory) aggregation, the percentile-merge problem and why a
 mergeable sketch is mandatory, and watermarks / lateness as the flush contract.
 
 ### V3. The durable, batched sink — *at-least-once into a column store without melting it*
-In `src/sink.rs` (driven by the consumer loop in `src/pipeline.rs`), get rollups
-out of memory and into ClickHouse **durably** and **in batches**.
+In `src/metrics_pipeline/sink.py` (driven by the consumer loop in
+`src/metrics_pipeline/pipeline.py`), get rollups out of memory and into
+ClickHouse **durably** and **in batches**.
 - A column store hates small writes: one `INSERT` per row will fall over long
   before your real throughput. **Micro-batch** — accumulate rollups and flush on
   a **size *or* time** trigger (whichever fires first), so a busy pipeline gets
@@ -120,16 +124,19 @@ out of memory and into ClickHouse **durably** and **in batches**.
   (ClickHouse `ReplacingMergeTree` on `(series_id, window_start)`, or an
   aggregation that's idempotent under replay). There is no free exactly-once.
 - **Backpressure.** When ClickHouse is slow, the consumer must *slow down*, not
-  buffer the firehose into an OOM. The bounded channel between rollup and sink is
-  your backpressure: when it's full, stop pulling from the broker. Reason about
-  it explicitly — an unbounded queue in front of a slow sink is a time-bomb.
+  buffer the firehose into an OOM. The bound between rollup and sink is your
+  backpressure: when the batch is full and the flush hasn't finished, stop
+  pulling from the broker. Reason about it explicitly — an unbounded queue in
+  front of a slow sink is a time-bomb, and in Python it is an especially quiet
+  one, because an `asyncio.Queue` with no `maxsize` will happily eat the whole
+  firehose while every latency number still looks fine.
 
 *Concept to internalize:* micro-batching as the column-store contract (the
 size/time flush trigger), at-least-once via ack-after-durable-write, idempotent
 writes as the price of at-least-once, and bounded buffers as backpressure.
 
 ### V4. The SSE live fan-out — *push completed windows to N dashboards without one slow client stalling the pipeline*
-In `src/sse.rs`, serve the live dashboard: every time a window closes, fan the
+In `src/metrics_pipeline/sse.py`, serve the live dashboard: every time a window closes, fan the
 rollup out to every connected `GET /stream` client over **Server-Sent Events**.
 - Implement SSE properly: `text/event-stream`, one `data:` frame per rollup
   (JSON), an `id:` per event, and a `retry:` so a dropped browser reconnects —
@@ -137,11 +144,14 @@ rollup out to every connected `GET /stream` client over **Server-Sent Events**.
   is the right tool here: the flow is one-directional server→client, it's plain
   HTTP, and it auto-reconnects for free.
 - **Fan-out + backpressure.** One source (closed windows) feeds many subscribers.
-  A `tokio::sync::broadcast` is the natural hub — but a **slow client** (a backed-
-  up browser tab) must never apply backpressure to the *pipeline*. The pipeline's
-  liveness cannot depend on the slowest dashboard. So each subscriber gets a
-  **bounded** view and a slow one is **conflated or dropped** (broadcast's lagged
-  receiver, or keep-latest-per-series), never allowed to block the producer.
+  Python has no broadcast channel in the stdlib, so the hub is yours to build:
+  one **bounded** `asyncio.Queue` per subscriber, published to with
+  `put_nowait`. A single shared queue does not fan out at all (the first reader
+  takes the row), and an unbounded one fans out and then OOMs. A **slow client**
+  (a backed-up browser tab) must never apply backpressure to the *pipeline* —
+  its liveness cannot depend on the slowest dashboard — so a full queue means the
+  subscriber is **conflated or dropped** (drop-newest, drop-oldest, or
+  keep-latest-per-series), never allowed to block the producer.
   This is the inverse of V3's backpressure and the distinction is the lesson: you
   *must not drop* data headed for durable storage, and you *must be willing to
   drop* data headed for a live view.
@@ -158,7 +168,10 @@ live view is allowed to drop while a durable sink is not.
 
 ### Protocols / API
 - [ ] Line-protocol ingest over `POST /ingest` (and optionally a UDP listener for
-  fire-and-forget StatsD-style senders) — parse, validate, and publish.
+  fire-and-forget StatsD-style senders) — parse, validate, and publish. If you
+  add UDP, it is `loop.create_datagram_endpoint` with a `DatagramProtocol`
+  feeding a **bounded** queue — a raw socket with `loop.sock_recvfrom` passes
+  its tests and then raises under the uvloop the server actually runs on.
 - [ ] Server-Sent Events for the live feed (`GET /stream`): correct
   `text/event-stream` framing, event ids, `retry:`, and `Last-Event-ID`
   resume. A `GET /query` for historical ranges.
@@ -200,8 +213,24 @@ live view is allowed to drop while a durable sink is not.
 - [ ] Counters: points ingested / rejected (by reason), windows flushed, rows
   written, duplicates collapsed, SSE clients connected / dropped-for-lag.
 - [ ] Histograms: parse time, end-to-end lag (point timestamp → rollup visible in
-  ClickHouse) p50/p99, and ClickHouse flush latency. A `tracing` span per
+  ClickHouse) p50/p99, and ClickHouse flush latency. A structured log span per
   batch carrying its size and window range.
+
+### Python & runtime
+- [ ] **`pyright` strict passes clean** — every `# type: ignore` /
+  `# pyright: ignore` carries a comment justifying it.
+- [ ] **No blocking call on the event loop:** the process runs clean under
+  `PYTHONASYNCIODEBUG=1`, and any sync or CPU-bound work — building the insert
+  block is the one that will bite you — is moved to a thread or process pool
+  *deliberately*, with the reason recorded.
+- [ ] **Bounded pool sized on purpose:** the ClickHouse connection limit, the
+  broker prefetch, and the batch size are tuned *together* rather than
+  inherited, and `docs/05-design.md` says what each bound is protecting.
+- [ ] **Graceful shutdown** drains in-flight requests on SIGTERM via the FastAPI
+  lifespan, and the consumer task is awaited (with a timeout) rather than
+  orphaned — the partial window it holds is flushed, not dropped.
+- [ ] **Profile committed:** a `py-spy` flamegraph and a `memray` run in
+  `docs/05-benchmarks.md`, naming the top bottleneck.
 
 ---
 
@@ -220,7 +249,7 @@ live view is allowed to drop while a durable sink is not.
 
 ## Definition of done
 1. All vertical + horizontal boxes checked.
-2. A `bench/` load test (a Rust or `k6`/`vegeta` client that fires a sustained
+2. A `bench/` load test (a Python or `k6`/`vegeta` client that fires a sustained
    line-protocol firehose) reporting: sustained **ingest throughput** (points/sec)
    and end-to-end **lag** p50/p99 (point → queryable) under load; **batched vs.
    row-at-a-time** insert throughput into ClickHouse (the V3 payoff); the rollup
@@ -234,6 +263,13 @@ live view is allowed to drop while a durable sink is not.
    (histogram vs. t-digest, and its accuracy/space tradeoff); the batch flush
    trigger and the at-least-once + dedup design (your ClickHouse engine and sort
    key); and the SSE backpressure/shedding policy.
+4. `make verify` is green — `ruff` clean, `pyright` **strict** with zero errors,
+   and `pytest` passing; no `NotImplementedError` remains on a checked path.
+5. A **profile** is committed: a `py-spy` flamegraph and a `memray` run in
+   `docs/05-benchmarks.md`, naming the top bottleneck. Numbers alone don't close
+   this — you have to know *why* they are what they are, and on CPython the
+   answer is usually one of the GIL, the GC, allocation, or a blocking call that
+   snuck onto the loop.
 
 ## Suggested order of attack
 1. Get a point in and back out the dumb way: `POST /ingest` parses one line (V1)
@@ -256,26 +292,26 @@ live view is allowed to drop while a durable sink is not.
 
 ## Run the dependencies
 ```bash
-docker compose up -d        # NATS (JetStream) + ClickHouse
-cp .env.example .env        # then fill in values (NATS_URL, CLICKHOUSE_URL, …)
+make up                     # NATS (JetStream) + ClickHouse, waits for health
+make setup                  # .env from .env.example (NATS_URL, CLICKHOUSE_URL, …)
+make sync                   # install the venv from the workspace uv.lock
 
 # Apply the ClickHouse schema (also auto-applied by the container's init mount):
 #   migrations/0001_init.sql  → mounted at /docker-entrypoint-initdb.d in compose.
-# Or by hand:
-#   cat migrations/0001_init.sql | docker compose exec -T clickhouse clickhouse-client -mn
+# Or by hand:  make schema
 
 # Terminal 1 — the ingest API + (optionally) the consumer pipeline:
-cargo run -p metrics-pipeline
+make run
 #   RUN_CONSUMER=false (default) → ingest API only; the bare scaffold serves
-#   cleanly and a POST /ingest panics with the V1 parse todo — that panic is the
-#   worklist. GET /stream panics with the V4 todo.
+#   cleanly and a POST /ingest raises the V1 parse NotImplementedError — that
+#   traceback is the worklist. GET /stream raises the V4 one.
 #   RUN_CONSUMER=true             → also spins up the consume→rollup→sink pipeline
-#   (panics on the first V2/V3 todo until you implement them).
+#   (raises on the first V2/V3 todo until you implement them).
 
-# Terminal 2 — send a point (line protocol):
-curl -X POST localhost:8080/ingest --data-binary \
-  'cpu,host=a,region=us usage=0.91,sys=0.12 1719600000'
+# Terminal 2 — send a point (line protocol), and watch the live feed:
+make send                   # or: curl -X POST localhost:8080/ingest --data-binary \
+                            #       'cpu,host=a,region=us usage=0.91,sys=0.12 1719600000'
+make stream                 # or: curl -N localhost:8080/stream
 
-# Watch the live feed:
-curl -N localhost:8080/stream
+make verify                 # fmt-check → lint → types → test, what CI runs
 ```

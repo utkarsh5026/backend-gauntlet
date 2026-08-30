@@ -6,8 +6,8 @@
 > knowledge of column stores or message brokers assumed.
 >
 > This prepares you for **V3** in [SPEC.md](../SPEC.md) — the sink you'll
-> build in [sink.rs](../src/sink.rs), driven by the consumer loop in
-> [pipeline.rs](../src/pipeline.rs), landing in the ClickHouse table defined
+> build in [sink.py](../src/metrics_pipeline/sink.py), driven by the consumer loop in
+> [pipeline.py](../src/metrics_pipeline/pipeline.py), landing in the ClickHouse table defined
 > in [0001_init.sql](../migrations/0001_init.sql). Card 3 in
 > [CONCEPTS.md](../CONCEPTS.md) is the checklist this doc unlocks.
 
@@ -38,7 +38,7 @@ is built for *few, huge* appends. Feed it the opposite and:
 
 Batch the same 10,000 rows into **one** insert and it's one part, one
 round-trip, one merge-queue entry. This is not a 20% tuning win; it's the
-difference between working and falling over. The [sink.rs](../src/sink.rs)
+difference between working and falling over. The [sink.py](../src/metrics_pipeline/sink.py)
 doc-comment calls micro-batching "the column-store contract", and the
 Definition-of-done bench in [SPEC.md](../SPEC.md) has you *measure* the gap
 (batched vs row-at-a-time is one of the required numbers).
@@ -63,10 +63,10 @@ BATCH_MAX_DELAY_MS=1000     # time trigger  — the pipeline's flush ticker
 | Quiet (3 rows/min) | Time trigger, every 1 s | Bounded staleness — a rollup is never held hostage more than ~1 s |
 | Size trigger only, quiet hours | *nothing* | The last few rollups sit in RAM **indefinitely** — invisible on the dashboard, lost on a kill. This is the trap Card 3 names |
 
-The split is visible in the scaffold: [`Sink::push()`](../src/sink.rs) owns
-the size trigger (`todo!()`), while the `flush_ticker` arm of the
-`tokio::select!` loop in [pipeline.rs](../src/pipeline.rs) drives the time
-trigger by calling [`Sink::flush()`](../src/sink.rs) on an interval. Batch
+The split is visible in the scaffold: [`Sink::push()`](../src/metrics_pipeline/sink.py) owns
+the size trigger (`NotImplementedError`), while the `flush_ticker` arm of the
+`tokio::select!` loop in [pipeline.py](../src/metrics_pipeline/pipeline.py) drives the time
+trigger by calling [`Sink::flush()`](../src/metrics_pipeline/sink.py) on an interval. Batch
 size trades throughput against latency and RAM; that knob — "the whole game",
 per the SPEC — is yours to tune with the bench.
 
@@ -77,7 +77,7 @@ per the SPEC — is yours to tune with the bench.
 The sink doesn't read from thin air — it consumes from NATS JetStream, a
 durable log. JetStream (like Kafka) redelivers any message that isn't
 **acknowledged** within its ack-wait (the consumer is created with
-`AckPolicy::Explicit` in [`setup_consumer()`](../src/pipeline.rs) for exactly
+`AckPolicy::Explicit` in [`setup_consumer()`](../src/metrics_pipeline/pipeline.py) for exactly
 this reason). That gives you precisely one decision, with two possible
 answers:
 
@@ -96,7 +96,7 @@ consume msg ──▶ roll up ──▶ write batch to ClickHouse ──▶ ack
 There is no third option. "Exactly-once" between a broker and an external
 store is not a delivery guarantee you can pick; it's at-least-once **plus an
 idempotent write** — which is the next section. (The scaffold is honest about
-its own placeholder: [`process_message()`](../src/pipeline.rs) currently acks
+its own placeholder: [`process_message()`](../src/metrics_pipeline/pipeline.py) currently acks
 right after ingest, and its `TODO(V3)` tells you that acking there "would turn
 a crash into silent data loss" — moving the ack after the durable flush is
 part of your V3 work.)
@@ -132,7 +132,7 @@ Two fine-print items you must carry into the implementation:
 
 - **Dedup is eventual.** Collapsing happens at merge time, not insert time —
   a read in between sees both copies. That's why the read path
-  ([`query_range()`](../src/sink.rs)) must use `FINAL` or aggregate over the
+  ([`query_range()`](../src/metrics_pipeline/sink.py)) must use `FINAL` or aggregate over the
   key, as its `TODO` and the migration's comments both say.
 - **The key must be deterministic.** Sneak anything non-deterministic into
   identity (an insert timestamp, a random id) and every redelivery mints a
@@ -161,9 +161,9 @@ The correct chain, link by link — each link already exists in the scaffold:
 
 ```
 ClickHouse slow
-   └─▶ Sink::flush() blocks / errors           (sink.rs)
+   └─▶ Sink::flush() blocks / errors           (sink.py)
         └─▶ buffer stays full → push() can't accept more
-             └─▶ consumer loop stops pulling messages   (pipeline.rs select loop)
+             └─▶ consumer loop stops pulling messages   (pipeline.py select loop)
                   └─▶ unacked/unfetched msgs accumulate IN THE BROKER
                        └─▶ JetStream holds the backlog ON DISK, replayable
                             └─▶ nothing OOMs; consumer catches up when CH recovers
@@ -191,7 +191,7 @@ replay; the design covers it. But a **clean shutdown** that drops a partial
 batch is a real bug: the process *had* the data and *chose* not to flush.
 Redelivery still saves the acked-after-write data, but unflushed partial
 windows from the rollup engine would be gone. Hence the shutdown arm in
-[pipeline.rs](../src/pipeline.rs): drain the rollup engine
+[pipeline.py](../src/metrics_pipeline/pipeline.py): drain the rollup engine
 (`drain_all()` — the `TODO(V2)` on that line), push to the sink, one final
 `flush()`, *then* exit. At-least-once is the safety net; a clean exit
 shouldn't need it.
@@ -205,12 +205,12 @@ shouldn't need it.
    happens after the write. How you associate messages with batches is the
    design problem.
 2. **Flush-failure policy** — keep the buffer and retry, or drop it and lean
-   on redelivery? (The [`flush()` notes](../src/sink.rs) point one way; know
+   on redelivery? (The [`flush()` notes](../src/metrics_pipeline/sink.py) point one way; know
    what each costs.)
 3. **Batch knobs** — tune `BATCH_MAX_ROWS` / `BATCH_MAX_DELAY_MS` against the
    bench, and justify them in `docs/05-design.md`.
 4. **The read path** — `FINAL` vs `GROUP BY` in
-   [`query_range()`](../src/sink.rs), and what each costs at query time.
+   [`query_range()`](../src/metrics_pipeline/sink.py), and what each costs at query time.
 
 `/hint` for nudges, `/quest` to build against acceptance tests — including
 the SPEC's kill-the-consumer-mid-batch replay test.
@@ -231,12 +231,12 @@ the SPEC's kill-the-consumer-mid-batch replay test.
 
 ## 9. Where you'll build this
 
-- [`Sink::push()`](../src/sink.rs) — buffer + size trigger (`todo!()`).
-- [`Sink::flush()`](../src/sink.rs) — the one-round-trip batched insert
-  (`todo!()`).
-- [`query_range()`](../src/sink.rs) — the deduped read path (`todo!()`).
+- [`Sink::push()`](../src/metrics_pipeline/sink.py) — buffer + size trigger (`NotImplementedError`).
+- [`Sink::flush()`](../src/metrics_pipeline/sink.py) — the one-round-trip batched insert
+  (`NotImplementedError`).
+- [`query_range()`](../src/metrics_pipeline/sink.py) — the deduped read path (`NotImplementedError`).
 - The ack-after-flush rework flagged in
-  [`process_message()`](../src/pipeline.rs).
+  [`process_message()`](../src/metrics_pipeline/pipeline.py).
 - The schema you already have: [0001_init.sql](../migrations/0001_init.sql)
   (read its comments — they're the idempotency design in SQL form).
 

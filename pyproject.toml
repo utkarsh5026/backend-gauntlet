@@ -16,6 +16,7 @@ members = [
     "packages/common-telemetry",
     "packages/common-config",
     "projects/02-rate-limiter",
+    "projects/05-metrics-pipeline",
     "projects/07-distributed-cache",
     "projects/08-message-broker",
     "projects/20-full-text-search",

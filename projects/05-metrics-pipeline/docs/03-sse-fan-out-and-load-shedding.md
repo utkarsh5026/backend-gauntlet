@@ -6,9 +6,9 @@
 > No prior knowledge of SSE or fan-out patterns assumed.
 >
 > This prepares you for **V4** in [SPEC.md](../SPEC.md) — the
-> [`stream()`](../src/sse.rs) response you'll build on top of the already-wired
-> [`LiveFeed`](../src/sse.rs) hub, serving `GET /stream` in
-> [routes.rs](../src/routes.rs). Card 4 in [CONCEPTS.md](../CONCEPTS.md) is the
+> [`stream()`](../src/metrics_pipeline/sse.py) response you'll build on top of the already-wired
+> [`LiveFeed`](../src/metrics_pipeline/sse.py) hub, serving `GET /stream` in
+> [routes.py](../src/metrics_pipeline/routes.py). Card 4 in [CONCEPTS.md](../CONCEPTS.md) is the
 > checklist this doc unlocks.
 
 ---
@@ -32,7 +32,7 @@ subscriber:
 
 | Waiting-for-everyone fan-out | What breaks |
 | --- | --- |
-| Producer `await`s the slowest send | The flush loop in [pipeline.rs](../src/pipeline.rs) stalls — the *same* loop that feeds the durable sink |
+| Producer `await`s the slowest send | The flush loop in [pipeline.py](../src/metrics_pipeline/pipeline.py) stalls — the *same* loop that feeds the durable sink |
 | Windows stop closing | Rollup map grows; ClickHouse writes stall; consumer lag climbs |
 | Net effect | **Your storage path now runs at the speed of someone's suspended Chrome tab** |
 
@@ -59,7 +59,7 @@ block upstream, or drop for that subscriber. The trap Card 4 names is serving
 both regimes from one code path "for DRY" — the policies are opposites, and
 sharing a queue between the sink and the fan-out re-couples what V3/V4 exist
 to decouple. In the scaffold they're already separate: the sink's buffer in
-[sink.rs](../src/sink.rs) versus the broadcast hub in [sse.rs](../src/sse.rs).
+[sink.py](../src/metrics_pipeline/sink.py) versus the broadcast hub in [sse.py](../src/metrics_pipeline/sse.py).
 
 ---
 
@@ -85,7 +85,7 @@ The four field types, each doing one job:
 
 | Field | Job |
 | --- | --- |
-| `data:` | The payload (here: one [`RollupRow`](../src/model.rs) as JSON) |
+| `data:` | The payload (here: one [`RollupRow`](../src/metrics_pipeline/model.py) as JSON) |
 | `id:` | Names this event; the browser remembers the last one it saw |
 | `retry:` | Tells the browser how long (ms) to wait before auto-reconnecting |
 | `event:` | Optional type label (e.g. an `event: lag` notice — see §5) |
@@ -93,8 +93,8 @@ The four field types, each doing one job:
 The reconnect loop is built into the browser's `EventSource`: connection
 drops → wait `retry:` ms → reconnect **with header `Last-Event-ID: <last id
 seen>`** → your handler can resume from there. You get reconnection and
-resume *protocol* for free; [routes.rs](../src/routes.rs) already extracts
-the header and hands it to [`sse::stream()`](../src/sse.rs).
+resume *protocol* for free; [routes.py](../src/metrics_pipeline/routes.py) already extracts
+the header and hands it to [`sse::stream()`](../src/metrics_pipeline/sse.py).
 
 **Why SSE and not WebSocket?** Classify the traffic: dashboards are
 one-directional (server→client), and SSE rides plain HTTP — every proxy and
@@ -109,7 +109,7 @@ reconnection. Rule of thumb: *push-only → SSE; conversation → WebSocket.*
 ## 4. The hub: broadcast fan-out with lagged-receiver shedding
 
 Inside the process, the fan-out hub is already wired:
-[`LiveFeed`](../src/sse.rs) wraps a `tokio::sync::broadcast` channel
+[`LiveFeed`](../src/metrics_pipeline/sse.py) wraps a `tokio::sync::broadcast` channel
 (capacity `SSE_CAPACITY=1024`, from [.env.example](../.env.example)). Its
 semantics are the two-regimes policy *encoded in a type*:
 
@@ -123,12 +123,12 @@ semantics are the two-regimes policy *encoded in a type*:
   continues from the oldest value still in the ring. It's shed, notified,
   and resumed; never waited for.
 
-Note also [`LiveFeed::publish()`](../src/sse.rs) ignoring the "no receivers"
+Note also [`LiveFeed::publish()`](../src/metrics_pipeline/sse.py) ignoring the "no receivers"
 error — an idle dashboard fleet must not affect the pipeline either. Zero
 subscribers and a thousand subscribers cost the producer the same: one
 `send`.
 
-Your V4 work in [`stream()`](../src/sse.rs) is the boundary where hub meets
+Your V4 work in [`stream()`](../src/metrics_pipeline/sse.py) is the boundary where hub meets
 HTTP: turn a receiver into a stream of SSE events, and *handle the `Lagged`
 case as policy, not as an error* — skip forward, count it (the SPEC's
 observability list wants an `sse_dropped_for_lag` counter), optionally tell
@@ -154,7 +154,7 @@ this is a lossy stream, and that's fine, because the durable history exists in
 ClickHouse.
 
 That's also the answer to the cold-start problem, and why the API is split in
-two in [routes.rs](../src/routes.rs):
+two in [routes.py](../src/metrics_pipeline/routes.py):
 
 ```
 dashboard opens ──▶ GET /query?series=…&from=…&to=…   (historical paint, from ClickHouse — V3's read path)
@@ -176,7 +176,7 @@ architecture of V4.
 2. **Shed policy** — plain skip-ahead on `Lagged`, a lag notice event, or
    keep-latest-per-series conflation?
 3. **Keep-alive** — idle proxies kill silent connections;
-   `Sse::keep_alive` exists for this (the [`stream()` notes](../src/sse.rs)
+   `Sse::keep_alive` exists for this (the [`stream()` notes](../src/metrics_pipeline/sse.py)
    point at it) — pick an interval.
 4. **The resume fallback** — what the client should do when its
    `Last-Event-ID` predates your buffer.
@@ -201,11 +201,11 @@ stalled client is shed without affecting the rest.
 
 ## 8. Where you'll build this
 
-- [`sse::stream()`](../src/sse.rs) — the one `todo!()`: receiver → SSE
+- [`sse::stream()`](../src/metrics_pipeline/sse.py) — the one `NotImplementedError`: receiver → SSE
   response, with `Lagged` handled as shed-and-count, keep-alive, `retry:`,
   and `Last-Event-ID` honoured where feasible.
-- The hub ([`LiveFeed`](../src/sse.rs)) and the publish call in
-  [`flush_windows()`](../src/pipeline.rs) are already wired — study why
+- The hub ([`LiveFeed`](../src/metrics_pipeline/sse.py)) and the publish call in
+  [`flush_windows()`](../src/metrics_pipeline/pipeline.py) are already wired — study why
   `publish` can never block before you write the handler.
 
 You own it (Card 4 of [CONCEPTS.md](../CONCEPTS.md)) when you can explain:
