@@ -28,7 +28,6 @@ from pathlib import Path
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
     ("object-store", "projects/06-object-store"),
-    ("api-gateway", "projects/10-api-gateway"),
     ("vod-streaming", "projects/11-vod-streaming"),
     ("transcode-pipeline", "projects/12-transcode-pipeline"),
     ("live-ingest", "projects/13-live-ingest"),
@@ -211,14 +210,14 @@ def self_test() -> int:
     # /pythonize conversion has to update this alongside PROJECTS.
     rust_all, pkgs, fes = resolve(
         [
-            "projects/10-api-gateway/src/proxy.rs",
+            "projects/11-vod-streaming/src/isobmff.rs",
             "projects/06-object-store/web/src/App.tsx",
             "projects/22-lsm-redis/src/lsm.rs",
         ],
         force_all=False,
     )
     assert rust_all is False
-    assert pkgs == ["api-gateway", "lsm-redis"], pkgs
+    assert pkgs == ["vod-streaming", "lsm-redis"], pkgs
     assert fes == ["projects/06-object-store/web"], fes
 
     # Frontend-only → no rust package for that project.

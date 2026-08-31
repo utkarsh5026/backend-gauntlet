@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — The byte path: headers, streaming, connection reuse *(V1 · `src/proxy.rs`)*
+## 🧠 Card 1 — The byte path: headers, streaming, connection reuse *(V1 · `src/api_gateway/proxy.py`)*
 
 **The problem.** "Just forward the request" hides three ways to hurt yourself. Buffer bodies and a single 2 GiB upload lives in your RAM (times concurrency). Forward headers blindly and hop-by-hop headers leak between connections — the raw material of request-smuggling attacks (`Transfer-Encoding` disagreements between you and the backend are a classic CVE category). Open a fresh upstream TCP connection per request and you pay a handshake (plus TLS) on every single hop — often more time than the backend spends working.
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — The routing engine *(V2 · `src/router.rs`)*
+## 🧠 Card 2 — The routing engine *(V2 · `src/api_gateway/router.py`)*
 
 **The problem.** Route `/api/v2/users` when both `/api` and `/api/v2` are registered: which wins, and *by rule or by accident*? A linear scan over routes answers "whichever was inserted first matched first" — order-dependent behavior that changes when someone reorders a config file — and its cost grows with every route added, on the hot path of literally every request.
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🧠 Card 3 — Load balancing: from round-robin to P2C *(V3 · `src/balancer.rs`)*
+## 🧠 Card 3 — Load balancing: from round-robin to P2C *(V3 · `src/api_gateway/balancer.py`)*
 
 **The problem.** A pool of N backends, one choice per request. Round-robin treats them as identical — but backend #3 is running a GC, and round-robin keeps feeding it while its queue grows and its latency poisons every Nth request. Pure random has unlucky streaks. Full least-connections needs a global scan (and can herd: everyone piles onto the "least loaded" node simultaneously). The pick must also be nearly free — it's on every request.
 
@@ -73,7 +73,7 @@
 
 ---
 
-## 🧠 Card 4 — Health checks & circuit breaking: fail fast, don't cascade *(V4 · `src/health.rs`)*
+## 🧠 Card 4 — Health checks & circuit breaking: fail fast, don't cascade *(V4 · `src/api_gateway/health.py`)*
 
 **The problem.** A backend dies. Every request routed to it now waits the full timeout — say 5 s — holding a connection, a task, and a client the whole time. Queues fill with doomed work; healthy backends starve behind it; latency climbs platform-wide; the gateway itself runs out of resources. One dead backend has become a full outage — not by sending errors, but by sending *slowness*. Slow is worse than down.
 

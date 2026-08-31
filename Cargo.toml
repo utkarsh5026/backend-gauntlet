@@ -5,7 +5,6 @@ members = [
     "crates/common-config",
     "crates/workspace-hack",
     "projects/06-object-store",
-    "projects/10-api-gateway",
     "projects/11-vod-streaming",
     "projects/12-transcode-pipeline",
     "projects/13-live-ingest",
@@ -37,10 +36,11 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 # feature adds `metadata.mimetype()` so each asset gets the right Content-Type.
 rust-embed = { version = "8", features = ["mime-guess"] }
 hyper = "1"
-# Project 10 (API gateway) is a reverse proxy. `hyper-util`'s `legacy::Client` is the
-# pooled upstream client that reuses keep-alive connections (V1), plus the Tokio
-# executor/IO glue hyper 1.x factored out of core. `http-body-util` supplies the body
-# combinators used to relay a streamed request/response upstream without buffering.
+# `hyper-util`'s `legacy::Client` is a pooled HTTP client that reuses keep-alive
+# connections, plus the Tokio executor/IO glue hyper 1.x factored out of core.
+# `http-body-util` supplies the body combinators for relaying a streamed
+# request/response without buffering it. (Pinned here for the streaming/proxy-shaped
+# projects; project 10 used to be the consumer and is now Python.)
 hyper-util = { version = "0.1", features = [
     "client",
     "client-legacy",
@@ -144,12 +144,12 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 
-# --- TLS / mTLS (project 10 — API gateway, src/tls.rs) ---
-# The gateway terminates TLS from clients and can present a client cert to upstreams
-# (mutual TLS). `rustls` builds the Server/Client configs, `tokio-rustls` wraps a
-# TcpStream in a TLS session (the acceptor), and `rustls-pemfile` parses PEM cert/key
-# files. Pinned to the `ring` provider (not the default aws-lc-rs) so the workspace
-# builds with no C toolchain — matching reqwest's `rustls-tls` above.
+# --- TLS / mTLS ---
+# `rustls` builds the Server/Client configs, `tokio-rustls` wraps a TcpStream in a TLS
+# session (the acceptor), and `rustls-pemfile` parses PEM cert/key files. Pinned to the
+# `ring` provider (not the default aws-lc-rs) so the workspace builds with no C
+# toolchain — matching reqwest's `rustls-tls` above. (Project 10 was the original
+# consumer; it is Python now and terminates TLS via the stdlib `ssl` module.)
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "std",
