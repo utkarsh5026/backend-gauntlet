@@ -244,7 +244,7 @@ decide: drop analytics? block? shed load? That's **backpressure**.
 | `javascript:alert(1)` URLs | Validate scheme allowlist (`https` only) |
 | Shortener used to scan internal networks | Block private IPs / SSRF |
 | Stolen API keys in logs | Never log secrets; compare keys in constant time |
-| SQL injection | Use parameterized queries (`sqlx::query!`, not string concat) |
+| SQL injection | Use parameterized queries (bound `$1` placeholders, not string concat) |
 | Abuse / spam | Rate limit link creation per API key |
 
 Redirects stay **public** (no API key) — that's the point. Writes and stats are protected.

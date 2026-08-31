@@ -4,19 +4,19 @@
 # task logic (colors, emojis, readable output). Run from this directory:
 #
 #   make           # help
-#   make dev       # deps + migrate + run
+#   make dev       # sync + deps + migrate + run
 #   make demo      # deps + migrate + serve, then open the browser dashboard
-#   make verify    # fmt-check + clippy + check + test
+#   make verify    # fmt-check + lint + types + test
 #
-# Requires: python3, docker, cargo, and (for migrate) sqlx-cli.
+# Requires: python3, uv, docker, and (for the bench harness) node.
 
 PY := python3
 RUNNER := $(PY) $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/makefile.py)
 
 # Every known task. Keep in sync with the @task registry in makefile.py.
-TASKS := help setup install-tools deps up down ps logs wait-db migrate reset-db \
-         check clippy fmt fmt-check test verify clean run dev demo smoke \
-         bench bench-seed bench-smoke bench-load md
+TASKS := help setup sync deps up down ps logs wait-db migrate reset-db \
+         wait-redis check lint fmt fmt-check types test verify clean \
+         run dev demo smoke bench bench-seed bench-smoke bench-load profile md
 
 .DEFAULT_GOAL := help
 .PHONY: $(TASKS)

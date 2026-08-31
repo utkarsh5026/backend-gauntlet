@@ -165,19 +165,28 @@ make run                       # 8 projects are Python; see the Roadmap above
 make verify                    # fmt-check → lint → types → test (the CI gate)
 ```
 
-The Rust half is separate — for a Rust project:
+Project 01 is Python too:
 
 ```bash
 cd projects/01-url-shortener
+make deps            # postgres + redis
+cp .env.example .env
+make migrate
+make run             # or `make demo` for the browser dashboard
+```
+
+The Rust half is separate — for a Rust project:
+
+```bash
+cd projects/04-job-queue
 docker compose up -d
 cp .env.example .env
 sqlx migrate run
-cargo run -p url-shortener
+cargo run -p job-queue
 ```
 
 ```bash
 cargo check --workspace
-cargo test -p url-shortener
 make status          # progress dashboard
 make hooks           # once: block commit/push if rustfmt (CI) would fail
 make preflight       # optional manual: cargo fmt --check
