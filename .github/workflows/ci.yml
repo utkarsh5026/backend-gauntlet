@@ -132,9 +132,23 @@ jobs:
         # Rust side builds against Cargo.lock. A stale lock fails here.
         run: uv sync --all-packages --frozen
       - name: shared packages
+        # The `common-*` helpers are fully implemented and reused by every
+        # project, so a break here breaks everything downstream — they get the
+        # same gate a project does. pytest only where a package ships tests.
         run: |
+          set -euo pipefail
           uv run ruff format --check packages
           uv run ruff check packages
+          for pkg in packages/*/pyproject.toml; do
+            dir=$(dirname "$pkg")
+            echo "::group::$dir"
+            (
+              cd "$dir"
+              uv run pyright
+              if [ -d tests ]; then uv run pytest -q; fi
+            )
+            echo "::endgroup::"
+          done
       - name: bootstrap script
         # bootstrap.py is what a new contributor runs before anything else works,
         # so it is held to the same bar as the projects it sets up.

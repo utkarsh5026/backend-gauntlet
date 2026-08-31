@@ -13,6 +13,7 @@
 
 [tool.uv.workspace]
 members = [
+    "packages/common-aws",
     "packages/common-telemetry",
     "packages/common-config",
     "projects/01-url-shortener",
