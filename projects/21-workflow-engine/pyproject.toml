@@ -53,7 +53,7 @@ dev = [
     # grpcio and asyncpg both ship no type information of their own; these are
     # the community stubs that keep pyright strict honest at the call sites.
     "grpc-stubs>=1.53",
-    "types-protobuf>=5.28",
+    "types-protobuf>=7.35.1.20260827",
     "asyncpg-stubs>=0.30",
     # The profiling gate in the Definition of done.
     "py-spy>=0.4",
