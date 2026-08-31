@@ -16,7 +16,7 @@ dependencies = [
     # The directory (admin-panel roster) persists people/groups/memberships in
     # Postgres. Playground scaffolding — NOT part of the store-free pub/sub core
     # (V1-V4); gated behind an optional DATABASE_URL. See directory.py.
-    "sqlalchemy[asyncio]>=2.0",
+    "sqlalchemy[asyncio]>=2.0.52",
     "asyncpg>=0.30",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
