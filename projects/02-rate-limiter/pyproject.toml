@@ -46,7 +46,7 @@ dev = [
     "mypy-protobuf>=3.6",
     # grpcio itself ships no type information; these are the community stubs.
     "grpc-stubs>=1.53",
-    "types-protobuf>=5.28",
+    "types-protobuf>=7.35.1.20260827",
     # The profiling gate in the Definition of done.
     "py-spy>=0.4",
     "memray>=1.14",
