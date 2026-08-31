@@ -40,7 +40,6 @@ PROJECTS: list[tuple[str, str]] = [
     ("global-conferencing", "projects/17-global-conferencing"),
     ("ledger-payments-core", "projects/18-ledger-payments-core"),
     ("bittorrent", "projects/19-bittorrent"),
-    ("workflow-engine", "projects/21-workflow-engine"),
     ("lsm-redis", "projects/22-lsm-redis"),
 ]
 

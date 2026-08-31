@@ -6,9 +6,9 @@
 > knowledge assumed (docs [00](00-event-sourcing-history-log.md)–[03](03-task-dispatch-and-leases.md) first).
 >
 > **Prepares you for:** [SPEC](../SPEC.md) **V5 — Sticky workflow-state cache**,
-> built in [sticky.rs](../src/sticky.rs) (`StickyCache`: `lookup`, `pin`, `evict`)
-> and woven into [dispatch.rs](../src/dispatch.rs)'s poll/complete paths via
-> [`load_history_after`](../src/history.rs).
+> built in [sticky.py](../src/workflow_engine/sticky.py) (`StickyCache`: `lookup`, `pin`, `evict`)
+> and woven into [dispatch.py](../src/workflow_engine/dispatch.py)'s poll/complete paths via
+> [`load_history_after`](../src/workflow_engine/history.py).
 
 ---
 
@@ -69,8 +69,8 @@ result        same state, same commands           same state, same commands  ←
 ```
 
 The engine-side piece is small and deliberately humble: a routing table.
-[`StickyCache`](../src/sticky.rs) maps `RunId → StickyPin { worker_identity,
-last_event_id, expires_at }`, guarded by a plain `Mutex<HashMap>` — **process-local,
+[`StickyCache`](../src/workflow_engine/sticky.py) maps `RunId → StickyPin { worker_identity,
+last_event_id, expires_at }`, held in a plain dict — **process-local,
 in memory, not in Postgres.** That location is a design statement, not laziness:
 losing the whole table on an engine restart costs full replays, never correctness.
 The moment the table lives in the database it starts smelling like truth, and
@@ -79,7 +79,7 @@ someone will eventually treat it as such.
 Temporal works exactly this way (workers advertise per-instance sticky queues; the
 server routes-with-fallback); the wire flag already exists in
 [workflow.proto](../proto/workflow.proto) as `sticky_cache_hit`, and
-[`WorkflowTask`](../src/model.rs) carries it to your worker.
+[`WorkflowTask`](../src/workflow_engine/model.py) carries it to your worker.
 
 ### What a hit is worth
 
@@ -182,22 +182,22 @@ The hit ratio is just the reward.
 ## 5. The design space you'll navigate (not the answers)
 
 - **Where does "sticky routing" actually happen?** The scaffold's shape (see
-  `poll_workflow_task`'s TODO in [dispatch.rs](../src/dispatch.rs)) checks the pin
+  `poll_workflow_task`'s TODO in [dispatch.py](../src/workflow_engine/dispatch.py)) checks the pin
   at *poll* time — think through what that means for which worker's poll can claim a
   pinned run's task, and what happens in the window where the pin is live but `w1`
   hasn't polled yet.
 - **Expiry mechanics.** Lazy eviction on `lookup` vs a background sweep — for a
-  `Mutex<HashMap>`, which one is worth its complexity? What does `lookup` do when it
+  a plain dict, which one is worth its complexity? What does `lookup` do when it
   finds a corpse?
 - **When exactly to `pin`, refresh, and `evict`.** Completion pins; what about a
   terminal workflow? A non-determinism rejection? The lease lapsing in V4?
   Enumerate the lifecycle transitions and decide each one deliberately.
 - **Measuring it.** The Done-when demands the hit ratio be *measurable* — the
-  metrics scaffolding ([metrics.rs](../src/metrics.rs), `REPLAYS_TOTAL` with a
+  metrics scaffolding ([metrics.py](../src/workflow_engine/metrics.py), `REPLAYS_TOTAL` with a
   sticky label) is there; deciding what counts as a hit/miss at the instrumentation
   point is yours.
 
-**Hard stop.** The three `todo!()`s in [sticky.rs](../src/sticky.rs) are small; the
+**Hard stop.** The three `NotImplementedError`s in [sticky.py](../src/workflow_engine/sticky.py) are small; the
 real build is threading hit/miss through `poll_workflow_task` and
 `complete_workflow_task` without breaking V4's transactionality. `/hint` and
 `/quest` from here.
@@ -218,10 +218,10 @@ real build is threading hit/miss through `poll_workflow_task` and
 
 ## Where you'll build this
 
-**Module:** [src/sticky.rs](../src/sticky.rs) — `lookup`, `pin`, `evict` (pure
+**Module:** [src/workflow_engine/sticky.py](../src/workflow_engine/sticky.py) — `lookup`, `pin`, `evict` (pure
 in-memory, no DB needed for its tests) — plus the sticky-aware branches of
-[dispatch.rs](../src/dispatch.rs)'s `poll_workflow_task` / `complete_workflow_task`,
-fed by [`load_history_after`](../src/history.rs).
+[dispatch.py](../src/workflow_engine/dispatch.py)'s `poll_workflow_task` / `complete_workflow_task`,
+fed by [`load_history_after`](../src/workflow_engine/history.py).
 
 **This doc unlocks V5's Done-when criteria:** next task routes to the same worker
 with only the delta · silent worker loses the pin and falls back to full replay ·
