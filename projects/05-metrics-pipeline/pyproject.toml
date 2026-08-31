@@ -14,7 +14,7 @@ dependencies = [
     "nats-py>=2.9",
     # The column store the rollups land in. ClickHouse's own client; its async
     # surface runs the sync driver in a thread executor — see sink.py.
-    "clickhouse-connect[async]>=1.7",
+    "clickhouse-connect[async]>=1.7.2",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "prometheus-client>=0.21",
