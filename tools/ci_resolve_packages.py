@@ -27,7 +27,6 @@ from pathlib import Path
 # that no longer exists. The Python side is scoped by the `python` paths-filter
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
-    ("realtime-pubsub", "projects/03-realtime-pubsub"),
     ("job-queue", "projects/04-job-queue"),
     ("metrics-pipeline", "projects/05-metrics-pipeline"),
     ("object-store", "projects/06-object-store"),

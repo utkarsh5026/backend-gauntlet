@@ -7,18 +7,18 @@
 #   make dev       # full stack: Redis + server + web playground (mprocs)
 #   make frontend  # Vite playground only (:5173)
 #   make run       # single-node server (V1–V3; no Redis needed)
-#   make verify    # fmt-check + clippy + check + test
+#   make verify    # fmt-check + lint + types + test
 #
-# Requires: python3, docker, cargo, mprocs (for make dev), bun (for web/).
+# Requires: python3, uv, docker, mprocs (for make dev), bun (for web/).
 
 PY := python3
 RUNNER := $(PY) $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/makefile.py)
 
 # Every known task. Keep in sync with the @task registry in makefile.py.
-TASKS := help setup web-install up deps down ps logs wait-redis \
+TASKS := help setup sync web-install up deps db down ps logs wait-redis \
          obs-up obs-down \
-         check clippy fmt fmt-check test verify clean \
-         run dev frontend smoke md
+         check lint fmt fmt-check types test verify clean \
+         run dev frontend ws smoke profile md
 
 .DEFAULT_GOAL := help
 .PHONY: $(TASKS)

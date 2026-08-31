@@ -4,7 +4,6 @@ members = [
     "crates/common-telemetry",
     "crates/common-config",
     "crates/workspace-hack",
-    "projects/03-realtime-pubsub",
     "projects/04-job-queue",
     "projects/06-object-store",
     "projects/09-raft-kv",
