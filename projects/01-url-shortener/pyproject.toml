@@ -1,0 +1,79 @@
+[project]
+name = "url-shortener"
+version = "0.1.0"
+description = "A read-heavy URL shortener: coordination-free ids, a stampede-proof cache, and async click ingestion (project 01)."
+requires-python = ">=3.13"
+dependencies = [
+    "common-config",
+    "common-telemetry",
+    # The HTTP surface. `uvicorn[standard]` is what brings uvloop + httptools,
+    # which is why `loop="auto"` in main.py picks uvloop rather than asyncio.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # Postgres. Raw asyncpg rather than SQLAlchemy on purpose: two of this
+    # SPEC's proofs are *statement counts* (V2 "Postgres sees <=1 rebuild query",
+    # V3 "batching verifiable by counting statements"). Raw SQL keeps the number
+    # of round-trips something you can read off the page instead of inferring
+    # from an ORM's flush behaviour.
+    "asyncpg>=0.30",
+    # V2's cache. `redis.asyncio` is the async client; the connection pool is
+    # multiplexed, so one client object is shared by every handler.
+    "redis>=5.2",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "prometheus-client>=0.21",
+    "structlog>=24.4",
+]
+
+[project.scripts]
+# Same name the Rust binary had, so the Makefile and Dockerfile read the same
+# as every other project in the repo.
+url-shortener = "url_shortener.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    # Drives the app over ASGI, so handlers are tested without binding a socket.
+    "httpx>=0.28",
+    # V1's proof asks for property tests (uniqueness under concurrency,
+    # base62 round-trip).
+    "hypothesis>=6.115",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    # asyncpg ships no type information of its own.
+    "asyncpg-stubs>=0.30",
+    # The profiling gate in the Definition of done.
+    "py-spy>=0.4",
+    "memray>=1.14",
+]
+
+[tool.uv.sources]
+common-config = { workspace = true }
+common-telemetry = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/url_shortener"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

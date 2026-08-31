@@ -37,45 +37,50 @@ blocked-on: ~            # free text, or ~ for none
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. The fan-out hub — *the in-process pub/sub core, from scratch*
-In `src/hub.rs`, build the registry that maps **topic → set of subscribers** and
-broadcasts a message to all of them. This is the thing you'd normally reach for a
-library (`tokio::sync::broadcast`, an actor framework) to get:
+In `src/realtime_pubsub/hub.py`, build the registry that maps **topic → set of
+subscribers** and broadcasts a message to all of them. Python's stdlib has no
+broadcast primitive at all — `asyncio.Queue` is point-to-point, and the first
+consumer to wake takes the item — so this is the thing you'd normally reach for a
+library (an actor framework, `broadcaster`, Redis pub/sub) to get:
 - `subscribe(topic, conn)` / `unsubscribe(topic, conn)` and a `publish(topic, msg)`
   that delivers to every current subscriber and reports how many it reached.
 - `disconnect(conn)` that removes a connection from *every* topic it joined — a
   dropped socket must leave nothing behind (no leaked entries, no empty topics
   growing forever).
 - The whole thing is shared across thousands of concurrent tasks, so think hard
-  about the locking: one big `Mutex` is simple but serialises every publish;
-  per-topic locks or a read-mostly `RwLock` scale better. Above all — **don't hold
-  the lock while you send** to a slow subscriber (that's how one slow client
-  freezes the whole hub).
+  about what "shared" means here. On one event loop a plain `def` that never
+  awaits is already atomic — no lock can be contended if no other task can run —
+  so the interesting question is not which lock, it's **where the await points
+  are**. Above all: **never `await` while fanning out** to a slow subscriber
+  (that's the Python spelling of holding the lock while you send, and it's how
+  one slow client freezes the whole hub).
 
 **Done when ALL true:**
 - [x] `subscribe` / `unsubscribe` / `publish` work, and `publish` reports how many current subscribers it reached.
 - [x] `disconnect(conn)` removes the connection from **every** topic it joined — no leaked entries, no empty topics growing forever.
-- [x] The hub **never holds its lock while sending** to a subscriber, so one slow client can't freeze publishes to everyone else.
+- [x] The fan-out path **never awaits mid-delivery**, so one slow client can't freeze publishes to everyone else.
 - [x] Concurrent subscribe/publish/disconnect from many tasks leaves **no dangling subscriber** and never delivers to a closed socket.
 
-**Proof:** concurrency tests for clean teardown + no-leak, and a test proving a stalled receiver doesn't block delivery to others.
+**Proof:** `tests/test_hub.py` — concurrency tests for clean teardown + no-leak, and a test proving a stalled receiver doesn't block delivery to others.
 
 *Concept to internalize:* publish/subscribe as decoupling (publishers don't know
-subscribers), and why fan-out makes the lock-holding discipline — not the map —
-the hard part.
+subscribers), and why fan-out makes the await discipline — not the map — the
+hard part.
 
 ### V2. Backpressure — *the slow-consumer problem*
 A WebSocket sender can only push bytes as fast as that client's TCP socket
 drains. If a subscriber reads slowly while messages keep arriving, something has
-to give. In `src/backpressure.rs`, give each connection a **bounded outbound
-mailbox** and decide what happens when it fills:
-- Pushing onto a *bounded* queue means a publisher can find it full. Awaiting a
-  full queue (`send().await`) applies real backpressure — but now a single slow
-  client blocks the publisher and, transitively, every other subscriber. That's
+to give. In `src/realtime_pubsub/backpressure.py`, give each connection a
+**bounded outbound mailbox** and decide what happens when it fills:
+- Pushing onto a *bounded* `asyncio.Queue` means a publisher can find it full.
+  `await queue.put(...)` applies real backpressure — but now a single slow client
+  suspends the publisher and, transitively, every other subscriber. That's
   **head-of-line blocking**, and it's usually the wrong default for fan-out.
-- The alternatives are all *lossy or disconnecting*: `try_send` and on overflow
-  **drop the newest**, **drop the oldest**, or **disconnect the slow client**.
-  Each is a real product decision (a chat backlog vs. a live price feed want
-  different answers). Implement the policy switch and make it explicit.
+- The alternatives are all *lossy or disconnecting*: `put_nowait` and, on
+  `QueueFull`, **drop the newest**, **drop the oldest** (`get_nowait()` to evict
+  the front, then put), or **disconnect the slow client**. Each is a real product
+  decision (a chat backlog vs. a live price feed want different answers).
+  Implement the policy switch and make it explicit.
 - Whatever you choose, the invariant is the same: **one slow consumer must not
   grow memory without bound, nor slow down delivery to everyone else.**
 
@@ -85,14 +90,14 @@ mailbox** and decide what happens when it fills:
 - [x] **Invariant under a deliberately stalled reader:** server memory stays bounded **and** delivery to other subscribers is unaffected.
 - [x] Messages shed by the policy are **counted** (a metric) — the loss is observable, never silent.
 
-**Proof:** a test that stalls one reader and asserts the drop counter climbs while memory and other-subscriber delivery stay flat (the V2 payoff in the bench).
+**Proof:** `tests/test_backpressure.py` — a test that stalls one reader and asserts the drop counter climbs while `qsize()` and other-subscriber delivery stay flat (the V2 payoff in the bench).
 
 *Concept to internalize:* bounded queues as the unit of backpressure, head-of-line
 blocking, and "slow consumer" as a first-class failure mode you design *for*, not
 against.
 
 ### V3. Presence — *soft state with a lifecycle*
-In `src/presence.rs`, track who is currently in each topic and surface it. The
+In `src/realtime_pubsub/presence.py`, track who is currently in each topic and surface it. The
 subtlety is that presence is **soft state**: it's only ever an approximation that
 must converge as connections come and go.
 - Maintain a per-topic membership set keyed by connection (and a client-supplied
@@ -101,7 +106,9 @@ must converge as connections come and go.
 - A clean leave is the easy case; a client whose laptop lid closes never sends
   one. Real presence leans on a **heartbeat + TTL**: an entry that isn't refreshed
   within a window is presumed gone and swept. Implement the in-process version;
-  reason about the heartbeat (and wire it if you go for the stretch).
+  reason about the heartbeat (and wire it if you go for the stretch). Stamp
+  liveness with `time.monotonic()`, not `time.time()` — a TTL measured against a
+  wall clock that NTP can step is a TTL that silently stops working.
 - Publish presence changes as their own server messages so rooms see joins/leaves
   live — and think about the thundering-herd cost of doing that in a 10k-member
   room.
@@ -112,7 +119,7 @@ must converge as connections come and go.
 - [ ] Presence changes are published as their own server messages, so rooms see joins/leaves live.
 - [x] An abrupt drop (no clean leave) **still leaves the room** — no ghost members linger.
 
-**Proof:** a test that drops a socket without a clean leave and asserts the member disappears within the TTL; design-doc note on the heartbeat.
+**Proof:** `tests/test_presence.py` — a test that drops a socket without a clean leave and asserts the member disappears within the TTL; design-doc note on the heartbeat.
 
 *Concept to internalize:* presence as eventually-consistent soft state, and why
 "detecting absence" (TTL/heartbeat) is fundamentally harder than detecting a
@@ -121,7 +128,8 @@ clean leave.
 ### V4. Multi-node fan-out — *one logical topic across many processes*
 A single node's hub only knows about *its own* sockets. Run two nodes behind a
 load balancer and a publish on node A never reaches a subscriber on node B. In
-`src/cluster.rs`, bridge the local hub to a **cross-node bus** (Redis pub/sub):
+`src/realtime_pubsub/cluster.py`, bridge the local hub to a **cross-node bus**
+(Redis pub/sub, via `redis.asyncio`):
 - On a local `publish`, also publish the message to a Redis channel for the topic
   so other nodes can deliver it to *their* local subscribers.
 - Run a background task that **subscribes to Redis** and, for each message that
@@ -129,6 +137,9 @@ load balancer and a publish on node A never reaches a subscriber on node B. In
   it must **not** re-publish back to Redis, or you build an infinite echo.
 - Stamp every message with this node's `NODE_ID` so a node can recognise and drop
   its own messages coming back around (loop prevention / de-dup).
+- The receive loop is a long-lived `asyncio.Task`, and a task that raises dies
+  **silently** — nothing prints until someone awaits it. Make a dropped Redis
+  connection reconnect with backoff rather than end the loop.
 - Subscribe to a Redis channel lazily — only for topics this node actually has
   subscribers for — and unsubscribe when the last local subscriber leaves, so a
   node isn't firehosed with traffic for rooms nobody here is in.
@@ -153,7 +164,7 @@ Each item is **done when its criterion is observably true** — same rule as the
 
 ### Protocols
 - [ ] HTTP upgrade to **WebSocket** done correctly (`GET /ws`, 101 Switching
-  Protocols via the axum upgrade extractor).
+  Protocols via the Starlette/FastAPI `WebSocket` route).
 - [ ] A versioned, typed JSON message protocol (`subscribe`/`unsubscribe`/
   `publish` in; `message`/`presence`/`error` out). Reject malformed frames
   with an `error` message, don't drop the connection silently.
@@ -184,8 +195,20 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] Counters: messages published vs. delivered, **messages dropped by the
   backpressure policy** (this number is the whole point of V2), slow-client
   disconnects.
-- [ ] A `tracing` span per connection with a connection id; structured fields on
-  subscribe/publish (topic, fan-out size, delivery latency).
+- [ ] A bound `structlog` logger per connection carrying a connection id;
+  structured fields on subscribe/publish (topic, fan-out size, delivery latency).
+
+### Python craft
+- [ ] **pyright strict passes clean** — every `# pyright: ignore` carries a
+  justifying comment naming what is unknowable and why.
+- [ ] **No blocking call on the event loop** — runs clean under
+  `PYTHONASYNCIODEBUG=1`; any sync I/O is in a thread/process pool deliberately.
+- [ ] **Bounded pool sized on purpose** — the outbox capacity, the DB pool size
+  and the worker count tuned *together*, with the reasoning in the design doc.
+- [ ] **Graceful shutdown** drains in-flight work on SIGTERM via the FastAPI
+  lifespan, and live sockets get a close frame rather than a severed TCP.
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/03-benchmarks.md`, naming the top bottleneck.
 
 ---
 
@@ -201,18 +224,24 @@ Each item is **done when its criterion is observably true** — same rule as the
 ## Definition of done
 The project is **done when ALL true:**
 1. Every vertical + horizontal box above is checked (each with its **Proof** artifact).
-2. A `bench/` load test (e.g. a Rust or `k6`/Tsung client that opens **thousands**
+2. A `bench/` load test (e.g. a `k6` or `websockets`-based client that opens **thousands**
    of concurrent WebSocket subscribers) reporting: fan-out **throughput**
    (messages delivered/sec) and end-to-end **delivery latency** p50/p99 under a
    sustained publish rate; the numbers with **one deliberately slow subscriber**
    present (proving it doesn't drag the others — that's the V2 payoff); and a
    **two-node** run proving a publish on node A reaches a subscriber on node B.
    Numbers in `docs/03-benchmarks.md`.
-3. A short `docs/03-design.md`: your hub locking strategy and why; the backpressure
+3. A **profile**, not just numbers: a `py-spy` flamegraph taken under fan-out
+   load and a `memray` run, both in `docs/03-benchmarks.md`, naming where the
+   time and the allocations actually go. Where CPython can't reach a target
+   above, *that gap is the finding* — record where it topped out and why (GIL
+   contention? GC pauses? per-subscriber serialization? a blocking call on the
+   loop?). Targets are not scaled down to make the graph green.
+4. A short `docs/03-design.md`: your hub concurrency strategy and why; the backpressure
    policy you shipped and the product reasoning; how presence handles abrupt
    disconnects; and the cross-node bus design including how you break echo loops.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p realtime-pubsub` are
-   green; no `todo!()` remains on a checked path.
+5. `make verify` is green (ruff format + ruff lint + pyright strict + pytest);
+   no `raise NotImplementedError` remains on a checked path.
 
 ## Suggested order of attack
 1. Get a socket talking: accept the WS upgrade and echo frames back. Then add the
@@ -230,18 +259,21 @@ The project is **done when ALL true:**
 
 ## Run the dependencies
 ```bash
-docker compose up -d        # redis (only needed for V4 / CLUSTER=true)
-cp .env.example .env        # then fill in values
-cargo run -p realtime-pubsub
+uv sync                     # once, from the repo root or here
+docker compose up -d redis  # only needed for V4 / CLUSTER=true
+cp .env.example .env        # then fill in values (WS_AUTH_TOKEN is required!)
+make run
 
-# in another shell — connect with any WS client, e.g. websocat:
-#   websocat ws://localhost:8080/ws
+# in another shell — `make ws` wraps this, reading the token from .env:
+#   websocat 'ws://localhost:8080/ws?token=YOUR_TOKEN&identity=cli'
 # then send a frame:
 #   {"type":"subscribe","topic":"room1"}
 #   {"type":"publish","topic":"room1","payload":{"hello":"world"}}
 
 # multi-node test (V4): run two with CLUSTER=true on different ports,
 # subscribe on one, publish on the other, watch it arrive.
+#   CLUSTER=true NODE_ID=node-a PORT=8080 make run
+#   CLUSTER=true NODE_ID=node-b PORT=8081 make run
 ```
 
 ## 🔬 From the field

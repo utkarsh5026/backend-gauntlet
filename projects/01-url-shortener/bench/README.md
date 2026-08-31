@@ -1,13 +1,18 @@
 # bench/ — redirect load test
 
 The HTTP load test for the redirect hot path (SPEC *Definition of done #2*).
-For the in-process micro-benchmark of the ID generator, see `../benches/id_gen.rs`
-(`cargo bench`). Different layer, different tool:
+For the in-process micro-benchmark of the ID generator, see `id_gen_bench.py`
+(`make bench`). Different layer, different tool:
 
 | Layer | Tool | Lives in | Measures |
 |-------|------|----------|----------|
-| Micro (pure CPU, ns) | criterion | `../benches/` | ID-gen throughput, base62 cost |
+| Micro (pure CPU) | `id_gen_bench.py` | `./` (here) | ID-gen throughput, base62 cost |
 | Macro (whole service, under load) | k6 | `./` (here) | redirect req/s + latency tail |
+
+The micro-bench prints each rate against the generator's **theoretical ceiling**
+(4,096 ids/ms — a property of the bit layout, not of the language). The distance
+between that ceiling and what CPython reaches is the interpreter overhead, and
+naming it is part of the Definition of done.
 
 The orchestration scripts are **Node.js** (zero deps — `node bench/<file>.js`).
 `redirect.js` is the exception: it's executed by *k6*, not Node, so it uses k6's
@@ -30,9 +35,9 @@ own module system.
 ## Quick start
 
 ```bash
-# 0. stack up + server running (release build — debug numbers are meaningless)
-docker compose up -d
-cargo run --release -p url-shortener        # in another terminal
+# 0. stack up + server running (`make run`, NOT --reload — reload numbers lie)
+make deps
+make run                                    # in another terminal
 
 # 1. prove the redirect contract with just Node (no k6 needed yet)
 node bench/smoke.js
