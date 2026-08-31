@@ -3,7 +3,7 @@
 > Teaches how to fail *well*: retry with growing, randomized delays, and give up into
 > a parking lot instead of looping forever. No prior knowledge assumed.
 >
-> Prepares you for **V3** in [`src/retry.rs`](../src/retry.rs)
+> Prepares you for **V3** in [`src/job_queue/retry.py`](../src/job_queue/retry.py)
 > (`RetryPolicy::backoff`, `nack`). Concept overview:
 > [`00-how-job-queues-work.md`](./00-how-job-queues-work.md) §9.
 > This doc goes deeper on the two failure modes and the formula you'll implement.
@@ -21,8 +21,8 @@ becoming an infinite outage.**
 ## The problem before the solution
 
 Jobs fail — a downstream API blips, a payload is malformed. The worker's failure path
-is already wired: [`process_one`](../src/worker.rs) catches the `Err` and calls
-[`nack`](../src/retry.rs). The *policy* inside `nack` is everything. Two distinct
+is already wired: [`process_one`](../src/job_queue/worker.py) catches the `Err` and calls
+[`nack`](../src/job_queue/retry.py). The *policy* inside `nack` is everything. Two distinct
 failure modes will hurt you, and they pull in the same direction:
 
 ### Failure mode 1 — the poison message
@@ -74,7 +74,7 @@ delay = min( cap,  base × 2^(attempt-1) )  ×  random_jitter
 | `× random_jitter` | scatters the herd across time | even exponential clusters — everyone retries at the same instants |
 
 Worked example with the scaffold defaults (`base_delay = 1s`, `max_delay = 300s` from
-[`RetryPolicy::default`](../src/retry.rs)) — the *nominal* curve before jitter:
+[`RetryPolicy::default`](../src/job_queue/retry.py)) — the *nominal* curve before jitter:
 
 | attempt | `base × 2^(a-1)` | after cap (300s) |
 |--------:|------------------|------------------|
@@ -155,10 +155,10 @@ and note it in [`04-design.md`](./04-design.md).
 
 | Piece | Location |
 |---|---|
-| the backoff curve | [`RetryPolicy::backoff`](../src/retry.rs) `todo!("V3: exponential backoff…")` |
-| retry-or-dead-letter decision | [`nack`](../src/retry.rs) `todo!("V3: retry-with-backoff or dead-letter…")` |
-| DLQ inspect + requeue surface | your addition to [`src/routes.rs`](../src/routes.rs) |
-| backoff property tests (`proptest`) | `tests` module in [`src/retry.rs`](../src/retry.rs) |
+| the backoff curve | [`RetryPolicy::backoff`](../src/job_queue/retry.py) `todo!("V3: exponential backoff…")` |
+| retry-or-dead-letter decision | [`nack`](../src/job_queue/retry.py) `todo!("V3: retry-with-backoff or dead-letter…")` |
+| DLQ inspect + requeue surface | your addition to [`src/job_queue/routes.py`](../src/job_queue/routes.py) |
+| backoff property tests (`proptest`) | `tests` module in [`src/job_queue/retry.py`](../src/job_queue/retry.py) |
 
 **This doc unlocks (V3 "Done when ALL true"):** on failure, bump `attempts`/record
 `last_error`/reschedule with backoff when attempts remain; backoff is exponential +

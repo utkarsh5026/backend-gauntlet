@@ -2,9 +2,12 @@
 # from ./Dockerfile) — a container-parity stack. Migrations are still a
 # separate, explicit step (see `make migrate`): a fresh Postgres volume has
 # no tables yet, so the app will fail its healthcheck and restart-loop until
-# `sqlx migrate run` has been applied once. For the fast edit/compile loop
-# while implementing the `todo!()`s, prefer `make dev` (host `cargo run`) —
-# `docker compose up job-queue --build` is for checking the real deploy shape.
+# migrations have been applied once. For the fast edit loop prefer `make dev`
+# (host `uv run`) — `make dev-container` is for checking the real deploy shape,
+# which is the only place uvloop and PID-1 signal handling are exercised.
+#
+# Host ports are project-scoped (postgres 5404, pgweb 8004); container-internal
+# ports stay canonical, so service-to-service URLs and healthchecks are untouched.
 services:
   postgres:
     image: postgres:16-alpine

@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — The atomic claim: `FOR UPDATE SKIP LOCKED` *(V1 · `src/queue.rs`)*
+## 🧠 Card 1 — The atomic claim: `FOR UPDATE SKIP LOCKED` *(V1 · `src/job_queue/queue.py`)*
 
 **The problem.** Two workers both run `SELECT id FROM jobs WHERE state='ready' LIMIT 1`, both get row 42, both `UPDATE` it and both run the job. Sending the same email twice, charging the same card twice. The read and the write were individually correct; the *gap between them* is the bug. This is the database flavor of the same TOCTOU race from project 02.
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — Leases, at-least-once, and the idempotency bill *(V2 · `src/lease.rs`)*
+## 🧠 Card 2 — Leases, at-least-once, and the idempotency bill *(V2 · `src/job_queue/lease.py`)*
 
 **The problem.** A worker claims a job and gets OOM-killed halfway. The row says `running`. No worker will touch it; it isn't done; it isn't retryable. It's stuck — forever, silently. Any distributed queue where a claim is permanent ownership loses jobs to every crash.
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🧠 Card 3 — Retries, backoff + jitter, and the DLQ *(V3 · `src/retry.rs`)*
+## 🧠 Card 3 — Retries, backoff + jitter, and the DLQ *(V3 · `src/job_queue/retry.py`)*
 
 **The problem.** Jobs fail. Retry immediately, forever, and one job whose payload always crashes the handler — a **poison message** — occupies your workers in an infinite hot loop. Retry on a fixed interval and every job that failed together (say, when a downstream API blipped) retries *together*, re-creating the spike that broke things — a self-inflicted thundering herd. Even exponential backoff without jitter synchronizes: everyone comes back at exactly t+2, t+4, t+8.
 
@@ -73,7 +73,7 @@
 
 ---
 
-## 🧠 Card 4 — Wakeups without busy-polling: LISTEN/NOTIFY *(V4 · `src/scheduler.rs`)*
+## 🧠 Card 4 — Wakeups without busy-polling: LISTEN/NOTIFY *(V4 · `src/job_queue/scheduler.py`)*
 
 **The problem.** A worker discovers new jobs by polling. Poll every 50 ms and an idle system hammers Postgres with empty SELECTs all night. Poll every 5 s and every job eats up to 5 s of pointless latency. The knob only *moves* the pain between load and latency — no setting removes it.
 

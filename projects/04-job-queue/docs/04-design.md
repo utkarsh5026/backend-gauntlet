@@ -14,7 +14,7 @@
 ## V1 — The claim query and its index
 
 **Context.** N workers (across processes) claim from one `jobs` table without ever
-running a row twice. Implemented in `src/queue.rs::claim`.
+running a row twice. Implemented in `src/job_queue/queue.py::claim`.
 
 **The claim statement.** One atomic `UPDATE` (select + claim in a single statement —
 no read-then-write race, so two workers can never both see the same row as `ready`):
@@ -43,7 +43,7 @@ partition the backlog instead of serialising on it. The outer `UPDATE` flips the
 rows to `running` and stamps the lease in the *same* statement/transaction, so the
 lock is only ever held for the microseconds of the stamp — see the last note below.
 
-- **Batch size** (`CLAIM_BATCH`): **10** (default, `main.rs`). One round-trip amortises
+- **Batch size** (`CLAIM_BATCH`): **10** (default, `main.py`). One round-trip amortises
   the claim's network + planning cost across 10 jobs instead of paying it per job.
   Not *bigger* because a batch is claimed under one lease by one worker and worked
   **serially** — an over-large batch parks jobs behind that worker's queue (raising
@@ -96,9 +96,9 @@ the *duration of the work* comes from the application-level **lease** (`state='r
 ## V2 — Lease length + the at-least-once / idempotency story
 
 **Context.** Each claim is a lease (`locked_until = now() + visibility`). A crashed
-worker's job is reclaimed by the reaper (`src/lease.rs::reap_expired`).
+worker's job is reclaimed by the reaper (`src/job_queue/lease.py::reap_expired`).
 
-**Lease length** (`VISIBILITY_TIMEOUT_SECS`): **30s** (default, `main.rs`).
+**Lease length** (`VISIBILITY_TIMEOUT_SECS`): **30s** (default, `main.py`).
 
 | Too short | Too long |
 |---|---|
@@ -108,7 +108,7 @@ worker's job is reclaimed by the reaper (`src/lease.rs::reap_expired`).
   handler runtime (not the average) so live jobs are never reaped, yet stay short
   enough that crash recovery is ~tens of seconds. It's an env knob: a deployment with
   genuinely long handlers raises it (or uses the heartbeat, below). Concrete invariant
-  in the code: `DEFAULT_EXEC_TIMEOUT` = **20s** (`handlers.rs`) is deliberately **< 30s
+  in the code: `DEFAULT_EXEC_TIMEOUT` = **20s** (`handlers.py`) is deliberately **< 30s
   lease**, so an `exec`/`shell` job is killed by its *own* timeout before its lease can
   expire — the reaper can never double-dispatch a still-running child process.
 - **Reaper interval** (`REAPER_INTERVAL_SECS`): **10s** (default). Kept well below the
@@ -127,7 +127,7 @@ worker's job is reclaimed by the reaper (`src/lease.rs::reap_expired`).
   that take the worker down with them. Closing this needs a separate "delivery count"
   (bump on claim, dead-letter past a ceiling independent of `attempts`) — noted, not
   built.
-- **Heartbeat (stretch)?** `extend_lease(pool, id, worker_id, by)` exists in `lease.rs`
+- **Heartbeat (stretch)?** `extend_lease(pool, id, worker_id, by)` exists in `lease.py`
   (owner-guarded, tested) so a slow-but-alive worker *can* push its own `locked_until`
   out — but it is **not yet wired into the worker loop** (`process_one` never calls it).
   So today a job longer than the lease relies on raising `VISIBILITY_TIMEOUT_SECS`; the
@@ -162,9 +162,9 @@ the handler's contract**, not something the broker can provide.
 ## V3 — Retry backoff curve + DLQ policy
 
 **Context.** Failed jobs retry with backoff up to `max_attempts`, then dead-letter.
-`src/retry.rs::backoff` + `nack`.
+`src/job_queue/retry.py::backoff` + `nack`.
 
-**The formula, as built** (`RetryPolicy::backoff`, `src/retry.rs:40`):
+**The formula, as built** (`RetryPolicy::backoff`, `src/job_queue/retry.py:40`):
 
 ```
 term = base_delay × 2^(attempt-1)                 # saturating; base_delay = 1s
@@ -212,14 +212,14 @@ required by the SPEC.
 **DLQ policy.**
 - **Representation:** terminal `state = 'dead'` in the same `jobs` table (no separate
   table). Set by `nack` when `attempts >= max_attempts`; the `state` enum lives in
-  `migrations/0001_init.sql` + `job.rs::JobState`. *Why:* one table keeps the claim,
+  `migrations/0001_init.sql` + `job.py`'s `JobState`. *Why:* one table keeps the claim,
   lease, retry, and DLQ transitions as single-row `UPDATE`s — no cross-table move, and
   a dead row is still visible to the same `GET /jobs/{id}` path.
 - **Error classification:** **none yet** — `nack` retries *every* failure uniformly
   until the budget is spent, so a permanent error (bad payload) burns all attempts
   before dead-lettering. Known simplification; the transient-vs-permanent split is still
   an open decision (see `03-retries-backoff-dlq.md` §"Classify errors").
-- **Inspect + requeue surface: OPEN / not yet built.** `routes.rs` exposes only
+- **Inspect + requeue surface: OPEN / not yet built.** `routes.py` exposes only
   `POST /jobs` and `GET /jobs/{id}` — there is no list-dead / requeue endpoint. The V3
   "DLQ is inspectable and requeueable" box **stays unchecked** until this exists.
 
@@ -237,7 +237,7 @@ required by the SPEC.
 ## V4 — LISTEN/NOTIFY design (and why the poll survives)
 
 **Context.** Replace the idle-worker poll-sleep with an event wakeup, keeping the
-durable poll as source of truth. `src/scheduler.rs::wait_for_work` + `notify_ready`.
+durable poll as source of truth. `src/job_queue/scheduler.py::wait_for_work` + `notify_ready`.
 
 - **Channel naming** (one place both listen & notify agree): `__________`
 - **Who NOTIFYs:** enqueue? retry-coming-due? delay-coming-due? `__________`

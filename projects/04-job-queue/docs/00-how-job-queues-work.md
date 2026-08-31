@@ -5,10 +5,10 @@
 > them — before you fill in a single `todo!()`.
 >
 > Anchored to the real scaffold: [`migrations/0001_init.sql`](../migrations/0001_init.sql),
-> [`src/job.rs`](../src/job.rs), [`src/queue.rs`](../src/queue.rs),
-> [`src/lease.rs`](../src/lease.rs), [`src/retry.rs`](../src/retry.rs),
-> [`src/scheduler.rs`](../src/scheduler.rs), [`src/worker.rs`](../src/worker.rs),
-> [`src/routes.rs`](../src/routes.rs). Read this first, then [`SPEC.md`](../SPEC.md).
+> [`src/job_queue/job.py`](../src/job_queue/job.py), [`src/job_queue/queue.py`](../src/job_queue/queue.py),
+> [`src/job_queue/lease.py`](../src/job_queue/lease.py), [`src/job_queue/retry.py`](../src/job_queue/retry.py),
+> [`src/job_queue/scheduler.py`](../src/job_queue/scheduler.py), [`src/job_queue/worker.py`](../src/job_queue/worker.py),
+> [`src/job_queue/routes.py`](../src/job_queue/routes.py). Read this first, then [`SPEC.md`](../SPEC.md).
 >
 > This teaches the *concepts* and how the existing wiring fits together. It does
 > **not** hand you the `todo!()` bodies — those are the point of the project.
@@ -93,15 +93,15 @@ Three parts, and it helps to hold them apart in your head:
 ```
 
 - **Producer** — anything that calls `POST /jobs`. In this repo that's the HTTP API in
-  [`src/routes.rs`](../src/routes.rs) → [`Queue::enqueue`](../src/queue.rs). It just
+  [`src/job_queue/routes.py`](../src/job_queue/routes.py) → [`Queue::enqueue`](../src/job_queue/queue.py). It just
   writes a row and returns.
 - **The table** — one Postgres table, `jobs`. It is the *only* shared state. Because
   it's Postgres, it's **durable**: if every worker process dies and restarts, the jobs
   are still there. (That durability is the headline difference between this project and
   project 03's in-memory pub/sub hub.)
 - **Consumers** — a pool of **workers**. In this project they're async tasks spawned in
-  [`main.rs`](../src/main.rs) (`WORKER_CONCURRENCY` of them), each running the loop in
-  [`src/worker.rs`](../src/worker.rs). Crucially, you can also run *multiple processes*
+  [`main.py`](../src/job_queue/main.py) (`WORKER_CONCURRENCY` of them), each running the loop in
+  [`src/job_queue/worker.py`](../src/job_queue/worker.py). Crucially, you can also run *multiple processes*
   of `job-queue` against the **same** database — that's "distributed."
 
 The producer and consumers never talk to each other directly. They only ever talk to
@@ -129,15 +129,15 @@ system. Here's every column and *why it exists* (which vertical needs it):
 | `locked_at` / `locked_until` / `locked_by` | `TIMESTAMPTZ` / `TEXT` | The **lease**: who holds this job and until when | V2 |
 | `created_at` / `updated_at` | `TIMESTAMPTZ` | bookkeeping | — |
 
-The same shape shows up in Rust as [`struct Job`](../src/job.rs) (what `claim` hands a
-worker) and [`struct NewJob`](../src/job.rs) (what a producer supplies to `enqueue`).
+The same shape shows up in Rust as [`struct Job`](../src/job_queue/job.py) (what `claim` hands a
+worker) and [`struct NewJob`](../src/job_queue/job.py) (what a producer supplies to `enqueue`).
 
 Two columns deserve special attention because they carry more weight than they look:
 
 - **`run_at` is the scheduling primitive.** "Run this in 5 minutes," "retry this in 8
   seconds after backoff," and "run this now" are *all* just different values of `run_at`.
   A job is invisible to the claim until its `run_at` has passed. One column, three
-  features. See `delay_secs` in [`NewJob`](../src/job.rs).
+  features. See `delay_secs` in [`NewJob`](../src/job_queue/job.py).
 - **`state` is a state machine, not a label.** The whole project is about which
   transitions are legal and how they happen atomically.
 
@@ -145,7 +145,7 @@ Two columns deserve special attention because they carry more weight than they l
 
 ## 5. The lifecycle: a state machine
 
-[`JobState`](../src/job.rs) has exactly four states. Here's how a job moves through them:
+[`JobState`](../src/job_queue/job.py) has exactly four states. Here's how a job moves through them:
 
 ```
                          enqueue (INSERT)
@@ -224,7 +224,7 @@ to **give up on the locked row and move to a different one**. That's V1.
 
 ## 7. V1 — the atomic claim: `FOR UPDATE SKIP LOCKED`
 
-*(concept for [`Queue::claim`](../src/queue.rs); the SQL shape is sketched in the
+*(concept for [`Queue::claim`](../src/job_queue/queue.py); the SQL shape is sketched in the
 `todo!()` there and in [the migration](../migrations/0001_init.sql) — your job is to
 implement and wire it.)*
 
@@ -254,7 +254,7 @@ Three details the SPEC makes you get right:
    claims one job, runs it, and round-trips again, it spends most of its life waiting on
    network latency instead of doing work. Claim `LIMIT n` (this project: `CLAIM_BATCH`,
    default 10) so one round-trip feeds many jobs. See `claim_batch` in
-   [`WorkerConfig`](../src/worker.rs).
+   [`WorkerConfig`](../src/job_queue/worker.py).
 
 2. **Order and filter correctly.** The claim must respect `run_at <= now()` (don't grab
    jobs scheduled for the future), `queue = $1` (only this lane), and `ORDER BY run_at`
@@ -277,8 +277,8 @@ Three details the SPEC makes you get right:
 
 ## 8. V2 — the lease (visibility timeout) and at-least-once
 
-*(concept for [`lease.rs`](../src/lease.rs) and the lease stamp inside
-[`Queue::claim`](../src/queue.rs).)*
+*(concept for [`lease.py`](../src/job_queue/lease.py) and the lease stamp inside
+[`Queue::claim`](../src/job_queue/queue.py).)*
 
 A claim is **not** "this job is done." It's **"this worker is *allowed to try* for a
 while."** That "for a while" is a **lease** (Amazon SQS calls it a *visibility timeout*).
@@ -308,8 +308,8 @@ While `state='running'`, no other worker can see the job (the claim only looks a
 ```
 
 That reaper is the entire reason a crashed worker doesn't lose its job. In this project
-it's [`reap_expired`](../src/lease.rs), run on a timer by the already-wired
-[`reap_loop`](../src/lease.rs) (every `REAPER_INTERVAL_SECS`). Conceptually it's:
+it's [`reap_expired`](../src/job_queue/lease.py), run on a timer by the already-wired
+[`reap_loop`](../src/job_queue/lease.py) (every `REAPER_INTERVAL_SECS`). Conceptually it's:
 "any `running` job whose `locked_until` is in the past → back to `ready`."
 
 ### The bill you must pay: at-least-once, and idempotency
@@ -336,7 +336,7 @@ same effect as running it once. Two common ways:
 
 Every "exactly-once" product feature you'll ever meet (Kafka EOS included) is
 at-least-once + dedup underneath. The handler discipline never becomes optional. That's
-why in this project the actual work lives in [`handle`](../src/worker.rs) — *your*
+why in this project the actual work lives in [`handle`](../src/job_queue/worker.py) — *your*
 handlers — and making them idempotent is *your* responsibility.
 
 ### The lease-length dial
@@ -348,19 +348,19 @@ handlers — and making them idempotent is *your* responsibility.
 | A slow-but-alive job gets reaped out from under a working worker → runs twice for no reason | A genuinely crashed worker's job sits stuck for a long time before anyone retries it → slow recovery |
 
 The stretch fix for long jobs is a **heartbeat**: a long handler periodically calls
-[`extend_lease`](../src/lease.rs) ("still working, push my deadline out") so it's never
+[`extend_lease`](../src/job_queue/lease.py) ("still working, push my deadline out") so it's never
 reaped while alive.
 
 ---
 
 ## 9. V3 — retries, backoff + jitter, and the dead-letter queue
 
-*(concept for [`retry.rs`](../src/retry.rs) — [`RetryPolicy::backoff`](../src/retry.rs)
-and [`nack`](../src/retry.rs).)*
+*(concept for [`retry.py`](../src/job_queue/retry.py) — [`RetryPolicy::backoff`](../src/job_queue/retry.py)
+and [`nack`](../src/job_queue/retry.py).)*
 
 Jobs fail. The email provider blips; a payload is malformed. The worker's failure path is
-already wired in [`process_one`](../src/worker.rs): on `Err`, it calls
-[`nack`](../src/retry.rs). The *policy* inside `nack` is what keeps one bad job from
+already wired in [`process_one`](../src/job_queue/worker.py): on `Err`, it calls
+[`nack`](../src/job_queue/retry.py). The *policy* inside `nack` is what keeps one bad job from
 sinking the system. Two failure modes to design against:
 
 **Failure mode 1 — the poison message.** A job whose payload *always* crashes the handler.
@@ -396,7 +396,7 @@ Jitter is what actually decorrelates them. (AWS's "Exponential Backoff and Jitte
 is the canonical reference; you'll build this same curve again for webhook delivery in
 project 18.)
 
-The scaffold's [`RetryPolicy`](../src/retry.rs) already holds `base_delay` and
+The scaffold's [`RetryPolicy`](../src/job_queue/retry.py) already holds `base_delay` and
 `max_delay`; the `backoff` function is yours to write (and there's a `proptest` dev-dep
 waiting to property-test that it's monotonic, capped, and actually jittered).
 
@@ -404,11 +404,11 @@ waiting to property-test that it's monotonic, capped, and actually jittered).
 
 ## 10. V4 — waking workers without busy-polling: `LISTEN` / `NOTIFY`
 
-*(concept for [`scheduler.rs`](../src/scheduler.rs) — [`wait_for_work`](../src/scheduler.rs)
-and [`notify_ready`](../src/scheduler.rs).)*
+*(concept for [`scheduler.py`](../src/job_queue/scheduler.py) — [`wait_for_work`](../src/job_queue/scheduler.py)
+and [`notify_ready`](../src/job_queue/scheduler.py).)*
 
 By now the queue *works*. But look at what an **idle** worker does in
-[`worker.rs`](../src/worker.rs): when a claim comes back empty, it
+[`worker.py`](../src/job_queue/worker.py): when a claim comes back empty, it
 `sleep(poll_interval)` and tries again. That fixed sleep is a real dilemma:
 
 ```
@@ -423,11 +423,11 @@ The fix layers a **push signal over the durable pull**:
 
 - When a producer enqueues a job (or a delayed/retried job becomes due), it fires
   Postgres **`NOTIFY`** on the queue's channel — a tiny "hey, there's work" ping.
-  ([`notify_ready`](../src/scheduler.rs); the SPEC also suggests emitting it right from
+  ([`notify_ready`](../src/job_queue/scheduler.py); the SPEC also suggests emitting it right from
   `enqueue`.)
 - An idle worker, instead of sleeping blindly, holds a **`LISTEN`** connection and waits
   on it. The instant a `NOTIFY` arrives, it wakes and claims — **millisecond** pickup —
-  and an idle queue makes **zero** empty queries. ([`wait_for_work`](../src/scheduler.rs),
+  and an idle queue makes **zero** empty queries. ([`wait_for_work`](../src/job_queue/scheduler.py),
   built on sqlx's `PgListener`.)
 
 The result is the best of both: instant pickup *and* a silent idle database.
@@ -440,7 +440,7 @@ that instant, lost across a worker reconnect, and it can't wake a worker for a j
 
 > **The durable poll stays the source of truth; `NOTIFY` is only an optimization.**
 
-That's why [`wait_for_work`](../src/scheduler.rs) waits on the notification **or** a
+That's why [`wait_for_work`](../src/job_queue/scheduler.py) waits on the notification **or** a
 `poll_fallback` timeout, whichever comes first — and re-attempts a claim regardless.
 Miss a notification? The slow poll still catches the job a moment later. If you ever made
 correctness *depend* on the notification arriving, a single dropped ping would strand a
@@ -458,32 +458,32 @@ everywhere: SQS long-polling, Redis `BLPOP`, condition variables over a locked q
 
 Follow a single job all the way through the *real* call path.
 
-**Enqueue** (producer side, [`routes.rs`](../src/routes.rs) → [`queue.rs`](../src/queue.rs)):
+**Enqueue** (producer side, [`routes.py`](../src/job_queue/routes.py) → [`queue.py`](../src/job_queue/queue.py)):
 
 ```
 POST /jobs  {"queue":"emails","kind":"send_welcome","payload":{"user_id":42}}
    │
-   ├─ routes::enqueue extracts NewJob                       (src/routes.rs)
-   ├─ queue.enqueue(new)  →  INSERT ... RETURNING id  (V1)  (src/queue.rs)
+   ├─ routes::enqueue extracts NewJob                       (src/job_queue/routes.py)
+   ├─ queue.enqueue(new)  →  INSERT ... RETURNING id  (V1)  (src/job_queue/queue.py)
    │     row: state='ready', run_at=now(), attempts=0, max_attempts=5
    ├─ (V4) NOTIFY jobs_emails  — wake any idle worker
    └─ 201 Created  {"id": 91}     ← producer is done in ~1ms
 ```
 
-**Drain** (consumer side, [`worker.rs`](../src/worker.rs)):
+**Drain** (consumer side, [`worker.py`](../src/job_queue/worker.py)):
 
 ```
 worker-2's loop:
-   ├─ (V4) wait_for_work("emails") wakes on the NOTIFY          (src/scheduler.rs)
-   ├─ (V1) queue.claim("emails","worker-2", batch=10, 30s)      (src/queue.rs)
+   ├─ (V4) wait_for_work("emails") wakes on the NOTIFY          (src/job_queue/scheduler.py)
+   ├─ (V1) queue.claim("emails","worker-2", batch=10, 30s)      (src/job_queue/queue.py)
    │        FOR UPDATE SKIP LOCKED → job 91 flips to 'running',
    │        locked_by='worker-2', locked_until=now()+30s
-   ├─ process_one(job 91):                                      (src/worker.rs)
-   │     └─ handle(job)  → YOUR send_welcome handler runs       (src/worker.rs)
+   ├─ process_one(job 91):                                      (src/job_queue/worker.py)
+   │     └─ handle(job)  → YOUR send_welcome handler runs       (src/job_queue/worker.py)
    │
    ├── SUCCESS ─▶ (V1) queue.ack(91) → state='done'             ✅ terminal
    │
-   └── FAILURE ─▶ (V3) retry::nack(...):                        (src/retry.rs)
+   └── FAILURE ─▶ (V3) retry::nack(...):                        (src/job_queue/retry.py)
           attempts=1, last_error=<reason>
           ├─ attempts < max_attempts → state='ready',
           │     run_at = now() + backoff(1)   → retried later
@@ -491,7 +491,7 @@ worker-2's loop:
 ```
 
 **Crash variant** (V2): if `worker-2` dies between `claim` and `ack`, job 91 sits
-`running` with `locked_until` in the past. The [`reap_loop`](../src/lease.rs) sweep flips
+`running` with `locked_until` in the past. The [`reap_loop`](../src/job_queue/lease.py) sweep flips
 it back to `ready`, and some *other* worker picks it up — at-least-once in action.
 
 ---
@@ -517,16 +517,16 @@ it back to `ready`, and some *other* worker picks it up — at-least-once in act
 | Subtopic | File / symbol | Vertical |
 |---|---|---|
 | The table, columns, the `state` machine | [`migrations/0001_init.sql`](../migrations/0001_init.sql) | all |
-| Job shapes (`Job`, `NewJob`, `JobState`) | [`src/job.rs`](../src/job.rs) | all |
-| Enqueue + the atomic claim + ack | [`Queue::enqueue` / `claim` / `ack`](../src/queue.rs) | V1 |
+| Job shapes (`Job`, `NewJob`, `JobState`) | [`src/job_queue/job.py`](../src/job_queue/job.py) | all |
+| Enqueue + the atomic claim + ack | [`Queue::enqueue` / `claim` / `ack`](../src/job_queue/queue.py) | V1 |
 | The partial index for the claim | TODO in [`migrations/0001_init.sql`](../migrations/0001_init.sql) | V1 |
-| Lease reaper + heartbeat | [`reap_expired` / `reap_loop` / `extend_lease`](../src/lease.rs) | V2 |
-| Backoff curve + retry/DLQ decision | [`RetryPolicy::backoff` / `nack`](../src/retry.rs) | V3 |
-| Wakeup signal + poll fallback | [`wait_for_work` / `notify_ready`](../src/scheduler.rs) | V4 |
-| The worker lifecycle (claim→run→ack/nack) | [`worker::run` / `process_one` / `handle`](../src/worker.rs) | wiring |
-| Producer/admin HTTP API | [`src/routes.rs`](../src/routes.rs) | protocols |
-| Error → HTTP mapping | [`src/error.rs`](../src/error.rs) | protocols |
-| Wiring: pool, worker pool, graceful shutdown | [`src/main.rs`](../src/main.rs) | wiring |
+| Lease reaper + heartbeat | [`reap_expired` / `reap_loop` / `extend_lease`](../src/job_queue/lease.py) | V2 |
+| Backoff curve + retry/DLQ decision | [`RetryPolicy::backoff` / `nack`](../src/job_queue/retry.py) | V3 |
+| Wakeup signal + poll fallback | [`wait_for_work` / `notify_ready`](../src/job_queue/scheduler.py) | V4 |
+| The worker lifecycle (claim→run→ack/nack) | [`worker::run` / `process_one` / `handle`](../src/job_queue/worker.py) | wiring |
+| Producer/admin HTTP API | [`src/job_queue/routes.py`](../src/job_queue/routes.py) | protocols |
+| Error → HTTP mapping | [`src/job_queue/errors.py`](../src/job_queue/errors.py) | protocols |
+| Wiring: pool, worker pool, graceful shutdown | [`src/job_queue/main.py`](../src/job_queue/main.py) | wiring |
 
 ---
 

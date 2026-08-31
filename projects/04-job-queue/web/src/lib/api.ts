@@ -1,8 +1,8 @@
 // Thin client over the endpoints the job-queue already serves. Everything is a
-// relative path so Vite's dev proxy forwards it to the Rust backend (see
+// relative path so Vite's dev proxy forwards it to the backend (see
 // vite.config.ts) — no CORS, no backend changes.
 
-/** The `jobs` row shape, mirroring `Job` in src/job.rs. */
+/** The `jobs` row shape, mirroring `Job` in src/job_queue/job.py. */
 export interface Job {
   id: number
   queue: string
@@ -17,7 +17,7 @@ export interface Job {
   created_at: string
 }
 
-/** Body for POST /jobs, mirroring `NewJob` in src/job.rs. */
+/** Body for POST /jobs, mirroring `NewJob` in src/job_queue/job.py. */
 export interface NewJob {
   queue: string
   kind: string

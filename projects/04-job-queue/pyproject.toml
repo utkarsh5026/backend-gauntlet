@@ -1,0 +1,75 @@
+[project]
+name = "job-queue"
+version = "0.1.0"
+description = "A distributed job queue on Postgres: a SKIP LOCKED claim engine, leases, backoff + DLQ, and LISTEN/NOTIFY scheduling (project 04)."
+requires-python = ">=3.13"
+dependencies = [
+    "common-config",
+    "common-telemetry",
+    # The producer/admin HTTP surface. `uvicorn[standard]` brings uvloop +
+    # httptools, which is why `loop="auto"` in main.py picks uvloop.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # Postgres is both the durable store AND the broker. Raw asyncpg, not an ORM:
+    # this project's entire V1 lesson *is* the claim statement
+    # (`UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)`), and V4's is
+    # LISTEN/NOTIFY. Both are things you have to be able to read literally to
+    # argue about; an ORM would hide the one line the SPEC grades.
+    "asyncpg>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "prometheus-client>=0.21",
+    "structlog>=24.4",
+    # The `webhook` job kind.
+    "httpx>=0.28",
+]
+
+[project.scripts]
+# Same name the Rust binary had, so the Makefile and Dockerfile read the same
+# as every other project in the repo.
+job-queue = "job_queue.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    # Drives the app over ASGI, so handlers are tested without binding a socket.
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    # asyncpg ships no type information of its own.
+    "asyncpg-stubs>=0.30",
+    # The profiling gate in the Definition of done.
+    "py-spy>=0.4",
+    "memray>=1.14",
+]
+
+[tool.uv.sources]
+common-config = { workspace = true }
+common-telemetry = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/job_queue"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

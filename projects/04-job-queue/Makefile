@@ -5,16 +5,17 @@
 #
 #   make           # help
 #   make dev       # deps + migrate + run
-#   make verify    # fmt-check + clippy + check + test
+#   make verify    # fmt-check + lint + types + test
 #
-# Requires: python3, docker, cargo, and (for migrate) sqlx-cli.
+# Requires: python3, uv, docker.
 
 PY := python3
 RUNNER := $(PY) $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/makefile.py)
 
 # Every known task. Keep in sync with the @task registry in makefile.py.
-TASKS := help setup install-tools deps up down db-ui ps logs wait-db migrate prepare reset-db \
-         check clippy fmt fmt-check test verify clean run dev dev-container smoke md
+TASKS := help setup sync up down ps logs deps wait-db migrate reset-db db-ui \
+         check lint fmt fmt-check types test verify clean \
+         run dev dev-container smoke profile md
 
 .DEFAULT_GOAL := help
 .PHONY: $(TASKS)
