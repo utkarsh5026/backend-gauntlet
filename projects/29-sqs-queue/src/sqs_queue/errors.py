@@ -28,9 +28,9 @@ Three things here are load-bearing:
 
 from __future__ import annotations
 
-import structlog
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from common_aws import AwsError, WireProtocol
+from common_aws import install_error_handlers as install_aws_error_handlers
+from fastapi import FastAPI
 
 __all__ = [
     "AccessDenied",
@@ -51,26 +51,23 @@ __all__ = [
     "ReceiptHandleIsInvalid",
     "RequestThrottled",
     "UnsupportedOperation",
-    "app_error_handler",
     "install_error_handlers",
-    "unhandled_error_handler",
 ]
 
-log = structlog.get_logger(__name__)
 
+class AppError(AwsError):
+    """Base for every error this service turns into a response.
 
-class AppError(Exception):
-    """Base for every error this service turns into a response."""
+    A thin subclass of the shared `AwsError`: the fields, the wire rendering and
+    the safety rules come from `common-aws`. What is SQS's — and the reason this
+    class still exists rather than being an import — is the code the service
+    answers with when something unexpected happens. The real service says
+    `InternalError`; Lambda says `ServiceException`; an SDK's retry policy is
+    keyed on it.
+    """
 
-    status_code: int = 500
-    error_code: str = "InternalError"
-    message: str = "internal service error"
-    retryable: bool = False
-
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or self.message)
-        if message is not None:
-            self.message = message
+    error_code = "InternalError"
+    message = "internal service error"
 
 
 # --- the control plane (V6) -------------------------------------------------
@@ -264,50 +261,24 @@ class AccessDenied(AppError):
     message = "access denied"
 
 
-async def app_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Map an `AppError` to an AWS-shaped error body."""
-    if not isinstance(exc, AppError):  # pragma: no cover - registry invariant
-        raise exc
-
-    message = exc.message
-    if exc.status_code >= 500:
-        # Never hand an instance message to a caller on this path — it may carry
-        # an internal detail, and on this service that could include a queue name
-        # or a receipt handle the caller had no business seeing. The detail goes
-        # to the log; the caller gets the class default, which we authored.
-        log.error("request failed", error=str(exc), kind=type(exc).__name__)
-        message = type(exc).message
-
-    headers = {"x-amzn-errortype": exc.error_code}
-    if exc.retryable:
-        headers["retry-after"] = "1"
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"__type": exc.error_code, "message": message},
-        headers=headers,
-    )
-
-
-async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Anything unexpected becomes a 500 with nothing in it.
-
-    Worth being deliberate about on a queue: the dangerous accident here is not a
-    500, it is a 200. A `SendMessage` that answers success after failing to
-    enqueue has silently dropped a customer's message, and no retry will ever
-    happen because the client was told it worked. When in doubt, fail loudly.
-    """
-    log.error("unhandled exception", error=str(exc), kind=type(exc).__name__)
-    return JSONResponse(
-        status_code=500,
-        content={"__type": AppError.error_code, "message": AppError.message},
-        headers={"x-amzn-errortype": AppError.error_code},
-    )
-
-
 def install_error_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(AppError, app_error_handler)
-    # NOTE: FastAPI only routes to this when `raise_server_exceptions` is off,
-    # i.e. in production behind uvicorn — under the test transport the exception
-    # propagates instead, which is what lets the scaffold tests assert on
-    # `NotImplementedError` directly.
-    app.add_exception_handler(Exception, unhandled_error_handler)
+    """Wire the shared renderer up to this service's protocol and base error.
+
+    Modern SQS speaks **AWS JSON 1.0**: `{"__type": …, "message": …}` with the
+    code repeated in `x-amzn-errortype`. The protocol horizontal's bar is that
+    `boto3` recognises what comes back, and an SDK decides whether to retry by
+    reading that code — so a wrong one is not cosmetic, it is the difference
+    between a client backing off and a client giving up.
+
+    The catch-all the shared installer registers is worth knowing about on a
+    queue: the dangerous accident here is not a 500, it is a **200**. A
+    `SendMessage` that reports success after failing to enqueue has silently
+    eaten a customer's message, and no retry will ever happen because the client
+    was told it worked. When in doubt, fail loudly.
+
+    Note that FastAPI only routes to that handler when `raise_server_exceptions`
+    is off, i.e. in production behind uvicorn. Under the test transport the
+    exception propagates instead, which is what lets the scaffold tests assert on
+    `NotImplementedError` directly.
+    """
+    install_aws_error_handlers(app, protocol=WireProtocol.JSON_1_0, internal_error=AppError)

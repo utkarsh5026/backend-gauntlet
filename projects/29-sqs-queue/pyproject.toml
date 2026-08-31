@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A managed queue service — receipt handles, FIFO groups, dedup and long polling (project 29)."
 requires-python = ">=3.13"
 dependencies = [
+    "common-aws",
     "common-config",
     "common-telemetry",
     "fastapi>=0.115",
@@ -41,6 +42,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+common-aws = { workspace = true }
 common-config = { workspace = true }
 common-telemetry = { workspace = true }
 

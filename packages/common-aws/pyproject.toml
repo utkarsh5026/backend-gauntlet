@@ -1,0 +1,47 @@
+[project]
+name = "common-aws"
+version = "0.1.0"
+description = "The AWS wire envelope — errors, target dispatch, batches, Query protocol, ARNs, cursors (Tier 8)."
+requires-python = ">=3.13"
+dependencies = [
+    "starlette>=0.41",
+    "structlog>=24.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    # The bar for this package is "a real AWS SDK understands what we emit", so
+    # the reference client is a test dependency here exactly as it is in 29.
+    "botocore>=1.35",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/common_aws"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

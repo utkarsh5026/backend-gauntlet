@@ -8,6 +8,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "common-aws",
     "common-config",
     "common-telemetry",
     "distributed-cache",
@@ -347,6 +348,41 @@ wheels = [
 ]
 
 [[package]]
+name = "common-aws"
+version = "0.1.0"
+source = { editable = "packages/common-aws" }
+dependencies = [
+    { name = "starlette" },
+    { name = "structlog" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "botocore" },
+    { name = "httpx" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "starlette", specifier = ">=0.41" },
+    { name = "structlog", specifier = ">=24.4" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "botocore", specifier = ">=1.35" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pyright", specifier = ">=1.1.390" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "ruff", specifier = ">=0.8" },
+]
+
+[[package]]
 name = "common-config"
 version = "0.1.0"
 source = { editable = "packages/common-config" }
@@ -434,6 +470,7 @@ name = "dynamodb-core"
 version = "0.1.0"
 source = { editable = "projects/23-dynamodb-core" }
 dependencies = [
+    { name = "common-aws" },
     { name = "common-config" },
     { name = "common-telemetry" },
     { name = "fastapi" },
@@ -458,6 +495,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "common-aws", editable = "packages/common-aws" },
     { name = "common-config", editable = "packages/common-config" },
     { name = "common-telemetry", editable = "packages/common-telemetry" },
     { name = "fastapi", specifier = ">=0.115" },
@@ -915,6 +953,7 @@ name = "iam-sts"
 version = "0.1.0"
 source = { editable = "projects/25-iam-sts" }
 dependencies = [
+    { name = "common-aws" },
     { name = "common-config" },
     { name = "common-telemetry" },
     { name = "fastapi" },
@@ -941,6 +980,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "common-aws", editable = "packages/common-aws" },
     { name = "common-config", editable = "packages/common-config" },
     { name = "common-telemetry", editable = "packages/common-telemetry" },
     { name = "fastapi", specifier = ">=0.115" },
@@ -1064,6 +1104,7 @@ name = "lambda-compute"
 version = "0.1.0"
 source = { editable = "projects/24-lambda-compute" }
 dependencies = [
+    { name = "common-aws" },
     { name = "common-config" },
     { name = "common-telemetry" },
     { name = "fastapi" },
@@ -1089,6 +1130,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "common-aws", editable = "packages/common-aws" },
     { name = "common-config", editable = "packages/common-config" },
     { name = "common-telemetry", editable = "packages/common-telemetry" },
     { name = "fastapi", specifier = ">=0.115" },
@@ -2095,6 +2137,7 @@ name = "sqs-queue"
 version = "0.1.0"
 source = { editable = "projects/29-sqs-queue" }
 dependencies = [
+    { name = "common-aws" },
     { name = "common-config" },
     { name = "common-telemetry" },
     { name = "fastapi" },
@@ -2121,6 +2164,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "common-aws", editable = "packages/common-aws" },
     { name = "common-config", editable = "packages/common-config" },
     { name = "common-telemetry", editable = "packages/common-telemetry" },
     { name = "fastapi", specifier = ">=0.115" },

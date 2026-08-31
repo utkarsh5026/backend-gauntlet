@@ -14,13 +14,18 @@ Note: the real service returns HTTP 400 for nearly all of these and distinguishe
 them only by the error name in the body. This scaffold uses HTTP-meaningful codes
 instead (409 for a conflict, 429 for a throttle); if you'd rather mirror AWS
 exactly, that's a legitimate change — record whichever you pick in the design doc.
+
+The *envelope* — how an error is spelled on the wire, the `retry-after` header, the
+rule that a 5xx never carries its instance message — is `common-aws`, shared with
+every service in the tier. What stays here is the part that is DynamoDB's: which
+errors exist, what each one means, and what it costs the caller.
 """
 
 from __future__ import annotations
 
-import structlog
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from common_aws import AwsError, WireProtocol
+from common_aws import install_error_handlers as install_aws_error_handlers
+from fastapi import FastAPI
 
 __all__ = [
     "AppError",
@@ -30,25 +35,23 @@ __all__ = [
     "ResourceNotFound",
     "TransactionCanceled",
     "ValidationError",
-    "app_error_handler",
     "install_error_handlers",
 ]
 
-log = structlog.get_logger(__name__)
 
+class AppError(AwsError):
+    """Base for every error this service turns into a response.
 
-class AppError(Exception):
-    """Base for every error this service turns into a response."""
+    A thin subclass of the shared `AwsError`: the fields, the wire rendering and
+    the safety rules come from `common-aws`. What is DynamoDB's — and the reason
+    this class still exists rather than being an import — is the code the service
+    answers with when something unexpected happens. The real service says
+    `InternalServerError`; Lambda says `ServiceException`; a caller's retry logic
+    reads it.
+    """
 
-    status_code: int = 500
-    error_code: str = "InternalServerError"
-    message: str = "internal server error"
-    retryable: bool = False
-
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or self.message)
-        if message is not None:
-            self.message = message
+    error_code = "InternalServerError"
+    message = "internal server error"
 
 
 class ValidationError(AppError):
@@ -104,21 +107,11 @@ class ItemCollectionSizeLimitExceeded(AppError):
     message = "item size exceeds the maximum allowed"
 
 
-async def app_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Map an `AppError` to a DynamoDB-shaped error body."""
-    if not isinstance(exc, AppError):  # pragma: no cover - registry invariant
-        raise exc
-    if exc.status_code >= 500:
-        log.error("request failed", error=str(exc), kind=type(exc).__name__)
-        body = {"__type": AppError.error_code, "message": AppError.message}
-    else:
-        body = {"__type": exc.error_code, "message": exc.message}
-    headers = {"x-amzn-errortype": exc.error_code}
-    if exc.retryable:
-        # Tell the client it may retry, so a correct backoff needs no lookup table.
-        headers["retry-after"] = "1"
-    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
-
-
 def install_error_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(AppError, app_error_handler)
+    """Wire the shared renderer up to this service's protocol and base error.
+
+    DynamoDB speaks **AWS JSON 1.0**: `{"__type": …, "message": …}` with the code
+    repeated in `x-amzn-errortype`, which is what an SDK reads to decide whether
+    to retry.
+    """
+    install_aws_error_handlers(app, protocol=WireProtocol.JSON_1_0, internal_error=AppError)

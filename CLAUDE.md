@@ -106,7 +106,11 @@ Every project's `SPEC.md` grades on two axes — keep this when scaffolding new 
   - **`raise NotImplementedError` is the Python `todo!()`** — it's the worklist,
     not a bug, and `tools/status.py` counts it exactly the same way.
   - `crates/common-*` have Python siblings in **`packages/common-*`** (telemetry,
-    config). Same rule: fully implemented, reused everywhere, don't re-derive.
+    config, aws). Same rule: fully implemented, reused everywhere, don't re-derive.
+    **`common-aws`** owns the Tier 8 wire envelope — `AwsError` + error rendering,
+    `X-Amz-Target` dispatch, the batch partial-failure shape, the Query protocol,
+    ARNs, signed pagination cursors. It stops at the *envelope* on purpose: no
+    SigV4 (that is 25's V1) and no service semantics.
   - Stack: **FastAPI + uvicorn, pydantic v2, httpx, structlog, prometheus-client**;
     tests are **pytest + httpx `ASGITransport`** (not Starlette's `TestClient`);
     **pyright `strict`** and **ruff** must both be clean.
