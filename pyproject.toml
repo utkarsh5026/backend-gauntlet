@@ -24,6 +24,7 @@ members = [
     "projects/07-distributed-cache",
     "projects/08-message-broker",
     "projects/09-raft-kv",
+    "projects/10-api-gateway",
     "projects/20-full-text-search",
     "projects/21-workflow-engine",
     "projects/23-dynamodb-core",

@@ -14,7 +14,7 @@ blocked-on: ~            # free text, or ~ for none
 > TLS, and stay a thin, streaming, memory-bounded hop no matter how big the bodies
 > get. This project builds that gateway from the byte path up — the forwarding core,
 > a routing engine, a load balancer, and circuit breaking — the parts you'd normally
-> reach for `nginx`/`Envoy`/`tower::balance` to do.
+> reach for `nginx`/`Envoy`/`Traefik` to do.
 
 ## What it does (the easy part)
 - Listens on one port and **proxies** every request to an upstream chosen by its
@@ -23,7 +23,7 @@ blocked-on: ~            # free text, or ~ for none
 - `GET /healthz` → the gateway's own liveness (`200 ok`).
 - `GET /metrics` → Prometheus scrape.
 - Routes come from a JSON config (`CONFIG_PATH`) or a built-in catch-all over
-  `UPSTREAM_BACKENDS`, so a bare `cargo run` proxies to a pool with zero files.
+  `UPSTREAM_BACKENDS`, so a bare `make run` proxies to a pool with zero files.
 
 > **How to read this SPEC.** Every challenge below lists **Done when ALL true** —
 > observable criteria you can check off — and a **Proof**: the test/bench/doc that
@@ -40,8 +40,10 @@ The proxy's job looks trivial and isn't. You must **stream** bodies (never buffe
 big upload in RAM), keep hop-by-hop headers from leaking between connections, add
 the `X-Forwarded-*`/`Via` provenance headers, and **reuse** upstream keep-alive
 connections or you pay a fresh TCP (and TLS) handshake on every single request.
-Build the forwarding path in `src/proxy.rs` instead of reaching for a
-`hyper-reverse-proxy` crate.
+Build the forwarding path in `src/api_gateway/proxy.py` yourself. The pooled
+`httpx.AsyncClient` is given (it is the connection pool, not the proxy); what you
+write is everything between the inbound `Request` and the outbound
+`StreamingResponse`.
 
 **Done when ALL true:**
 - [ ] A request/response body is **streamed** through the proxy — memory stays bounded regardless of body size (a 1 GiB upload does not grow RSS by ~1 GiB).
@@ -51,10 +53,12 @@ Build the forwarding path in `src/proxy.rs` instead of reaching for a
 - [ ] Method, path, query, response status and (non-hop-by-hop) headers are **preserved end to end** — what the backend returns is what the client sees.
 - [ ] An unreachable or slow upstream yields a clean **502/504**, never a panic and never a hung request.
 
-**Proof:** an integration test that proxies to a local test server and asserts the
-backend saw *no* hop-by-hop headers and *did* see an appended `X-Forwarded-For`; a
-streaming test that a large body round-trips without buffering; `bench/` records the
-p50/p99 latency the proxy *adds* vs hitting the backend directly → `docs/10-benchmarks.md`.
+**Proof:** `tests/test_proxy_acceptance.py` — provided, and red until you build
+this. It stands up a real backend on a real socket and asserts the backend saw *no*
+hop-by-hop headers, *did* see an appended `X-Forwarded-For`, that a large body
+round-trips without buffering, and that a burst reuses one TCP connection. Plus
+`bench/` recording the p50/p99 latency the proxy *adds* vs hitting the backend
+directly → `docs/10-benchmarks.md`.
 
 *Concept to internalize:* hop-by-hop vs end-to-end headers (RFC 7230 §6.1), why
 streaming bodies keeps memory bounded, and how connection pooling amortizes the
@@ -62,9 +66,11 @@ handshake. **Stretch:** proxy a `101 Switching Protocols` (WebSocket) upgrade en
 
 ### V2. The request routing engine — *match, don't scan*
 A gateway maps many inbound `(host, path, method)` tuples to upstreams. The naive
-`for r in routes { if path.starts_with(r.prefix) }` is O(routes) per request and gets
-ambiguous fast: does `/api/v2/users` belong to `/api` or `/api/v2`? Build the matcher
-in `src/router.rs` so it resolves **longest-prefix** deterministically and in time
+`next(r for r in routes if path.startswith(r.path_prefix))` is O(routes) per request
+and gets ambiguous fast: does `/api/v2/users` belong to `/api` or `/api/v2`? (And in
+Python it *benchmarks* fine at small route counts, because `startswith` runs in C —
+which is exactly how a linear scan survives review.) Build the matcher
+in `src/api_gateway/router.py` so it resolves **longest-prefix** deterministically and in time
 that doesn't grow linearly with the route count.
 
 **Done when ALL true:**
@@ -76,8 +82,10 @@ that doesn't grow linearly with the route count.
 - [ ] The route table can be **rebuilt/swapped** (config reload) without dropping in-flight requests.
 
 **Proof:** unit tests for longest-prefix precedence, host/method scoping, and the 404
-case; a test or bench showing match latency stays roughly flat as routes grow
-10 → 10k; `docs/10-design.md` names the matching structure you chose and why.
+case (`hypothesis` is available, and precedence is a property over generated tables
+rather than a handful of examples); a test or bench showing match latency stays
+roughly flat as routes grow 10 → 10k; `docs/10-design.md` names the matching
+structure you chose and why.
 
 *Concept to internalize:* prefix/radix matching, longest-match precedence, and why
 routing sits on the hot path of *every* request. **Stretch:** path parameters
@@ -86,7 +94,7 @@ routing sits on the hot path of *every* request. **Stretch:** path parameters
 ### V3. Load balancing across a backend pool — *`round-robin` is the floor, not the goal*
 A route points at a **pool** of N backends; something must pick one per request.
 Round-robin ignores that backend #3 is slow and piling up; naive random gives unlucky
-hot spots. Build the balancer in `src/balancer.rs` — start round-robin, then
+hot spots. Build the balancer in `src/api_gateway/balancer.py` — start round-robin, then
 **least-connections**, then **P2C (power of two choices)** with an EWMA latency
 signal — and measure *why* P2C beats round-robin under uneven load.
 
@@ -95,7 +103,7 @@ signal — and measure *why* P2C beats round-robin under uneven load.
 - [ ] The balancer tracks **in-flight per backend**, and least-connections routes the next request to the least-loaded backend.
 - [ ] The policy is **swappable** (round-robin / least-conn / P2C) behind one interface, and a test shows they make **different** choices on the same skewed trace.
 - [ ] Backends that are **unhealthy / open-circuit** (V4) are **excluded** from selection — the balancer never hands back an ejected backend.
-- [ ] Selection is **cheap on the hot path** (atomics / per-shard state, not one global mutex serializing every pick) — a documented decision.
+- [ ] Selection is **cheap on the hot path**: `pick()` is synchronous and takes no `asyncio.Lock`, so no request pays a scheduler round-trip to be routed — and the reasoning (why one event loop makes a lock unnecessary here, and where that stops being true) is documented.
 - [ ] Under one slow backend, **P2C measurably shifts load away** from it vs round-robin (lower p99) — shown by a bench.
 
 **Proof:** a distribution test (even spread across a healthy pool); a test that an
@@ -112,7 +120,7 @@ A dead backend you keep sending traffic to turns one failure into a latency casc
 every request waits the full timeout, connections pile up, and the gateway falls over
 *with* it. Build **active health checks** (periodic probes eject a dead backend) and
 **passive circuit breaking** (a run of failures *opens* the circuit so calls fail fast,
-then *half-open* probes let it recover) in `src/health.rs`. This is the line between
+then *half-open* probes let it recover) in `src/api_gateway/health.py`. This is the line between
 "one backend is down" and "the whole gateway is down".
 
 **Done when ALL true:**
@@ -141,6 +149,7 @@ Each item is **done when its criterion is observably true** — same rule as the
 
 ### Protocols
 - [ ] Listens on **HTTP/1.1 and HTTP/2** (h2 to clients); upstream requests reuse keep-alive (V1). Chunked/streaming bodies work in both directions.
+  > Uvicorn speaks HTTP/1.1 only — there is no flag for h2. The criterion is **not** scaled down for that: reach it by serving under Hypercorn or fronting the gateway with something that terminates h2, and if you decide the cost isn't worth it, record *that*, with what it would have taken, in `docs/10-benchmarks.md`. The upstream leg is easier — httpx speaks h2 with its `http2` extra.
 - [ ] **Hop-by-hop hygiene + `X-Forwarded-*`/`Via`** handled correctly (V1), and a client **cannot spoof** `X-Forwarded-*` or internal auth headers through the proxy (normalized at the edge).
 - [ ] **WebSocket / `Upgrade`** is proxied end to end (`101` passthrough), or `docs/10-design.md` records it as explicitly out of scope.
 - [ ] **Graceful shutdown:** on SIGTERM stop accepting new connections and **drain in-flight proxied requests** within a deadline before exit — no truncated responses.
@@ -152,15 +161,25 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] **Backpressure / load-shedding:** a global concurrency limit sheds load (fast `503`) instead of unbounded queueing when every backend is saturated.
 
 ### Security
-- [ ] **mTLS** (`src/tls.rs`): the gateway terminates TLS from clients and can be configured to **present a client cert to upstreams** and verify the upstream cert — a mutually-authenticated data path; optionally **require + verify client certs** from callers (mTLS at the edge). Trust roots/paths come from config, never hard-coded.
+- [ ] **mTLS** (`src/api_gateway/tls.py`): the gateway terminates TLS from clients and can be configured to **present a client cert to upstreams** and verify the upstream cert — a mutually-authenticated data path; optionally **require + verify client certs** from callers (mTLS at the edge). Trust roots/paths come from config, never hard-coded.
 - [ ] **Edge auth:** API-key/JWT (or similar) validated at the gateway *before* forwarding; an unauthenticated request is rejected without touching an upstream. Keys/secrets never logged.
 - [ ] **Request limits:** max header size, max body size (`MAX_BODY_BYTES`), and per-request timeouts bound slowloris / oversized-body abuse — each returns the right 4xx (`413`/`431`/`408`).
 - [ ] **Header sanitization:** hop-by-hop and sensitive inbound headers are stripped/normalized so a client can't impersonate the proxy to the backend.
 
 ### Observability
-- [ ] `tracing` span per proxied request (via `common-telemetry`) with a request id, the **matched route**, the **chosen backend**, upstream status, and upstream latency as structured fields.
+- [ ] A structured log line per proxied request (via `common-telemetry`'s `RequestIdMiddleware` + `structlog`) carrying a request id, the **matched route**, the **chosen backend**, upstream status, and upstream latency as fields — not interpolated into a message string, or you cannot query them.
 - [ ] Metrics at `/metrics`: **requests by route+status, upstream latency histogram, in-flight per backend, LB picks per backend, retries, and circuit-breaker state/trips.**
 - [ ] An **access log** line per request (method, path, route, backend, status, total + upstream latency) — enough to debug a bad backend from logs alone.
+
+### Python (the day-job axis)
+This axis is not a consolation prize for not being Rust — it is the part of this
+project that transfers directly to a Python service you get paid to run.
+
+- [ ] **pyright `strict` passes clean** — every `# type: ignore` carries a comment justifying it. A proxy handles other people's bytes; "it's probably a `str`" is how a header becomes a 500.
+- [ ] **No blocking call on the event loop** — the service runs clean under `PYTHONASYNCIODEBUG=1`, and any synchronous I/O (reading a TLS key, loading a route table on reload) is in a thread pool deliberately, not by accident. One blocking call in a proxy stalls *every* concurrent request, not just its own.
+- [ ] **Bounded pool sized on purpose** — `httpx.Limits` (`max_connections`, `max_keepalive_connections`) and any concurrency limit you add for load-shedding are tuned *together*, with the reasoning in `docs/10-design.md`. Unbounded waiting on a full pool is an unbounded queue wearing a disguise.
+- [ ] **Graceful shutdown** drains in-flight proxied requests on SIGTERM via the FastAPI lifespan, and is verified **in the container** (`docker stop`), where uvloop and PID-1 signal handling are real — `pytest` runs on neither.
+- [ ] **Profile committed** — a `py-spy` flamegraph taken under load and a `memray` run in `docs/10-benchmarks.md`, naming the top bottleneck on the proxy hot path.
 
 ---
 
@@ -182,8 +201,13 @@ The project is **done when ALL true:**
 3. `docs/10-design.md` records the decisions the SPEC grades: **routing match
    structure, LB policy + why, circuit-breaker timings (threshold/cooldown/half-open),
    retry + timeout budget, and the mTLS trust model.**
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p api-gateway` are green;
-   no `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` → `ruff check` → `pyright` (strict)
+   → `pytest` — and no `raise NotImplementedError` remains on a checked path.
+5. **You know why the numbers are what they are.** A `py-spy` flamegraph taken under
+   load and a `memray` run are committed and discussed in `docs/10-benchmarks.md`,
+   naming the top bottleneck on the proxy hot path. A proxy is judged on the latency
+   it *adds*, so "it's fast enough" without knowing where the time goes does not
+   close this.
 
 ## Suggested order of attack
 1. Single hardcoded upstream: forward the request, stream the response back, get
@@ -199,13 +223,16 @@ The project is **done when ALL true:**
 
 ## Run the demo
 ```bash
-cp .env.example .env
-cargo run -p api-gateway            # gateway on :8080, proxying per UPSTREAM_BACKENDS
+make setup && make sync             # .env from the example, then the virtualenv
+make up                             # 3 traefik/whoami backends on :9010-:9012
+make run                            # gateway on :8080, proxying per UPSTREAM_BACKENDS
 
-# Or the whole demo: the gateway + a pool of 3 echo backends
-docker compose up --build
-curl localhost:8080/                # whoami — the backend name changes across requests (LB)
-docker compose stop whoami-b        # kill one backend...
-curl localhost:8080/                # ...still 200 from a healthy backend (fail-fast + reroute)
-curl localhost:8080/admin/routes    # the loaded route table
+# ...and in another shell, the three probes that make the verticals visible:
+make routes                         # the loaded route table
+make spread                         # 30 requests, tallied by which backend served (V3)
+make headers                        # send hostile headers, print what the backend saw (V1)
+make kill-backend && make spread    # one backend down — still 200s? (V4)
+
+# Or the whole thing containerized:
+make demo                           # gateway + pool, foreground
 ```
