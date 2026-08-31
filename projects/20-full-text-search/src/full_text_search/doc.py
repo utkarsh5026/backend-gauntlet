@@ -29,7 +29,11 @@ from typing import NamedTuple
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "AnalyzeRequest",
+    "AnalyzeResponse",
     "AnalyzedDoc",
+    "AnalyzedToken",
+    "AnalyzerInfo",
     "CollectionStats",
     "DocId",
     "NewDocument",
@@ -168,3 +172,76 @@ class SearchHit(BaseModel):
     text: str | None = Field(default=None)
     """The stored text, for rendering a snippet. Optional so a segment can choose
     not to store it."""
+
+
+class AnalyzeRequest(BaseModel):
+    """Text to run through the analyzer, on `POST /_analyze`.
+
+    A JSON body rather than a query string because the text is a whole document:
+    uvicorn caps the HTTP request line at a few kilobytes, so a long document
+    simply would not fit in a URL.
+    """
+
+    text: str
+    """The text to analyze. Deliberately not a `NewDocument` — analysis stores
+    nothing, so an `id` would have no meaning here."""
+
+
+class AnalyzedToken(BaseModel):
+    """One token the analyzer produced, and whether the filters kept it.
+
+    The dropped tokens are not noise in this response, they are the teaching:
+    seeing `the` struck through beside a kept `rust` is what makes a stop list
+    concrete.
+    """
+
+    model_config = {"frozen": True}
+
+    token: Term
+
+    kept: bool
+    """False when the length floor or the stop list discarded it — so it never
+    reaches a postings list, and no query can ever match it."""
+
+
+class AnalyzerInfo(BaseModel):
+    """The analyzer's live configuration, echoed back with every analysis.
+
+    Included so the result explains itself: a token that vanished is either a
+    stop word or below the length floor, and a client should not have to
+    hardcode its own copy of the settings to say which. A copy of the settings
+    in the client is precisely the thing this endpoint exists to delete.
+    """
+
+    model_config = {"frozen": True}
+
+    lowercase: bool
+    remove_stopwords: bool
+    min_token_len: int
+
+    stopwords: int
+    """How many words the active stop list holds. The count, not the list: the
+    list is static and comparatively large, and the count is what a UI shows."""
+
+
+class AnalyzeResponse(BaseModel):
+    """What `POST /_analyze` returns — the analyzer made visible.
+
+    Two views of one run. `terms` is the analyzer's real output, exactly what
+    indexing stores and what a query is matched against. `tokens` is the same
+    text through the same pipeline with the filters switched off, each token
+    annotated with whether the real run kept it, which is what makes the drop
+    decisions inspectable.
+    """
+
+    model_config = {"frozen": True}
+
+    terms: list[Term]
+    """The terms that reach the index, in order and with duplicates intact — a
+    repeated term is exactly what BM25's term-frequency component counts."""
+
+    tokens: list[AnalyzedToken]
+    """Every token the tokenizer produced, kept or dropped, in order."""
+
+    config: AnalyzerInfo
+    """The settings that produced the two lists above."""

@@ -23,6 +23,7 @@ members = [
     "projects/05-metrics-pipeline",
     "projects/07-distributed-cache",
     "projects/08-message-broker",
+    "projects/09-raft-kv",
     "projects/20-full-text-search",
     "projects/21-workflow-engine",
     "projects/23-dynamodb-core",

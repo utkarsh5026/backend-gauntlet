@@ -51,15 +51,6 @@ class QueryCache:
 
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
-        # TODO(caching): the store and its eviction bookkeeping.
-        #
-        #   self._entries: OrderedDict[str, list[SearchHit]]
-        #
-        # `SearchHit` is frozen, so cached lists can be handed out without
-        # copying — an immutable value type is what makes a cache cheap to read.
-        # Returning the list itself is still a shared mutable reference, though;
-        # decide whether you hand back the list or a copy of it, and be sure the
-        # caller cannot sort it in place under you.
 
     @property
     def enabled(self) -> bool:

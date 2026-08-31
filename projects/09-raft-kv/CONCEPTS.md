@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — Leader election: one leader per term, or none *(V1 · `src/election.rs`)*
+## 🧠 Card 1 — Leader election: one leader per term, or none *(V1 · `src/raft_kv/election.py`)*
 
 **The problem.** If more than one node accepts writes, two nodes can accept *conflicting* writes during a partition, and there is no principled way to merge them later — that's split-brain, and it corrupts data silently. So Raft funnels all writes through one leader. But now electing that leader *is* the safety problem: "elect a leader" is easy; "**never** elect two for the same term, across crashes, restarts and partitions" is the entire job.
 
@@ -28,7 +28,7 @@
 
 ---
 
-## 🧠 Card 2 — Replication & the commit rule *(V2 · `src/replication.rs`)*
+## 🧠 Card 2 — Replication & the commit rule *(V2 · `src/raft_kv/replication.py`)*
 
 **The problem.** The leader has the write — now it must be on enough machines that *no single failure, including the leader's, can lose it*. Followers may hold stale or divergent tails from deposed leaders; those must be repaired, not appended past. And the subtlest data-loss bug in Raft hides here: counting replicas of an *old term's* entry as commitment (§5.4.2) can let a future leader erase an entry a client was told succeeded.
 
@@ -52,7 +52,7 @@
 
 ---
 
-## 🧠 Card 3 — The state machine & linearizable reads *(V3 · `src/store.rs`)*
+## 🧠 Card 3 — The state machine & linearizable reads *(V3 · `src/raft_kv/store.py`)*
 
 **The problem.** Consensus produced an agreed, ordered command log — but clients want a *map*, and they want reads that don't lie. The tempting shortcut — serve `GET` from any node's local map — returns stale data from lagging followers, and worse: from a **deposed leader that doesn't know it yet** (partitioned away, still confidently serving yesterday's values). "I read it from the leader" is not enough when leadership itself is stale.
 
@@ -75,7 +75,7 @@
 
 ---
 
-## 🧠 Card 4 — Snapshots & log compaction *(V4 · `src/snapshot.rs`)*
+## 🧠 Card 4 — Snapshots & log compaction *(V4 · `src/raft_kv/snapshot.py`)*
 
 **The problem.** The log grows forever; replaying from index 1 on each restart gets slower every day. But the log is your only truth — you can't just delete old entries, and a follower that fell behind your deletion point can no longer be caught up by `AppendEntries` (the entries it needs are *gone*).
 

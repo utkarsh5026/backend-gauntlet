@@ -27,9 +27,7 @@ from pathlib import Path
 # that no longer exists. The Python side is scoped by the `python` paths-filter
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
-    ("job-queue", "projects/04-job-queue"),
     ("object-store", "projects/06-object-store"),
-    ("raft-kv", "projects/09-raft-kv"),
     ("api-gateway", "projects/10-api-gateway"),
     ("vod-streaming", "projects/11-vod-streaming"),
     ("transcode-pipeline", "projects/12-transcode-pipeline"),
@@ -208,18 +206,20 @@ def main() -> int:
 
 
 def self_test() -> int:
-    # Scoped: only url-shortener rust + its dashboard.
+    # Scoped: two crates by their src, plus a frontend that must NOT pull its
+    # own crate in. Uses only projects still in the Cargo workspace — a
+    # /pythonize conversion has to update this alongside PROJECTS.
     rust_all, pkgs, fes = resolve(
         [
-            "projects/01-url-shortener/src/cache.rs",
-            "projects/01-url-shortener/dashboard/src/App.tsx",
-            "projects/04-job-queue/src/scheduler.rs",
+            "projects/10-api-gateway/src/proxy.rs",
+            "projects/06-object-store/web/src/App.tsx",
+            "projects/22-lsm-redis/src/lsm.rs",
         ],
         force_all=False,
     )
     assert rust_all is False
-    assert pkgs == ["url-shortener", "job-queue"], pkgs
-    assert fes == ["projects/01-url-shortener/dashboard"], fes
+    assert pkgs == ["api-gateway", "lsm-redis"], pkgs
+    assert fes == ["projects/06-object-store/web"], fes
 
     # Frontend-only → no rust package for that project.
     rust_all, pkgs, fes = resolve(
@@ -232,7 +232,7 @@ def self_test() -> int:
 
     # Docs-only → skip rust.
     rust_all, pkgs, _ = resolve(
-        ["projects/01-url-shortener/SPEC.md", "projects/01-url-shortener/docs/foo.md"],
+        ["projects/06-object-store/SPEC.md", "projects/06-object-store/docs/foo.md"],
         force_all=False,
     )
     assert rust_all is False
@@ -240,10 +240,10 @@ def self_test() -> int:
 
     # sqlx cache counts as rust.
     _, pkgs, _ = resolve(
-        ["projects/01-url-shortener/.sqlx/query-abc.json"],
+        ["projects/06-object-store/.sqlx/query-abc.json"],
         force_all=False,
     )
-    assert pkgs == ["url-shortener"]
+    assert pkgs == ["object-store"], pkgs
 
     # Shared crate → full workspace.
     rust_all, pkgs, _ = resolve(["crates/common-config/src/lib.rs"], force_all=False)

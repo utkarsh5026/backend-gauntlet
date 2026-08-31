@@ -1,0 +1,74 @@
+[project]
+name = "raft-kv"
+version = "0.1.0"
+description = "A distributed key-value store on Raft: leader election, log replication, a replicated state machine, and snapshots (project 09)."
+requires-python = ">=3.13"
+dependencies = [
+    "common-config",
+    "common-telemetry",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # The peer RPC transport. `httpx` is the async sibling of `requests` and the
+    # direct analogue of what `reqwest` was doing here: one pooled client, a short
+    # per-RPC timeout, JSON in and JSON out. It is already a FastAPI test
+    # dependency, so the cluster's own transport costs no new package.
+    "httpx>=0.28",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "prometheus-client>=0.21",
+    "structlog>=24.4",
+]
+# No consensus library, obviously — but also no serialization library. The
+# persistent state is JSON via `json` and the snapshot blob is `bytes`; both are
+# stdlib. Rust needed `serde`/`serde_json` as separate crates, Python does not.
+
+[project.scripts]
+# Same name the Rust binary had, so the Makefile and Dockerfile read the same as
+# every other project in the repo.
+raft-kv = "raft_kv.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    # V1 asks for a one-leader-per-term invariant under randomized timing and V2
+    # for Log Matching — both are properties over generated histories, not
+    # examples. This is the `proptest` the Rust manifest declared.
+    "hypothesis>=6.115",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    # The profiling gate in the Definition of done.
+    "py-spy>=0.4",
+    "memray>=1.14",
+]
+
+[tool.uv.sources]
+common-config = { workspace = true }
+common-telemetry = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/raft_kv"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

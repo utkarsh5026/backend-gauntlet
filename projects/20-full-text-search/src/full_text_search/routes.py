@@ -3,9 +3,9 @@
 The routing, request and response shapes, and the input guards are wired. What
 the handlers call into — `add_document`/`bulk` (V1→V2), `search` (V1→V5→V3),
 `delete`/`force_merge` (V4) — is where the work lives. Run as-is and
-`GET /healthz`, `GET /_stats`, `POST /_refresh` and `POST /_forcemerge` all work;
-the first real index, search or delete raises a `NotImplementedError` and that
-message is the worklist.
+`GET /healthz`, `GET /_stats`, `POST /_analyze`, `POST /_refresh` and
+`POST /_forcemerge` all work; the first real index, search or delete raises a
+`NotImplementedError` and that message is the worklist.
 
 Document text is carried as UTF-8 over JSON. `_bulk` is newline-delimited JSON,
 one document per line, like Elasticsearch's `_bulk`.
@@ -17,13 +17,15 @@ names and nesting must stay exactly as they are, or the dashboard breaks.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from pydantic import ValidationError
 
-from .doc import NewDocument
-from .errors import BadRequest, NotFound
+from .analyzer import Analyzer
+from .doc import AnalyzedToken, AnalyzeRequest, AnalyzeResponse, AnalyzerInfo, NewDocument
+from .errors import BadRequest, DocumentTooLarge, NotFound
 from .shard import EngineStats
 from .state import AppState
 
@@ -137,7 +139,44 @@ async def search(
     }
 
 
-# --- admin --------------------------------------------------------------------
+@router.post("/_analyze")
+async def analyze(state: StateDep, req: AnalyzeRequest) -> AnalyzeResponse:
+    """Run text through the engine's analyzer and show what it produced (V1).
+
+    A read despite the POST — it stores nothing and mutates nothing, so it stays
+    outside the API-key gate for the same reason search does. Elasticsearch's
+    `_analyze` is a POST for the same reason this one is: the payload is a whole
+    document, and a document does not fit in a URL.
+
+    What makes the endpoint worth having is the first line of the body: it calls
+    `state.engine.analyzer`, the *same instance* every shard indexes with and
+    every query is analyzed by — not a reconstruction of it. So the terms that
+    come back are, by construction, the terms the index actually holds. Any
+    client that reimplements the pipeline in order to display it is a second
+    definition of "matches", and it starts drifting from this one the moment the
+    config or the pipeline changes.
+    """
+    if len(req.text.encode("utf-8")) > state.settings.max_doc_bytes:
+        raise DocumentTooLarge()
+
+    analyzer = state.engine.analyzer
+    config = analyzer.config
+    terms = analyzer.analyze(req.text)
+    unfiltered = Analyzer(replace(config, remove_stopwords=False, min_token_len=0)).analyze(
+        req.text
+    )
+
+    kept = set(terms)
+    return AnalyzeResponse(
+        terms=terms,
+        tokens=[AnalyzedToken(token=token, kept=token in kept) for token in unfiltered],
+        config=AnalyzerInfo(
+            lowercase=config.lowercase,
+            remove_stopwords=config.remove_stopwords,
+            min_token_len=config.min_token_len,
+            stopwords=len(config.stopwords),
+        ),
+    )
 
 
 @router.post("/_refresh")
