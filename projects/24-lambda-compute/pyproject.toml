@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A serverless compute plane built from the Runtime API up (project 24)."
 requires-python = ">=3.13"
 dependencies = [
+    "common-aws",
     "common-config",
     "common-telemetry",
     "fastapi>=0.115",
@@ -35,6 +36,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+common-aws = { workspace = true }
 common-config = { workspace = true }
 common-telemetry = { workspace = true }
 

@@ -23,15 +23,23 @@ Three things here are load-bearing, and the SPEC grades all three:
 > **Wire format.** The real IAM/STS Query protocol answers XML
 > (`<ErrorResponse><Error><Code>…`). This scaffold answers the AWS **JSON**
 > protocol's shape (`__type` plus `x-amzn-errortype`) because it is
-> straightforward to assert against. Making the Query surface XML-faithful enough
-> for `boto3` is a horizontal checklist item, not a freebie.
+> straightforward to assert against. `common-aws` renders both, so switching the
+> error path is one argument at the bottom of this file —
+> `WireProtocol.QUERY` — and `boto3` parses the result. That is the *error*
+> half only: making the whole Query surface faithful (flattened request
+> parameters, XML success bodies) is still the horizontal checklist item.
+
+The envelope — the body shape, the `retry-after` header, the rule that a 5xx
+never carries its instance message, the fail-closed catch-all — is `common-aws`,
+shared with every service in the tier. What stays here is what is IAM's: which
+errors exist, and what each one tells a caller they may not have.
 """
 
 from __future__ import annotations
 
-import structlog
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from common_aws import AwsError, WireProtocol
+from common_aws import install_error_handlers as install_aws_error_handlers
+from fastapi import FastAPI
 
 __all__ = [
     "AccessDenied",
@@ -48,26 +56,22 @@ __all__ = [
     "NoSuchEntity",
     "SignatureDoesNotMatch",
     "Throttling",
-    "app_error_handler",
     "install_error_handlers",
-    "unhandled_error_handler",
 ]
 
-log = structlog.get_logger(__name__)
 
+class AppError(AwsError):
+    """Base for every error this service turns into a response.
 
-class AppError(Exception):
-    """Base for every error this service turns into a response."""
+    A thin subclass of the shared `AwsError`: the fields, the wire rendering and
+    the safety rules come from `common-aws`. What is IAM's — and the reason this
+    class still exists rather than being an import — is the code the service
+    answers with when something unexpected happens. The real service says
+    `ServiceFailure`; DynamoDB says `InternalServerError`.
+    """
 
-    status_code: int = 500
-    error_code: str = "ServiceFailure"
-    message: str = "internal service error"
-    retryable: bool = False
-
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or self.message)
-        if message is not None:
-            self.message = message
+    error_code = "ServiceFailure"
+    message = "internal service error"
 
 
 # --- authentication (V1/V4) -------------------------------------------------
@@ -233,52 +237,18 @@ class Throttling(AppError):
     retryable = True
 
 
-async def app_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Map an `AppError` to an AWS-shaped error body."""
-    if not isinstance(exc, AppError):  # pragma: no cover - registry invariant
-        raise exc
-
-    message = exc.message
-    if exc.status_code >= 500:
-        # Never hand an instance message to a caller on this path — it may carry
-        # an internal detail. The detail goes to the log; the caller gets the
-        # class default, which we authored and know is safe.
-        log.error("request failed", error=str(exc), kind=type(exc).__name__)
-        message = type(exc).message
-
-    headers = {"x-amzn-errortype": exc.error_code}
-    if exc.retryable:
-        headers["retry-after"] = "1"
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"__type": exc.error_code, "message": message},
-        headers=headers,
-    )
-
-
-async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Fail closed: anything unexpected becomes a refusal, never an allow.
-
-    This is the outermost expression of the SPEC's "the service fails closed
-    everywhere" criterion. An authorization service that answers 500 has at least
-    said *no*; one that answers 200 because an exception unwound through an
-    optimistic `except` has said *yes* to something nobody approved.
-
-    It deliberately does not swallow the exception: the full detail is logged, and
-    the caller gets a generic refusal with nothing in it.
-    """
-    log.error("unhandled exception — denying", error=str(exc), kind=type(exc).__name__)
-    return JSONResponse(
-        status_code=500,
-        content={"__type": AppError.error_code, "message": AppError.message},
-        headers={"x-amzn-errortype": AppError.error_code},
-    )
-
-
 def install_error_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(AppError, app_error_handler)
-    # NOTE: FastAPI only routes to this when `raise_server_exceptions` is off,
-    # i.e. in production behind uvicorn — under the test transport the exception
-    # propagates instead, which is what lets the scaffold tests assert on
-    # `NotImplementedError` directly.
-    app.add_exception_handler(Exception, unhandled_error_handler)
+    """Wire the shared renderer up to this service's protocol and base error.
+
+    The second handler the shared installer registers is the one that matters
+    most here: **fail closed**. The dangerous failure in an authorization service
+    is not a 500 — it is an *allow* returned by accident because an exception
+    unwound through an optimistic `except`. Anything unexpected becomes a
+    refusal with nothing in it, and the full detail goes to the log.
+
+    Note that FastAPI only routes to that handler when `raise_server_exceptions`
+    is off, i.e. in production behind uvicorn. Under the test transport the
+    exception propagates instead, which is what lets the scaffold tests assert on
+    `NotImplementedError` directly.
+    """
+    install_aws_error_handlers(app, protocol=WireProtocol.JSON_1_0, internal_error=AppError)

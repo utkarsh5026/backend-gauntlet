@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import enum
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -267,12 +268,18 @@ class SignatureDoesNotMatch(AwsError):
 
 
 class ExpiredToken(AwsError):
-    """Credentials expired. Retryable *after* the client refreshes them."""
+    """The credentials in the request have expired.
+
+    Not `retryable`, and the distinction is worth being precise about: an SDK
+    *will* recover from this, but only by fetching fresh credentials and signing
+    again. Re-sending this exact request fails identically forever, which is what
+    `retryable` means here — so advertising a `retry-after` would be telling the
+    client to do the one thing that cannot work.
+    """
 
     status_code = 403
     error_code = "ExpiredTokenException"
     message = "the security token included in the request is expired"
-    retryable = True
 
 
 class AccessDenied(AwsError):
@@ -347,9 +354,25 @@ def error_response(
 
 
 def install_error_handlers(
-    app: Starlette, *, protocol: WireProtocol = WireProtocol.JSON_1_0
+    app: Starlette,
+    *,
+    protocol: WireProtocol = WireProtocol.JSON_1_0,
+    internal_error: type[AwsError] = InternalFailure,
+    render: Callable[[AwsError], Response | None] | None = None,
 ) -> None:
     """Register the two handlers every service in the tier needs.
+
+    `internal_error` is the class the catch-all answers with, because the code
+    for "something went wrong here" is genuinely per-service: DynamoDB says
+    `InternalServerError`, Lambda `ServiceException`, IAM `ServiceFailure`, SQS
+    `InternalError`. Pass the service's own base and its callers keep seeing the
+    code the real service would have sent.
+
+    `render` is the escape hatch for an error that is not an envelope at all.
+    Lambda has exactly one: a handler that raised is, from the platform's point
+    of view, a *successful* invocation, so it answers 200 with an
+    `X-Amz-Function-Error` header and the function's own diagnostics in the body.
+    Return a `Response` to take over, or `None` to fall through to the default.
 
     The second one — the catch-all — is the one worth arguing about. It exists so
     that an unexpected exception becomes a loud 500 rather than anything else. On
@@ -367,13 +390,17 @@ def install_error_handlers(
     async def handle_aws_error(_request: Request, exc: Exception) -> Response:
         if not isinstance(exc, AwsError):  # pragma: no cover - registry invariant
             raise exc
+        if render is not None:
+            override = render(exc)
+            if override is not None:
+                return override
         if exc.status_code >= 500:
             log.error("request failed", error=str(exc), kind=type(exc).__name__)
         return error_response(exc, protocol=protocol, request_id=current_request_id())
 
     async def handle_unexpected(_request: Request, exc: Exception) -> Response:
         log.error("unhandled exception", error=str(exc), kind=type(exc).__name__)
-        return error_response(InternalFailure(), protocol=protocol, request_id=current_request_id())
+        return error_response(internal_error(), protocol=protocol, request_id=current_request_id())
 
     app.add_exception_handler(AwsError, handle_aws_error)
     app.add_exception_handler(Exception, handle_unexpected)

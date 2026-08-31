@@ -14,13 +14,21 @@ Two distinctions here are load-bearing, and both are graded by the SPEC:
   otherwise-200 response, because from the platform's point of view the invocation
   succeeded: it ran your code and your code threw. Conflating the two is how a
   dashboard ends up blaming the wrong team.
+
+The *envelope* — the error body, the `retry-after` header, the rule that a 5xx
+never carries its instance message — is `common-aws`, shared with every service
+in the tier. The function-error case is the one thing here that is not an
+envelope at all, so it is handed to the shared installer as an override rather
+than being expressed as a status code.
 """
 
 from __future__ import annotations
 
-import structlog
-from fastapi import FastAPI, Request
+from common_aws import AwsError, WireProtocol
+from common_aws import install_error_handlers as install_aws_error_handlers
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 __all__ = [
     "AppError",
@@ -32,29 +40,28 @@ __all__ = [
     "ResourceConflict",
     "ResourceNotFound",
     "TooManyRequests",
-    "app_error_handler",
     "install_error_handlers",
+    "render_function_error",
 ]
-
-log = structlog.get_logger(__name__)
 
 # The header the real service sets when the *handler* failed rather than the
 # platform. Callers branch on its presence, so it is part of the contract.
 FUNCTION_ERROR_HEADER = "x-amz-function-error"
 
 
-class AppError(Exception):
-    """Base for every error this service turns into a response."""
+class AppError(AwsError):
+    """Base for every error this service turns into a response.
 
-    status_code: int = 500
-    error_code: str = "ServiceException"
-    message: str = "internal service error"
-    retryable: bool = False
+    A thin subclass of the shared `AwsError`: the fields, the wire rendering and
+    the safety rules come from `common-aws`. What is Lambda's — and the reason
+    this class still exists rather than being an import — is the code the service
+    answers with when something unexpected happens. The real service says
+    `ServiceException`; DynamoDB says `InternalServerError`; a caller's retry
+    logic reads it.
+    """
 
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or self.message)
-        if message is not None:
-            self.message = message
+    error_code = "ServiceException"
+    message = "internal service error"
 
 
 class InvalidRequestContent(AppError):
@@ -153,39 +160,37 @@ class FunctionError(AppError):
         self.stack_trace = stack_trace or []
 
 
-async def app_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Map an `AppError` to a Lambda-shaped error body."""
-    if not isinstance(exc, AppError):  # pragma: no cover - registry invariant
-        raise exc
+def render_function_error(exc: AwsError) -> Response | None:
+    """Take over the response for a handler that raised; `None` for anything else.
 
-    if isinstance(exc, FunctionError):
-        # A handler error is not a platform error: 200 + the marker header, with
-        # the function's own diagnostics in the body.
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "errorType": exc.error_type,
-                "errorMessage": exc.message,
-                "stackTrace": exc.stack_trace,
-            },
-            headers={FUNCTION_ERROR_HEADER: "Unhandled"},
-        )
-
-    message = exc.message
-    if exc.status_code >= 500:
-        # Never leak an instance message to a caller — on this path it may carry a
-        # sandbox's stderr. The detail goes to the log; the caller gets the class's
-        # own default, which we authored and know is safe.
-        log.error("request failed", error=str(exc), kind=type(exc).__name__)
-        message = type(exc).message
-
-    body = {"Type": "User" if exc.status_code < 500 else "Service", "message": message}
-    headers = {"x-amzn-errortype": exc.error_code}
-    if exc.retryable:
-        # Tell the client it may retry, so a correct backoff needs no lookup table.
-        headers["retry-after"] = "1"
-    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+    This is the one error in the service that is not an error *envelope*. A
+    handler that threw is, from the platform's point of view, a **successful**
+    invocation — it ran the code it was asked to run — so the answer is 200 with
+    the marker header and the function's own diagnostics, not a 5xx. Everything
+    else falls through to the shared renderer.
+    """
+    if not isinstance(exc, FunctionError):
+        return None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "errorType": exc.error_type,
+            "errorMessage": exc.message,
+            "stackTrace": exc.stack_trace,
+        },
+        headers={FUNCTION_ERROR_HEADER: "Unhandled"},
+    )
 
 
 def install_error_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(AppError, app_error_handler)
+    """Wire the shared renderer up to this service's protocol and base error.
+
+    Lambda's control plane speaks **REST-JSON**: `{"Type": "User"|"Service",
+    "message": …}` rather than the `__type` shape the JSON-protocol services use.
+    """
+    install_aws_error_handlers(
+        app,
+        protocol=WireProtocol.REST_JSON,
+        internal_error=AppError,
+        render=render_function_error,
+    )
