@@ -127,6 +127,20 @@ class Analyzer:
     def __init__(self, config: AnalyzerConfig | None = None) -> None:
         self._config = config if config is not None else AnalyzerConfig()
 
+    @property
+    def config(self) -> AnalyzerConfig:
+        """The settings this analyzer runs on, read-only.
+
+        Exposed so a caller can build a *variant* of this analyzer rather than
+        guess at its settings: `POST /_analyze` derives one with the filters
+        turned off, and the difference between the two term streams is exactly
+        what the filters removed. Handing the config out is safe precisely
+        because it is frozen — a caller can read it and `replace` it into a new
+        config, but cannot reach in and change the one this analyzer is indexing
+        with, which is the guarantee the whole vertical rests on.
+        """
+        return self._config
+
     def analyze(self, text: str) -> list[Term]:
         """Analyze `text` into an ordered stream of terms. **The core of V1.**
 
