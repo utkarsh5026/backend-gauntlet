@@ -1419,7 +1419,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "clickhouse-connect", extras = ["async"], specifier = ">=1.7" },
+    { name = "clickhouse-connect", extras = ["async"], specifier = ">=1.7.2" },
     { name = "common-config", editable = "packages/common-config" },
     { name = "common-telemetry", editable = "packages/common-telemetry" },
     { name = "fastapi", specifier = ">=0.115" },
