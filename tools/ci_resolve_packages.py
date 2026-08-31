@@ -28,7 +28,6 @@ from pathlib import Path
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
     ("job-queue", "projects/04-job-queue"),
-    ("metrics-pipeline", "projects/05-metrics-pipeline"),
     ("object-store", "projects/06-object-store"),
     ("raft-kv", "projects/09-raft-kv"),
     ("api-gateway", "projects/10-api-gateway"),

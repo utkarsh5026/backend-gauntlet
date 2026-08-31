@@ -662,6 +662,25 @@ def find_frontends(proj: Path) -> list[Path]:
     return [proj / d for d in FRONTEND_DIRS if (proj / d / "package.json").exists()]
 
 
+def _server_command(proj: Path, *, use_cargo_watch: bool = True) -> str | None:
+    """How to start this project's server, or None if it has no entrypoint.
+
+    Rust and Python projects sit side by side in this repo (``/pythonize``
+    converts them one at a time), so the pane has to be discovered from what is
+    actually on disk rather than assumed.
+    """
+    if (proj / "src" / "main.rs").exists():
+        return "exec cargo watch -q -x run" if use_cargo_watch else "exec cargo run"
+
+    pyproject = proj / "pyproject.toml"
+    if pyproject.is_file():
+        for main_py in sorted((proj / "src").glob("*/main.py")):
+            # The console script is named after the package dir, hyphenated —
+            # the convention every converted project follows.
+            return f"exec uv run {main_py.parent.name.replace('_', '-')}"
+    return None
+
+
 def discover_dev_panes(
     proj: Path,
     *,
@@ -674,6 +693,7 @@ def discover_dev_panes(
 
     * compose file → ``deps`` pane (``docker compose up``)
     * ``src/main.rs`` → ``server`` (compose up -d --wait, optional migrate, cargo)
+    * ``pyproject.toml`` + ``src/<pkg>/main.py`` → ``server`` (uv run <console script>)
     * ``web|dashboard|ui|frontend/package.json`` → Bun Vite pane per dir
     """
     out: dict[str, dict[str, str]] = {}
@@ -682,16 +702,15 @@ def discover_dev_panes(
     if compose is not None:
         out[f"{prefix}deps"] = {"shell": "docker compose up", "cwd": str(proj)}
 
-    if (proj / "src" / "main.rs").exists():
+    server_cmd = _server_command(proj, use_cargo_watch=use_cargo_watch)
+    if server_cmd is not None:
         steps: list[str] = []
         if compose is not None:
             steps.append("docker compose up -d --wait")
-        if (proj / "migrations").is_dir():
+        if (proj / "src" / "main.rs").exists() and (proj / "migrations").is_dir():
+            # sqlx only; a Python project applies its schema from the app.
             steps.append("[ -f .env ] && sqlx migrate run")
-        if use_cargo_watch:
-            steps.append("exec cargo watch -q -x run")
-        else:
-            steps.append("exec cargo run")
+        steps.append(server_cmd)
         out[f"{prefix}server"] = {"shell": "; ".join(steps), "cwd": str(proj)}
 
     for fe in find_frontends(proj):
