@@ -27,6 +27,7 @@ members = [
     "projects/10-api-gateway",
     "projects/20-full-text-search",
     "projects/21-workflow-engine",
+    "projects/22-lsm-redis",
     "projects/23-dynamodb-core",
     "projects/24-lambda-compute",
     "projects/25-iam-sts",
