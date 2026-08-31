@@ -1,13 +1,13 @@
 # Durable Timers — A Sleep That Outlives the Process
 
-> **What this teaches:** why "wait 3 days" can never be a `tokio::sleep`, how a delay
+> **What this teaches:** why "wait 3 days" can never be an `asyncio.sleep`, how a delay
 > becomes a *fact in the database* swept by a scanner, and why firing it exactly once
 > is the hard part. No prior knowledge assumed (docs
 > [00](00-event-sourcing-history-log.md) and [01](01-deterministic-replay.md) set the
 > stage).
 >
 > **Prepares you for:** [SPEC](../SPEC.md) **V3 — Durable timers**, built in
-> [timers.rs](../src/timers.rs) (`schedule_timer`, `claim_due`, `mark_fired`,
+> [timers.py](../src/workflow_engine/timers.py) (`schedule_timer`, `claim_due`, `mark_fired`,
 > `fire_due_timers`) on the `timers` table in
 > [0001_init.sql](../migrations/0001_init.sql).
 
@@ -26,16 +26,17 @@ from the timer never having lived in a process at all.**
 The order workflow says "wait 3 days, then ship." Three days is 259,200,000 ms. The
 obvious code:
 
-```rust
-tokio::time::sleep(Duration::from_millis(259_200_000)).await;  // ← the bug
+```python
+await asyncio.sleep(259_200)  # ← the bug
 ```
 
-A `tokio::sleep` is an entry in the *runtime's in-memory timer wheel*. It is state
-in RAM, and doc 00 already taught us what RAM state is worth here:
+An `asyncio.sleep` is a callback parked in the *event loop's* heap of timer handles.
+It is state in RAM — one `TimerHandle` on one loop in one process — and doc 00 already
+taught us what RAM state is worth here:
 
 | Reality of a 3-day window | What happens to the in-memory sleep |
 |---|---|
-| The service deploys (probably ~daily) | new process, empty timer wheel — the wait is silently gone; the order never ships |
+| The service deploys (probably ~daily) | new process, new loop, no handles — the wait is silently gone; the order never ships |
 | The process OOMs / the pod is evicted | same — and nothing even knows a timer existed |
 | The engine scales from 3 replicas to 2 | the timers living in the retired replica vanish |
 | You run two engine instances | which one holds the sleep? both? now it fires twice |
@@ -73,7 +74,7 @@ the halves to see why — each partial commit is a distinct lie:
 | Event only, no row | history says a timer is pending; no scanner will ever fire it — the workflow waits forever, and replay (V2) faithfully reconstructs the wait every time |
 | Row only, no event | a scanner will eventually fire a timer that, per history, was never started — `TIMER_FIRED` for a ghost; replay rejects it as malformed (doc 01) |
 
-That is why [`schedule_timer`](../src/timers.rs) must run *inside the caller's
+That is why [`schedule_timer`](../src/workflow_engine/timers.py) must run *inside the caller's
 transaction* (the one V4 opens to append `TIMER_STARTED`), never a fresh one of its
 own — the scaffold's TODO says exactly this. Once that transaction commits, the
 timer is durable in the strongest sense: kill every process in the system and the
@@ -88,7 +89,7 @@ firing it must be exactly-once *into the log*.
 
 ## 3. Part two: the fire — at-least-once attempts, exactly-once history
 
-A background loop ([`scan_loop`](../src/timers.rs)) wakes every `interval` and asks:
+A background loop ([`scan_loop`](../src/workflow_engine/timers.py)) wakes every `interval` and asks:
 *which pending timers have `fire_at <= now()`?* Then, per due timer, three things
 must happen:
 
@@ -185,8 +186,11 @@ correctly, nothing to do.
 ## 5. The design space you'll navigate (not the answers)
 
 - **Transaction plumbing.** `schedule_timer` must join the *caller's* transaction —
-  how a `&mut Transaction` (vs the pool) flows through your APIs is a real Rust
-  design decision, and it shapes V4's completion path too.
+  whether a connection travels through your APIs as an argument, a context variable,
+  or a `with` block is a real design decision, and it shapes V4's completion path too.
+  (The scaffold takes the first option: an `Executor` — pool *or* connection — passed
+  explicitly, so joining the caller's transaction is the default rather than the thing
+  you remembered to do.)
 - **The fire bundle.** `fire_due_timers` composes V1 (append), V4 (enqueue), and V3
   (mark) into one atomic unit per timer — decide the unit: per-timer transactions or
   one for the whole batch, and what each choice does when one timer's fire fails.
@@ -197,7 +201,7 @@ correctly, nothing to do.
   moment? Decide who wins and which mechanism (the same claim? the state column?)
   decides it.
 
-**Hard stop.** The three `todo!()`s in [timers.rs](../src/timers.rs) plus
+**Hard stop.** The three `NotImplementedError`s in [timers.py](../src/workflow_engine/timers.py) plus
 `fire_due_timers` are the build; the queries and index are deliberately left out of
 this doc. `/hint` and `/quest` from here.
 
@@ -217,7 +221,7 @@ this doc. `/hint` and `/quest` from here.
 
 ## Where you'll build this
 
-**Module:** [src/timers.rs](../src/timers.rs) — `schedule_timer`, `claim_due`,
+**Module:** [src/workflow_engine/timers.py](../src/workflow_engine/timers.py) — `schedule_timer`, `claim_due`,
 `mark_fired`, `fire_due_timers`; table + index TODO in
 [0001_init.sql](../migrations/0001_init.sql). (`scan_loop` is already wired; it runs
 when `RUN_TIMER_SERVICE=true`.)

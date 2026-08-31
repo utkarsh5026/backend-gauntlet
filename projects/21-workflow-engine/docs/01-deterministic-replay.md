@@ -7,9 +7,10 @@
 > [00-event-sourcing-history-log.md](00-event-sourcing-history-log.md) first).
 >
 > **Prepares you for:** [SPEC](../SPEC.md) **V2 — Deterministic replay**, built in
-> [replay.rs](../src/replay.rs): `replay(&[Event]) -> WorkflowState` and
+> [replay.py](../src/workflow_engine/replay.py): `replay(history: list[Event]) -> WorkflowState`
+> and
 > `check_determinism`. The state you fold into is
-> [`WorkflowState`](../src/model.rs); the events come from V1's log.
+> [`WorkflowState`](../src/workflow_engine/model.py); the events come from V1's log.
 
 ---
 
@@ -69,7 +70,7 @@ that:
 | `now()` / wall clock | first run at 09:00 took the "before noon" branch; replay at 14:00 takes the other — B walks a path history never recorded |
 | `rand()` | first run drew 0.3 and skipped the discount; replay draws 0.9 and schedules an activity history has never heard of |
 | direct network / DB call | the world changed between runs — different response, different path; also the side effect just happened *twice* |
-| iterating a `HashMap` | iteration order differs per process → activities scheduled in a different order than recorded |
+| iterating a `set` | Python randomizes `str`/`bytes` hashes per process → activities scheduled in a different order than recorded |
 | reading an env var / config | deploy changed it between run and replay |
 
 This is why Temporal's docs famously ban `time.Now()`, `rand`, and bare goroutines
@@ -78,7 +79,7 @@ mechanism: **replay is re-execution, and re-execution must be bit-for-bit
 repeatable.**
 
 The last two rows are the nastiest kind: code that is *accidentally* deterministic
-in tests (HashMap happened to iterate the same way) and diverges only on the
+in tests (the set happened to iterate the same way in one process) and diverges only on the
 production crash-recovery path — exactly when replay must work.
 
 ### So how does a workflow ever do anything?
@@ -103,15 +104,15 @@ resumes with:       (from the live result)          (from the RECORDED event)
 The effectful world is replayed **from its recording**. That is also how a workflow
 legitimately gets the time or a random number: the engine (or an activity) produces
 it once, records it as an event, and replay reads the recording. `now_ms()` in
-[model.rs](../src/model.rs) carries exactly this warning — it's for the *server*
+[model.py](../src/workflow_engine/model.py) carries exactly this warning — it's for the *server*
 stamping events, never for workflow decisions.
 
 ---
 
 ## 3. The fold, concretely
 
-`replay` starts from [`WorkflowState::initial()`](../src/model.rs) and applies
-events in `event_id` order. Trace the order workflow's six events through the state:
+`replay` starts from a fresh [`WorkflowState()`](../src/workflow_engine/model.py) — every
+field defaulted, nothing folded yet — and applies events in `event_id` order. Trace the order workflow's six events through the state:
 
 ```text
  event                          state after folding it
@@ -144,7 +145,7 @@ a schedule that never happened? The tempting move is to shrug and fold what's th
 The SPEC says reject — because a gap is not a formatting problem, it is **evidence
 of corruption** (a lost write, a bug in V1's atomicity), and folding around it
 produces a state that is *plausible and wrong*, the worst combination. A loud
-[`AppError`](../src/error.rs) at replay time is the last tripwire before a corrupt
+[`AppError`](../src/workflow_engine/errors.py) at replay time is the last tripwire before a corrupt
 state starts making decisions.
 
 ---
@@ -161,7 +162,7 @@ but its (new) code, re-executed from the top, *asks to schedule `check_fraud`* a
 the point where history says `charge_card` was scheduled.
 
 The recorded past and the re-executed present disagree. Something is non-deterministic
-— maybe a deploy, maybe a `HashMap` — and the engine can *see* it, because the worker
+— maybe a deploy, maybe a `set` — and the engine can *see* it, because the worker
 hands back its commands and history already knows what they must be:
 
 ```text
@@ -173,7 +174,7 @@ history (the record)              worker's replayed commands
 ```
 
 `check_determinism(history, replayed_through, commands)` in
-[replay.rs](../src/replay.rs) is that comparison: fold up to where the worker
+[replay.py](../src/workflow_engine/replay.py) is that comparison: fold up to where the worker
 claims it replayed, then check the commands against what the *later recorded events*
 imply. Three rules of the game:
 
@@ -201,14 +202,14 @@ many workers. The fold's contract is identical.
 ## 5. The design space you'll navigate (not the answers)
 
 - **What does each event type do to the state?** The doc comment in
-  [replay.rs](../src/replay.rs) sketches the mapping; the interesting decisions are
+  [replay.py](../src/workflow_engine/replay.py) sketches the mapping; the interesting decisions are
   the edge ones — what does a *terminal* state accept afterward? what exactly do the
   task bookkeeping events advance?
 - **Where does id-validation live in the fold?** You must reject gaps and
   out-of-order ids — decide whether that's a precondition pass or woven into the
   fold, and what error carries enough context to debug a corrupt run.
 - **What, precisely, does a command "match"?** `check_determinism` compares a
-  [`Command`](../src/model.rs) against recorded events — decide which fields are
+  [`Command`](../src/workflow_engine/model.py) against recorded events — decide which fields are
   identity (type? activity_type? input bytes?) and what "the events after
   `replayed_through` imply" means when one command produced several events.
 - **How do you generate *valid* random histories** for the property test? The
@@ -216,7 +217,7 @@ many workers. The fold's contract is identical.
   designing it will teach you the state machine as well as the fold does.
 
 **Hard stop.** The fold body and the divergence check are the V2 exercise — the two
-`todo!()`s in [replay.rs](../src/replay.rs). `/hint` for nudges, `/quest` to build it
+`NotImplementedError`s in [replay.py](../src/workflow_engine/replay.py). `/hint` for nudges, `/quest` to build it
 against acceptance tests.
 
 ---
@@ -235,7 +236,7 @@ against acceptance tests.
 
 ## Where you'll build this
 
-**Module:** [src/replay.rs](../src/replay.rs) — two `todo!()`s: `replay` and
+**Module:** [src/workflow_engine/replay.py](../src/workflow_engine/replay.py) — two `NotImplementedError`s: `replay` and
 `check_determinism`. Pure functions: test with plain `Vec<Event>`, no Postgres.
 
 **This doc unlocks V2's Done-when criteria:** pure fold · fold-order invariance ·

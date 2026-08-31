@@ -6,10 +6,10 @@
 > No prior knowledge assumed (docs [00](00-event-sourcing-history-log.md)–[02](02-durable-timers.md) first).
 >
 > **Prepares you for:** [SPEC](../SPEC.md) **V4 — gRPC worker dispatch**, built in
-> [dispatch.rs](../src/dispatch.rs) over the `task_queue` table in
+> [dispatch.py](../src/workflow_engine/dispatch.py) over the `task_queue` table in
 > [0001_init.sql](../migrations/0001_init.sql), speaking the RPCs in
 > [workflow.proto](../proto/workflow.proto). The token type is
-> [`TaskToken`](../src/model.rs).
+> [`TaskToken`](../src/workflow_engine/model.py).
 
 ---
 
@@ -130,7 +130,7 @@ double-scheduled activities. Plausible history, written by a process that no lon
 owned the work. (V1's gapless-id collision would catch some of this; the token check
 catches *all* of it, before anything is attempted.)
 
-The fix is the [`TaskToken`](../src/model.rs). Every poll response carries one —
+The fix is the [`TaskToken`](../src/workflow_engine/model.py). Every poll response carries one —
 `(run_id, kind, scheduled_event_id)` encoded as opaque bytes — and every completion
 must present it. On completion the engine checks the token **against the live
 claim**: is this task row still claimed, and by this claimant? B's completion passed
@@ -148,7 +148,7 @@ matches a *live* claim.)
 
 ## 5. Transactional completion: the orchestrator's core
 
-`complete_workflow_task` in [dispatch.rs](../src/dispatch.rs) is where every
+`complete_workflow_task` in [dispatch.py](../src/workflow_engine/dispatch.py) is where every
 vertical meets. When a worker reports its commands, the engine must:
 
 ```text
@@ -197,7 +197,7 @@ so double-execution is countable rather than trusted from logs.
 Now say the whole sentence with the parts pointing at modules:
 
 - **at-least-once delivery** (this doc — leases lapse, tasks resurface)
-- **+ deterministic replay** ([replay.rs](../src/replay.rs) — the new worker
+- **+ deterministic replay** ([replay.py](../src/workflow_engine/replay.py) — the new worker
   recomputes the exact state)
 - **+ idempotent effects** (activity idempotency keys; V3's exactly-once fire;
   V1's duplicate-id rejection)
@@ -213,8 +213,11 @@ risks a double charge. All three or nothing.
 
 - **How does a long-poll actually wait?** Blocking a gRPC call for 30 s while a
   claim might appear at any moment — polling internally? notification
-  (`LISTEN/NOTIFY`? a `tokio::sync` primitive per queue?)? The latency/complexity
-  tradeoff is yours, and the boss's p99 ≤ 50 ms will judge it.
+  (`LISTEN/NOTIFY`? an `asyncio.Event` per queue?)? The latency/complexity tradeoff is
+  yours, and the boss's p99 ≤ 50 ms will judge it. Note the asymmetry: an in-process
+  `asyncio.Event` is exact and free but invisible to a second engine instance;
+  `LISTEN/NOTIFY` crosses processes but costs a connection and is best-effort, so the
+  poll fallback stays either way.
 - **What exactly is "the live claim check"?** Which columns prove the presenter
   still holds the task, and how does it compose with the delete inside one
   transaction without racing another claimer?
@@ -229,7 +232,7 @@ risks a double charge. All three or nothing.
   workflow — whether retry policy lives in the engine or the workflow is a real
   architecture fork; Temporal chose engine-side per-activity policies.
 
-**Hard stop.** The seven `todo!()`s in [dispatch.rs](../src/dispatch.rs) are the
+**Hard stop.** The seven `NotImplementedError`s in [dispatch.py](../src/workflow_engine/dispatch.py) are the
 build — the largest vertical because it's the glue. `/hint` for nudges, `/quest` to
 run it against acceptance tests.
 
@@ -249,7 +252,7 @@ run it against acceptance tests.
 
 ## Where you'll build this
 
-**Module:** [src/dispatch.rs](../src/dispatch.rs) — `start_workflow`,
+**Module:** [src/workflow_engine/dispatch.py](../src/workflow_engine/dispatch.py) — `start_workflow`,
 `poll_workflow_task`, `complete_workflow_task`, `poll_activity_task`,
 `complete_activity_task`, `fail_activity_task`, `get_result`; plus the `task_queue`
 index TODO in [0001_init.sql](../migrations/0001_init.sql).

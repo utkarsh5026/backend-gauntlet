@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — Event sourcing: store history, not state *(V1 · `src/history.rs`)*
+## 🧠 Card 1 — Event sourcing: store history, not state *(V1 · `src/workflow_engine/history.py`)*
 
 **The problem.** "Charge the card, wait 3 days, ship, email" is a function that outlives every process that runs it — it will be interrupted by crashes, deploys, and evictions many times before it finishes. A struct in RAM dies with the process. A mutable `status = 'shipping'` column tells a fresh worker *where* the workflow is but not *how it got there* — which activities already ran? what did they return? — and "how it got here" is exactly what resuming mid-sentence requires.
 
@@ -28,11 +28,11 @@
 
 ---
 
-## 🧠 Card 2 — Deterministic replay: the state machine is a pure fold *(V2 · `src/replay.rs`)*
+## 🧠 Card 2 — Deterministic replay: the state machine is a pure fold *(V2 · `src/workflow_engine/replay.py`)*
 
 **The problem.** A worker holding a workflow's in-memory state dies. Another worker must reconstruct that state *exactly* — same pending activities, same variables, same next decision — or the workflow continues from somewhere it never was. Reconstruction means re-running the fold; re-running means the fold must produce the identical result on any machine, any time, any batch split. One `now()` call in workflow code and the replay diverges silently.
 
-**The idea.** `replay(&[Event]) -> WorkflowState` is a **pure function**: no clock, no randomness, no IO — those would replay differently than they ran. Effects follow one loop: workflow code emits *commands*; the engine executes them and records *events*; replay consumes the recorded events, so the effectful world is replayed from its recording, deterministically. Purity also arms the engine's tripwire: when a worker's commands contradict what history already recorded (because the workflow *code* changed under a running execution), the engine detects the divergence and rejects — "expected ScheduleActivity(charge), got ScheduleActivity(refund)" — instead of corrupting the execution.
+**The idea.** `replay(history: list[Event]) -> WorkflowState` is a **pure function**: no clock, no randomness, no IO — those would replay differently than they ran. Effects follow one loop: workflow code emits *commands*; the engine executes them and records *events*; replay consumes the recorded events, so the effectful world is replayed from its recording, deterministically. Purity also arms the engine's tripwire: when a worker's commands contradict what history already recorded (because the workflow *code* changed under a running execution), the engine detects the divergence and rejects — "expected ScheduleActivity(charge), got ScheduleActivity(refund)" — instead of corrupting the execution.
 
 **In the wild:** Temporal's determinism constraints are famous developer folklore (no `time.Now()`, no `rand`, no bare goroutines in workflow code — now you know exactly why); the same replay idea runs event-sourced aggregates and redux-style reducers.
 
@@ -48,13 +48,13 @@
 - How do real engines version workflow code so deploys don't break running executions (patch/version markers recorded into history)?
 - Raft's apply loop (project 09) demands the same determinism. What's the shared theorem — same log + pure fold = same state — and where do the two systems differ (who writes the log)?
 
-**Trap:** code that's *accidentally* deterministic in tests — iterating a HashMap, reading env vars, formatting floats. Replay bugs from incidental nondeterminism are the worst kind: they surface only on the production crash-recovery path, i.e., exactly when you need replay to work.
+**Trap:** code that's *accidentally* deterministic in tests — iterating a `set` (Python randomizes string hashes *per process*, so this is reproducible in your test run and not across machines), reading env vars, formatting floats. Replay bugs from incidental nondeterminism are the worst kind: they surface only on the production crash-recovery path, i.e., exactly when you need replay to work.
 
 ---
 
-## 🧠 Card 3 — Durable timers: a sleep that outlives the process *(V3 · `src/timers.rs`)*
+## 🧠 Card 3 — Durable timers: a sleep that outlives the process *(V3 · `src/workflow_engine/timers.py`)*
 
-**The problem.** "Wait 3 days" cannot be `tokio::sleep(3 days)` — the process will deploy, crash, or scale down long before it fires, and the sleep dies with it. The delay must be a *fact in the database*, not a state in a runtime. And firing it has a distributed sting: the scanner that fires timers runs on multiple engine instances, may crash mid-fire, and may run twice — while `TIMER_FIRED` must land in history exactly once.
+**The problem.** "Wait 3 days" cannot be `asyncio.sleep(3 days)` — the process will deploy, crash, or scale down long before it fires, and the sleep dies with it. The delay must be a *fact in the database*, not a state in a runtime. And firing it has a distributed sting: the scanner that fires timers runs on multiple engine instances, may crash mid-fire, and may run twice — while `TIMER_FIRED` must land in history exactly once.
 
 **The idea.** `StartTimer` persists a due-time row **in the same transaction** as its `TIMER_STARTED` event — the timer can't be lost with the process that created it, because it was never *in* the process. A background scanner sweeps due timers: append `TIMER_FIRED` + schedule the wake-up task + mark fired, atomically — a crash mid-fire leaves the timer still due (retry), never fired-without-wakeup. Concurrent scanners dedupe with the claim pattern (`SKIP LOCKED` — project 04, again). The scan reads only what's due (index on due-time), so a million dormant timers cost nothing per sweep.
 
@@ -75,7 +75,7 @@
 
 ---
 
-## 🧠 Card 4 — Dispatch: long-poll + leases + transactional completion *(V4 · `src/dispatch.rs`)*
+## 🧠 Card 4 — Dispatch: long-poll + leases + transactional completion *(V4 · `src/workflow_engine/dispatch.py`)*
 
 **The problem.** Work must reach workers with none lost and none duplicated-in-effect — while workers crash holding tasks, complete tasks *after* losing their claim (the zombie-worker race), and poll from many processes at once. Push-based dispatch needs the engine to track worker liveness; naive pull either busy-polls or waits seconds. And completion is a multi-part act (validate, append events, schedule side effects, release the claim) that must not half-happen.
 
@@ -98,7 +98,7 @@
 
 ---
 
-## 🧠 Card 5 — Sticky execution: a cache that must never change the answer *(V5 · `src/sticky.rs`)*
+## 🧠 Card 5 — Sticky execution: a cache that must never change the answer *(V5 · `src/workflow_engine/sticky.py`)*
 
 **The problem.** Replay is correct and *expensive*: a long-running workflow folds 10,000 events to make decision 10,001 — on every task. Multiply by throughput and the engine spends its life re-deriving state it derived seconds ago. But the obvious fix — cache the folded state — has a landmine: the cache lives in *one specific worker's memory*, and that worker can die, hang, or get deployed away at any moment.
 

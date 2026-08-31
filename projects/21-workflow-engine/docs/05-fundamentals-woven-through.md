@@ -6,9 +6,9 @@
 > execution engine* specifically needs it. No prior knowledge assumed; the verticals
 > are covered in docs [00](00-event-sourcing-history-log.md)–[04](04-sticky-execution.md).
 >
-> **Anchored to:** [main.rs](../src/main.rs) (the gRPC adapter + shutdown wiring —
-> already implemented), [error.rs](../src/error.rs) (`AppError` → status codes),
-> [metrics.rs](../src/metrics.rs) (the graded series), and
+> **Anchored to:** [main.py](../src/workflow_engine/main.py) (the gRPC adapter + shutdown wiring —
+> already implemented), [errors.py](../src/workflow_engine/errors.py) (`AppError` → status codes),
+> [metrics.py](../src/workflow_engine/metrics.py) (the graded series), and
 > [workflow.proto](../proto/workflow.proto).
 
 ---
@@ -41,18 +41,21 @@ Two rows deserve a pause:
 - **Empty ≠ error.** A timed-out poll is the single most common response an idle
   system produces. Encode it as a failure and every healthy worker's logs turn to
   noise, retry/backoff logic triggers on non-events, and real errors drown. The
-  scaffold already honors this — see `poll_workflow_task` in
-  [main.rs](../src/main.rs) returning `PollWorkflowTaskResponse::default()`.
+  scaffold already honors this — see `PollWorkflowTask` in
+  [service.py](../src/workflow_engine/service.py) returning a default-constructed
+  `PollWorkflowTaskResponse()`.
 - **Non-determinism is `FAILED_PRECONDITION`, never 500.** The request was
   well-formed; the *replay contract* was violated. The distinction "my code
   diverged" vs "the engine broke" is the difference between a worker author fixing
   their workflow and them filing a useless bug against you. The mapping already
-  lives in [error.rs](../src/error.rs) — your V2 code just has to return
-  `AppError::NonDeterministic` with a message worth reading (`expected X, got Y`).
+  lives in [errors.py](../src/workflow_engine/errors.py) — your V2 code just has to raise
+  `NonDeterministic` with a message worth reading (`expected X, got Y`). It is the one
+  error string in this engine that reaches the caller verbatim, because the caller is the
+  only one who can act on it.
 
 The general lesson: **design your error taxonomy as carefully as your success
-types.** `AppError`'s variants are the engine's failure vocabulary; the
-`From<AppError> for Status` impl is a *published contract*, and the checklist's
+types.** The `AppError` subclasses are the engine's failure vocabulary, each carrying its
+own `status_code`; that mapping is a *published contract*, and the checklist's
 proof is RPC tests asserting the codes.
 
 Note also what the adapter does with internal errors: log the details server-side,
@@ -69,14 +72,14 @@ corrupted:
 **At the door — input validation (`INVALID_ARGUMENT`, before touching the store).**
 The frontend rejects garbage while it's still cheap and harmless: empty
 `task_queue`, non-UUID `run_id`, unknown `command_type`, a command missing its
-required field. [main.rs](../src/main.rs) already does much of this
+required field. [main.py](../src/workflow_engine/main.py) already does much of this
 (`decode_command` refuses an empty `activity_type`, an unspecified command type, a
 malformed token). Why *before* the store? A validation that happens mid-transaction
 has already spent a connection, taken locks, maybe written rows it must roll back —
 and a validation error that surfaces as a DB error lies about whose fault it is.
 
 **At the vault — ownership verification (the task token vs the live claim).**
-A [`TaskToken`](../src/model.rs) is not a secret capability — it's JSON bytes any
+A [`TaskToken`](../src/workflow_engine/model.py) is not a secret capability — it's JSON bytes any
 process could fabricate (`{run_id, kind, scheduled_event_id}`). The checklist's
 phrase is precise: *unforgeable-enough for the model and not trusted blindly*. The
 security isn't in the token; it's in the check — a completion is honored only if
@@ -95,8 +98,12 @@ replay of that run, and can wedge the poll path. The checklist wants a configure
 max size, rejected cleanly (`INVALID_ARGUMENT`) at the door. That check doesn't
 exist in the scaffold — it's yours to add, with the oversize-payload test as proof.
 
-**SQL:** every query compile-time-checked (`sqlx::query!`), zero string-concatenated
-SQL — house rule, and the reason injection isn't on this engine's threat list.
+**SQL:** every query is a literal string with `$1` placeholders, sent to Postgres
+separately from the data by asyncpg — zero f-strings, `%` or `+` anywhere near SQL.
+House rule, and the reason injection isn't on this engine's threat list. Note that
+"parameterized" is doing the work, not "an ORM would have saved me": the placeholder is
+what makes the value data rather than syntax, and raw asyncpg gives you that while still
+letting you read the exact statement the SPEC grades.
 
 ---
 
@@ -107,26 +114,34 @@ frequent killer is your own rolling deploy — and unlike a crash, a deploy send
 SIGTERM first, which means you get to choose what dying looks like. The checklist
 requires two drains:
 
-1. **In-flight gRPC calls finish.** The tonic server stops accepting new
-   connections but lets in-flight calls complete — including parked long-polls. A
-   completion cut off mid-transaction is safe (the transaction aborts, the lease
-   lapses, V4 redelivers) but *wasteful*: you just converted a clean finish into a
-   visibility-timeout stall for that workflow.
+1. **In-flight gRPC calls finish.** `server.stop(grace)` stops accepting new calls
+   but lets in-flight ones complete. A completion cut off mid-transaction is safe (the
+   transaction aborts, the lease lapses, V4 redelivers) but *wasteful*: you just
+   converted a clean finish into a visibility-timeout stall for that workflow. Parked
+   long-polls are the special case — waiting out a 5 s poll window inside a 5 s grace
+   is a coin flip, so they are *woken* rather than waited on.
 2. **The timer scan loop finishes its current pass.** A pass killed between claim
    and commit leaves its work to the next scan (V3's atomic fire makes that safe) —
    but a loop that exits *cleanly at a pass boundary* leaves nothing in doubt.
 
-Look at how [main.rs](../src/main.rs) already wires this — it's a pattern worth
+Look at how [main.py](../src/workflow_engine/main.py) already wires this — it's a pattern worth
 stealing for every service you ever write:
 
 ```text
-ctrl_c  ──►  watch::channel(false→true)  ──┬──►  tonic  serve_with_shutdown(…)
-                                           ├──►  axum   with_graceful_shutdown(…)   (metrics sidecar)
-                                           └──►  timers::scan_loop  tokio::select! → break
+SIGTERM  ──►  loop.add_signal_handler → stop.set()
+                │
+                ├──►  health → NOT_SERVING          (tell the balancer first)
+                ├──►  dispatcher.shutdown.set()     (parked long-polls return "no work")
+                ├──►  admin.should_exit = True      (uvicorn drains /metrics + /healthz)
+                ├──►  await server.stop(grace)      (in-flight gRPC calls finish)
+                └──►  await timer_task              (scan loop stops at a pass boundary)
 ```
 
-One broadcast (`tokio::sync::watch`), every long-lived task selects on it, `main`
-joins them all before exiting. The scaffold gives you the wiring; the checklist's
+One `asyncio.Event` per concern, every long-lived task waiting on one, `main` awaiting
+them all before it returns. Note `loop.add_signal_handler` rather than `signal.signal`:
+the handler runs as a loop callback instead of interrupting arbitrary bytecode, so it is
+allowed to touch asyncio objects — setting an `Event` from a raw signal handler is the
+subtle bug this avoids. The scaffold gives you the wiring; the checklist's
 box flips when the *behavior* is demonstrated — no task claimed-and-abandoned by
 your own shutdown.
 
@@ -141,7 +156,7 @@ The Reaper, cheapness for the ten deploys you'll do this week.
 Every project in the gauntlet has metrics. What's specific here is *what* must be
 observable: this engine's product is a guarantee ("exactly once, to completion"),
 and a guarantee you can't measure is a guess. The graded series
-([metrics.rs](../src/metrics.rs) — constants already defined, call sites are your
+([metrics.py](../src/workflow_engine/metrics.py) — constants already defined, call sites are your
 job) each answer a question the boss fight will ask out loud:
 
 | Series | The question it answers |
@@ -161,10 +176,14 @@ replayed as structured fields — which together are exactly the dataset you'll 
 to debug the boss fight's numbers.
 
 Mechanics worth knowing: gRPC has no natural place for a scrape endpoint, so a tiny
-axum sidecar serves `/metrics` + `/healthz` on a second port (9090) beside tonic
-(7233) — already wired. The `metrics` facade writes to a process-global recorder;
-until `install()` runs, the macros are no-ops, which is why unit tests need no
-metrics setup.
+Starlette app serves `/metrics` + `/healthz` on a second port (9121) beside the gRPC
+frontend (7233) — already wired, and on the *same event loop*, so a blocking call takes
+both down together (which is the feedback you want). `prometheus_client` collectors
+register into the default registry at *import* time, so declaring a metric in
+[metrics.py](../src/workflow_engine/metrics.py) is all the wiring there is — no
+`install()` to call and no ordering constraint, which is why unit tests need no metrics
+setup. The catch is the mirror image: a labelled collector renders nothing until a label
+combination exists, so closed label sets are pre-created there on purpose.
 
 ---
 
@@ -196,10 +215,10 @@ it's derived: throw it away and the log regenerates it, byte-identical (V2).
 ## Where you'll build this
 
 No single module — these thread through all five verticals as you build them:
-validation and status codes ride [error.rs](../src/error.rs) + the adapter in
-[main.rs](../src/main.rs) (partly done — the payload size cap is yours to add);
+validation and status codes ride [errors.py](../src/workflow_engine/errors.py) + the adapter in
+[main.py](../src/workflow_engine/main.py) (partly done — the payload size cap is yours to add);
 the token check lands inside V4's completion transaction; metric call sites go
-where [dispatch.rs](../src/dispatch.rs) and [timers.rs](../src/timers.rs) TODOs
+where [dispatch.py](../src/workflow_engine/dispatch.py) and [timers.py](../src/workflow_engine/timers.py) TODOs
 name them; shutdown wiring exists and needs its behavior proven.
 
 **This doc unlocks the horizontal checklist** in [SPEC.md](../SPEC.md): the

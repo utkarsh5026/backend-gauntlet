@@ -1,12 +1,22 @@
+# `docker compose up` brings up Postgres, pgweb, AND the engine itself (built
+# from ./Dockerfile) — a container-parity stack. Migrations stay a separate,
+# explicit step (see `make migrate`): a fresh Postgres volume has no tables yet,
+# so the engine will fail its healthcheck and restart-loop until they have been
+# applied once. For the fast edit loop prefer `make dev` (host `uv run`) —
+# `make dev-container` is for checking the real deploy shape, which is the only
+# place uvloop and PID-1 signal handling are exercised.
+#
+# Host ports are project-scoped (postgres 5421, pgweb 8021); container-internal
+# ports stay canonical, so service-to-service URLs and healthchecks are untouched.
 services:
-  # Postgres is the engine's single durable source of truth. THREE things live here,
-  # and every one of them must survive a crash for "durable execution" to mean
-  # anything:
-  #   • history_events — the append-only event log; folding it rebuilds any execution.
-  #   • task_queue     — the workflow/activity tasks the dispatcher hands to workers.
+  # Postgres is the engine's single durable source of truth. THREE things live
+  # here, and every one of them must survive a crash for "durable execution" to
+  # mean anything:
+  #   • history_events — the append-only event log; folding it rebuilds any run.
+  #   • task_queue     — the workflow/activity tasks handed to workers.
   #   • timers         — durable timers, so a `sleep(3 days)` outlives every process.
-  # There is deliberately no Redis: the sticky-state cache (V5) is worker-LOCAL memory,
-  # an optimization over replay — never a second source of truth.
+  # There is deliberately no Redis: the sticky-state cache (V5) is worker-LOCAL
+  # memory, an optimization over replay — never a second source of truth.
   postgres:
     image: postgres:16-alpine
     environment:
@@ -23,6 +33,39 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  workflow-engine:
+    build:
+      context: ../..
+      dockerfile: projects/21-workflow-engine/Dockerfile
+    env_file: ./.env
+    environment:
+      DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow
+    ports:
+      - "7233:7233"
+      - "9121:9121"
+    healthcheck:
+      # The admin HTTP port, not gRPC: no grpc_health_probe binary in the image.
+      # (grpc.health.v1 is registered too — that one is for gRPC load balancers.)
+      test: ["CMD", "curl", "-fsS", "http://localhost:9121/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  pgweb:
+    image: sosedoff/pgweb:latest
+    environment:
+      PGWEB_DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow?sslmode=disable
+    ports:
+      - "8021:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:

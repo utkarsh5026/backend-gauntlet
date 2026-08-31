@@ -14,7 +14,7 @@ blocked-on: ~           # free text, or ~ for none
 > that happened, from which the current state can be **replayed** on any machine at any
 > time. Get that right and a killed worker is a non-event — another one folds the history
 > and continues mid-sentence. Get it wrong — cache a mutable balance, read the wall clock
-> in workflow code, fire a timer from a `tokio::sleep`, deliver a task exactly-once — and
+> in workflow code, fire a timer from an `asyncio.sleep`, deliver a task exactly-once — and
 > the failure isn't a 500, it's a workflow that quietly did the wrong thing, or the same
 > thing twice, and you find out in production. This project is where **crash-safety stops
 > being a library feature you trust and becomes one you built**.
@@ -48,8 +48,8 @@ mutable `status` column (it tells you *where* you are, never *how you got here* 
 "how you got here" is what a fresh worker needs to resume). Instead every fact is an
 **immutable event** appended to a per-execution log: `WORKFLOW_STARTED`,
 `ACTIVITY_SCHEDULED`, `ACTIVITY_COMPLETED`, `TIMER_STARTED`, `TIMER_FIRED`,
-`WORKFLOW_COMPLETED`. Build the log in `src/history.rs`, backed by an append-only
-`history_events` table.
+`WORKFLOW_COMPLETED`. Build the log in `src/workflow_engine/history.py`, backed by an
+append-only `history_events` table.
 
 **Done when ALL true:**
 - [ ] Every execution's history is an **append-only** log — no code path updates or deletes a posted event; a correction is a *new* event, never an edit.
@@ -58,9 +58,10 @@ mutable `status` column (it tells you *where* you are, never *how you got here* 
 - [ ] The full history for a run can be **loaded back in order**, and a **suffix** (events after id `k`) can be loaded on its own — the delta a sticky worker needs (V5).
 - [ ] The mutable `status` column, if you keep one, is a **projection** that always agrees with the history — never a second source of truth the log can drift from.
 
-**Proof:** integration tests (real Postgres, gated on `DATABASE_URL`) that: start writes
-event 1 = `WORKFLOW_STARTED`; appends assign 2,3,4… and read back in order; a duplicate
-event id fails and writes nothing; `load_history_after(k)` returns exactly the tail.
+**Proof:** integration tests against a real Postgres (the `pg_pool` fixture, which skips
+cleanly when there isn't one) that: start writes event 1 = `WORKFLOW_STARTED`; appends
+assign 2,3,4… and read back in order; a duplicate event id fails and writes nothing;
+`load_history_after(k)` returns exactly the tail.
 `docs/21-design.md` states why event-sourcing over a mutable state column.
 
 *Concept to internalize:* **event sourcing** — state as a fold over an immutable event
@@ -69,14 +70,15 @@ the difference between a command (a request) and an event (a recorded fact).
 
 ### V2. Deterministic replay — *rebuild state from history, identically, every time*
 State is not stored; it is **recomputed** by folding history left-to-right. Build the
-fold in `src/replay.rs`: a *pure function* `replay(&[Event]) -> WorkflowState`. "Pure" is
-the whole game — replay the same events on any worker, at any time, and you must get
-byte-identical state. That is what lets a crashed execution resume on a different machine
-as if nothing happened. It also forces the rule that defines workflow code: it may not
-read the clock, roll a random number, or call the network directly — every such effect
-would replay differently. Effects go out as *commands* and come back as *recorded
-events*, which replay deterministically. The engine's stake is catching a worker whose
-replay **diverged** from what history already records.
+fold in `src/workflow_engine/replay.py`: a *pure function* `replay(history: list[Event])
+-> WorkflowState`. "Pure" is the whole game — replay the same events on any worker, at
+any time, and you must get an identical state. That is what lets a crashed execution
+resume on a different machine as if nothing happened. It also forces the rule that
+defines workflow code: it may not read the clock, roll a random number, or call the
+network directly — every such effect would replay differently. Effects go out as
+*commands* and come back as *recorded events*, which replay deterministically. The
+engine's stake is catching a worker whose replay **diverged** from what history already
+records.
 
 **Done when ALL true:**
 - [ ] `replay` is a **pure function**: no clock, no IO, no randomness — the same events in always yield the same `WorkflowState` out.
@@ -85,9 +87,9 @@ replay **diverged** from what history already records.
 - [ ] A **malformed** history (a gap, an out-of-order id, an event that references an activity/timer that was never scheduled) is **rejected**, not folded into a wrong-but-plausible state.
 - [ ] **Non-determinism is caught:** when a worker returns commands that contradict a recorded event, the engine rejects the task with a clear "expected X, got Y" — it does not silently corrupt the execution.
 
-**Proof:** a property test that for any valid history, `replay(h)` is idempotent and
-split-invariant (`prop_replay_is_deterministic`, no DB needed); a unit test that a
-start→schedule→complete history folds to the expected terminal state; a test that
+**Proof:** a hypothesis property test that for any valid history, `replay(h)` is
+idempotent and split-invariant (`test_replay_is_deterministic`, no DB needed); a unit test
+that a start→schedule→complete history folds to the expected terminal state; a test that
 `check_determinism` flags a divergent command stream. `docs/21-design.md` lists the
 workflow-code determinism rules (no wall clock, no rand, no direct IO) and *why*.
 
@@ -97,13 +99,14 @@ enables recovery also lets the engine *detect* a workflow whose code changed und
 running execution (the "non-determinism error").
 
 ### V3. Durable timers — *a sleep that outlives the process*
-A workflow that says "wait 3 days, then charge" cannot hold that delay in a
-`tokio::sleep` — the process won't live three days, and if it dies the sleep is gone with
+A workflow that says "wait 3 days, then charge" cannot hold that delay in an
+`asyncio.sleep` — the process won't live three days, and if it dies the sleep is gone with
 it. A durable timer is a **persisted due-time**: `StartTimer` writes a row *in the same
 transaction* that appends `TIMER_STARTED` (so the timer can never be lost with the
 process that created it), and a background scanner fires it later by appending
-`TIMER_FIRED` and waking the workflow. Build it in `src/timers.rs`. Restart the whole
-engine mid-wait and the timer still fires — because it was never in memory to begin with.
+`TIMER_FIRED` and waking the workflow. Build it in `src/workflow_engine/timers.py`.
+Restart the whole engine mid-wait and the timer still fires — because it was never in
+memory to begin with.
 
 **Done when ALL true:**
 - [ ] A started timer is **durable**: it and its `TIMER_STARTED` event commit atomically, so the timer survives a full engine restart with no in-memory state to lose.
@@ -127,10 +130,10 @@ Workers aren't pushed work; they **long-poll** for it. `PollWorkflowTask` blocks
 task is claimable or the poll times out. When a worker claims a task it takes a
 **visibility-timeout lease**, not ownership: complete it in time and the lease releases;
 crash first and the lease lapses, the task becomes claimable again, and another worker
-replays and continues. Build the task-queue engine in `src/dispatch.rs`. This module is
-also the server-side **orchestrator**: it validates the worker's commands against history
-(V2), turns them into events + side effects (an activity task, a durable timer via V3, a
-completion), and refreshes the sticky pin (V5).
+replays and continues. Build the task-queue engine in `src/workflow_engine/dispatch.py`.
+This module is also the server-side **orchestrator**: it validates the worker's commands
+against history (V2), turns them into events + side effects (an activity task, a durable
+timer via V3, a completion), and refreshes the sticky pin (V5).
 
 **Done when ALL true:**
 - [ ] `PollWorkflowTask` / `PollActivityTask` **long-poll**: they block up to a timeout for work and return an empty response (not an error) when there is none.
@@ -154,10 +157,11 @@ folding its *entire* history on every task — 10,000 events just to make the 10
 decision. The fix is **sticky execution**: after a worker runs a task, route that
 execution's next task *back to the same worker*, which kept the folded state in memory;
 it then only needs the events since it last ran. Build the routing table in
-`src/sticky.rs`. The lesson is where the cache lives — in one *specific* worker's memory —
-so it is valid only while that worker is alive. If the sticky worker goes silent (The
-Reaper), the pin expires and the execution falls back to the normal queue with a **full
-replay**. Correctness never depends on the cache; it only makes the common case cheap.
+`src/workflow_engine/sticky.py`. The lesson is where the cache lives — in one *specific*
+worker's memory — so it is valid only while that worker is alive. If the sticky worker
+goes silent (The Reaper), the pin expires and the execution falls back to the normal
+queue with a **full replay**. Correctness never depends on the cache; it only makes the
+common case cheap.
 
 **Done when ALL true:**
 - [ ] After a worker completes a task, that execution's **next** workflow task is routed back to the **same** worker (a sticky hit), which receives only the events since it last ran — not the whole history.
@@ -194,12 +198,20 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] **Input validation at the frontend:** an empty `task_queue`, a non-UUID `run_id`, an unknown `command_type`, or a command missing its required field is rejected with `INVALID_ARGUMENT` *before* touching the store. *(Proof: validation tests.)*
 - [ ] **Task tokens are unforgeable-enough for the model and not trusted blindly:** a token is validated against the live claim, so a replayed or hand-crafted token can't commit a result for a task the sender doesn't hold. *(Proof: stale-token test.)*
 - [ ] **Payloads are opaque and size-bounded:** workflow/activity inputs and results are treated as bytes the engine never executes, with a configured max size rejected cleanly. *(Proof: oversize-payload test.)*
-- [ ] **No SQL injection:** every query is `sqlx` compile-time-checked (`query!`) — zero string-concatenated SQL.
+- [ ] **No SQL injection:** every query is a literal string with `$1` placeholders that asyncpg sends to the server separately from the data — zero f-strings, `%` or `+` anywhere near SQL. *(Proof: the queries themselves — grep the modules for an interpolated statement and find none.)*
 
 ### Observability
-- [ ] `tracing` span per RPC (a workflow-task span should carry `run_id` and `event_id` so a log line ties back to the exact history position it advanced).
+- [ ] A **bound log context per RPC** (`structlog.contextvars`) carrying `run_id` and `event_id`, so every line emitted while serving a workflow task ties back to the exact history position it advanced — without threading a logger through five call frames.
 - [ ] Each dispatched task logs **run_id, task kind, sticky hit/miss, and events replayed** as structured fields.
 - [ ] Counter/gauge metrics at `/metrics`: **workflow tasks & activity tasks dispatched, replays (sticky hit ratio), timers fired, executions completed|failed, and task-queue depth.** *(Proof: a metrics-render test asserting the recorded series.)*
+
+### Python craft
+
+- [ ] **pyright strict passes clean** — every `# type: ignore` / `# pyright: ignore` carries a justifying comment.
+- [ ] **No blocking call on the event loop** — runs clean under `PYTHONASYNCIODEBUG=1`; any sync I/O is in a thread/process pool deliberately. This engine is *one* loop serving gRPC **and** the admin port **and** the timer scan, so a single blocking call stalls all three at once.
+- [ ] **Bounded pool sized on purpose** — the connection pool, `MAX_CONCURRENT_RPCS` and the worker fleet tuned *together*, with the reasoning in the design doc. Long-poll makes this sharp: every parked poller is an in-flight RPC, and a poller that holds a connection while it waits has quietly made the pool the queue's real concurrency limit.
+- [ ] **Graceful shutdown** on SIGTERM drains in-flight gRPC calls, wakes parked long-polls so no task is left claimed-and-abandoned by our own deploy, and lets the timer scan finish its pass — verified against the *container*, where the process is PID 1.
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in `docs/21-benchmarks.md`, naming the top bottleneck.
 
 ---
 
@@ -208,11 +220,16 @@ The project is **done when ALL true:**
 1. Every vertical + horizontal box above is checked (each with its Proof).
 2. The 🐉 boss fight below is **defeated** — the load + chaos test lives in `bench/`, the
    numbers in `docs/21-benchmarks.md`.
-3. `docs/21-design.md` records the decisions the SPEC grades: **event-sourcing over a
+3. A **profile**, not just numbers: a `py-spy` flamegraph and a `memray` run under load,
+   committed to `docs/21-benchmarks.md` and naming the top bottleneck. Where CPython
+   cannot reach a target above, that gap *is* the finding — record where it topped out
+   and why (GIL contention? GC pauses? allocation? a blocking call on the loop? a fold
+   that is CPU-bound by construction?). Targets are **not** scaled down to be reachable.
+4. `docs/21-design.md` records the decisions the SPEC grades: **event-sourcing over a
    mutable state column (V1), the determinism rules (V2), the timer scan-interval
    tradeoff (V3), the visibility-timeout value (V4), and the sticky TTL (V5)**.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p workflow-engine` are
-   green; no `todo!()` remains on a checked path.
+5. `make verify` (ruff format → ruff lint → pyright strict → pytest) is green; no
+   `raise NotImplementedError` remains on a checked path.
 
 ## 🐉 Boss fight — The Reaper
 
@@ -225,10 +242,13 @@ The project is **done when ALL true:**
 > single workflow is left stuck, a single side effect happens zero or two times, or a
 > replay comes back different.
 
-**Arena:** `bench/` load + chaos test against a **release build** (`cargo run --release`)
-with Postgres up. Start a flood of small workflows (each: start → 1 activity → a short
-durable timer → complete) across a **pool of worker processes**, while a reaper **kills a
-random worker every ~2s** for the duration. Each activity increments a durable,
+**Arena:** `bench/` load + chaos test against the engine as it *ships* — the container
+(`make dev-container`), so the run is on uvloop with PID-1 signal handling rather than the
+pytest loop — with Postgres up. Start a flood of small workflows (each: start → 1 activity
+→ a short durable timer → complete) across a **pool of worker processes** (processes, not
+asyncio tasks: a worker has to be its own crash domain for the reaper to mean anything,
+and its own CPU for the throughput number to), while a reaper **kills a random worker
+every ~2s** for the duration. Each activity increments a durable,
 idempotency-keyed side-effect counter so double-execution is *countable*. Snapshot: total
 workflows started, total completed, and the side-effect counter, before and after.
 
@@ -264,8 +284,12 @@ reproducible via `bench/`).
 
 ## Run the dependencies
 ```bash
-docker compose up -d        # postgres
-cp .env.example .env        # then fill in values
-sqlx migrate run            # apply migrations (install: cargo install sqlx-cli)
-cargo run -p workflow-engine
+make setup                  # cp .env.example .env
+make sync                   # uv sync the workspace
+make up                     # docker compose up -d postgres
+make migrate                # apply migrations (no sqlx-cli — it's just a module)
+make run                    # or `make dev` for all of the above in one command
 ```
+Timers stay off until you build V3 (`RUN_TIMER_SERVICE=true make run` turns the scan loop
+on). `make dev-container` runs the engine in Docker instead — the only place uvloop and
+PID-1 signal handling are actually exercised.

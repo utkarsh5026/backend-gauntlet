@@ -5,9 +5,9 @@
 > must hold. No prior knowledge assumed.
 >
 > **Prepares you for:** [SPEC](../SPEC.md) **V1 — Event-sourced history log**, built in
-> [history.rs](../src/history.rs) on top of the `history_events` table in
+> [history.py](../src/workflow_engine/history.py) on top of the `history_events` table in
 > [0001_init.sql](../migrations/0001_init.sql). The event vocabulary lives in
-> [model.rs](../src/model.rs) (`Event`, `EventType`).
+> [model.py](../src/workflow_engine/model.py) (`Event`, `EventType`).
 
 ---
 
@@ -117,7 +117,7 @@ Two words that sound similar and must never blur:
 | What it is | a **request**: "schedule this activity" | a **recorded fact**: "the activity was scheduled" |
 | Tense | imperative, future | past, immutable |
 | Can it be rejected? | yes — validation, non-determinism | no — it already happened |
-| Where it lives here | [`Command`](../src/model.rs) from the worker's `RespondWorkflowTaskCompleted` | [`Event`](../src/model.rs) rows in `history_events` |
+| Where it lives here | [`Command`](../src/workflow_engine/model.py) from the worker's `RespondWorkflowTaskCompleted` | [`Event`](../src/workflow_engine/model.py) rows in `history_events` |
 
 The engine's rhythm is always: receive commands → validate → **record events** →
 only then let the consequences become visible (the activity task, the timer). An
@@ -218,7 +218,7 @@ Two things to sit with:
 
 V1 leaves you real decisions. Here is what each one trades — deciding is your part:
 
-- **Who assigns event ids?** The caller passes fully-formed [`Event`](../src/model.rs)s
+- **Who assigns event ids?** The caller passes fully-formed [`Event`](../src/workflow_engine/model.py)s
   with ids (from the replayed state's `next_event_id`) — so what, exactly, catches two
   concurrent writers? Think about what the primary key gives you for free and what it
   doesn't (gaps).
@@ -226,7 +226,7 @@ V1 leaves you real decisions. Here is what each one trades — deciding is your 
   is deciding what else *joins* that transaction (the status projection? the first
   task enqueue in `start_execution`?) so no observer can see one without the other.
 - **How does a rejected append surface?** A unique-key violation is Postgres talking;
-  [`AppError`](../src/error.rs) is your API talking. Someone upstream (V4) needs to
+  [`AppError`](../src/workflow_engine/errors.py) is your API talking. Someone upstream (V4) needs to
   tell "this run was advanced by someone else" apart from "the database hiccuped."
 - **Histories grow forever.** A workflow alive for a year has an enormous log. Real
   engines compact ("continue-as-new" in Temporal — start a fresh run whose
@@ -235,7 +235,7 @@ V1 leaves you real decisions. Here is what each one trades — deciding is your 
   safe is that the fold is deterministic, so a prefix can be replaced by its result.
 
 **Hard stop.** The append/load queries and the transaction shape are the V1 exercise
-— the `TODO(V1)` blocks in [history.rs](../src/history.rs) mark exactly where. If
+— the `TODO(V1)` blocks in [history.py](../src/workflow_engine/history.py) mark exactly where. If
 you're stuck between designs, `/hint` gives graduated nudges and `/quest` runs the
 guided build; this doc's job ends at making the decisions visible.
 
@@ -255,7 +255,7 @@ guided build; this doc's job ends at making the decisions visible.
 
 ## Where you'll build this
 
-**Module:** [src/history.rs](../src/history.rs) — four `todo!()`s:
+**Module:** [src/workflow_engine/history.py](../src/workflow_engine/history.py) — four `NotImplementedError`s:
 `start_execution`, `append_events`, `load_history`, `load_history_after`, over the
 `history_events` + `workflow_executions` tables in
 [0001_init.sql](../migrations/0001_init.sql).
