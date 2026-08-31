@@ -1,7 +1,7 @@
 # Job Queue — live dashboard
 
 A **pure-client** dashboard for project 04. It watches the queue work by scraping
-the metrics and endpoints the Rust backend **already** serves — there are **no
+the metrics and endpoints the backend **already** serves — there are **no
 backend changes** and no new endpoints. The queue internals stay yours to build.
 
 React + TypeScript + Tailwind + shadcn/ui, dark by default (repo web conventions).
@@ -42,7 +42,7 @@ kept only in your browser's `localStorage`).
 ## Run it
 
 ```bash
-# One-window dev stack (postgres + cargo run + this dashboard):
+# One-window dev stack (postgres + the Python server + this dashboard):
 make dev NN=04                 # from the repo root
 
 # …or standalone (backend already running on :8080):

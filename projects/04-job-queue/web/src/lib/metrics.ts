@@ -1,7 +1,7 @@
 // Parse the Prometheus text-exposition format the job-queue serves at GET /metrics
 // and fold it into a typed snapshot. This is the whole "data source" for the
 // dashboard — the backend is unchanged; we read exactly the metrics the SPEC's
-// observability checklist asks you to emit (see src/metrics.rs).
+// observability checklist asks you to emit (see src/job_queue/metrics.py).
 
 /** One parsed sample line: `name{labels} value`. */
 export interface Sample {
@@ -10,7 +10,7 @@ export interface Sample {
   value: number
 }
 
-// Metric names — must match the `pub const` strings in src/metrics.rs.
+// Metric names — must match the collector names in src/job_queue/metrics.py.
 const M = {
   ready: 'job_queue_ready_depth',
   running: 'job_queue_running_depth',

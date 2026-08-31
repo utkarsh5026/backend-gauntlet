@@ -3,8 +3,8 @@
 > Teaches how to get millisecond job pickup *and* a silent idle database — by layering
 > a best-effort push signal over a durable pull. No prior knowledge assumed.
 >
-> Prepares you for **V4** in [`src/scheduler.rs`](../src/scheduler.rs)
-> (`wait_for_work`, `notify_ready`) and the idle-wait in [`src/worker.rs`](../src/worker.rs).
+> Prepares you for **V4** in [`src/job_queue/scheduler.py`](../src/job_queue/scheduler.py)
+> (`wait_for_work`, `notify_ready`) and the idle-wait in [`src/job_queue/worker.py`](../src/job_queue/worker.py).
 > Concept overview: [`00-how-job-queues-work.md`](./00-how-job-queues-work.md) §10.
 > This doc goes deeper on *why the poll must survive* and where NOTIFY gets lost.
 
@@ -20,7 +20,7 @@ workers fast — the notification is an optimization, never the source of truth.
 ## The problem before the solution
 
 By V4 the queue *works*. But look at what an **idle** worker does today in
-[`worker.rs`](../src/worker.rs): when a claim returns nothing, it sleeps
+[`worker.py`](../src/job_queue/worker.py): when a claim returns nothing, it sleeps
 `poll_interval` and tries again. That fixed sleep forces a dilemma with no good setting:
 
 ```
@@ -56,11 +56,11 @@ enqueue job ──INSERT──▶ jobs
 
 - On enqueue (and when a delayed/retried job comes due), fire `NOTIFY` on the queue's
   channel — a tiny "hey, there's work" ping. You write this in
-  [`notify_ready`](../src/scheduler.rs) (the SPEC also suggests emitting it right from
+  [`notify_ready`](../src/job_queue/scheduler.py) (the SPEC also suggests emitting it right from
   `enqueue`).
 - An idle worker, instead of sleeping blindly, holds a `LISTEN` connection and waits on
   it. The instant a `NOTIFY` arrives it wakes and runs the *same* V1 claim. You write
-  this in [`wait_for_work`](../src/scheduler.rs), built on sqlx's `PgListener`.
+  this in [`wait_for_work`](../src/job_queue/scheduler.py), built on sqlx's `PgListener`.
 
 Result: **millisecond pickup** on a busy queue *and* **zero empty queries** on an idle
 one. Best of both ends of the table above.
@@ -85,7 +85,7 @@ If correctness *depended* on the notification, any one of these would strand a j
 > **The durable poll stays the source of truth. `NOTIFY` is only a latency
 > optimization.**
 
-Concretely, [`wait_for_work`](../src/scheduler.rs) must wait on *either* the
+Concretely, [`wait_for_work`](../src/job_queue/scheduler.py) must wait on *either* the
 notification *or* a `poll_fallback` timeout — whichever comes first — and re-attempt a
 claim regardless. Miss a ping? The slow fallback poll catches the job a moment later.
 The notify makes the common case fast; the poll makes *every* case correct. Generalize
@@ -137,10 +137,10 @@ is a possible refinement — but the poll is the floor that must always work.)
 
 | Piece | Location |
 |---|---|
-| the idle wait (LISTEN + poll fallback) | [`wait_for_work`](../src/scheduler.rs) `todo!("V4: LISTEN…")` |
-| the wakeup signal | [`notify_ready`](../src/scheduler.rs) `todo!("V4: NOTIFY…")` |
-| swap the worker's fixed sleep for `wait_for_work` | idle branch in [`worker::run`](../src/worker.rs) |
-| emit NOTIFY on enqueue | [`Queue::enqueue`](../src/queue.rs) (V1 + V4) |
+| the idle wait (LISTEN + poll fallback) | [`wait_for_work`](../src/job_queue/scheduler.py) `todo!("V4: LISTEN…")` |
+| the wakeup signal | [`notify_ready`](../src/job_queue/scheduler.py) `todo!("V4: NOTIFY…")` |
+| swap the worker's fixed sleep for `wait_for_work` | idle branch in [`worker::run`](../src/job_queue/worker.py) |
+| emit NOTIFY on enqueue | [`Queue::enqueue`](../src/job_queue/queue.py) (V1 + V4) |
 
 **This doc unlocks (V4 "Done when ALL true"):** enqueue/due-job fires `NOTIFY`, idle
 workers `LISTEN` and wake on it; a slow poll fallback remains so a missed `NOTIFY` or

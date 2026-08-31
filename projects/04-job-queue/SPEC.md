@@ -1,5 +1,10 @@
 
 
+<!-- status:
+state: active            # active | paused | blocked | done | not-started
+blocked-on: ~            # free text, or ~ for none
+-->
+
 # Project 04 — Distributed Job Queue
 
 > "Put a job on a queue, have a worker run it later." It sounds like a wrapper
@@ -53,7 +58,7 @@ jobs that exhaust their attempts.
 
 ### V1. The claim engine — *the SKIP LOCKED dequeue, from scratch*
 
-In `src/queue.rs`, build `enqueue` (an `INSERT`) and the heart of the system:
+In `src/job_queue/queue.py`, build `enqueue` (an `INSERT`) and the heart of the system:
 `claim`, the atomic dequeue. This is the thing you'd normally get from a broker.
 
 - The naive `SELECT id FROM jobs WHERE state='ready' LIMIT 1` then `UPDATE`
@@ -86,7 +91,7 @@ row locks into a contention-free hand-off.
 ### V2. Visibility timeout — *leases, and what "at-least-once" really costs*
 
 A claim is not "this job is done" — it's "this worker is *allowed to try* for a
-while." In `src/lease.rs`, make every claim a **lease** and reclaim dead ones.
+while." In `src/job_queue/lease.py`, make every claim a **lease** and reclaim dead ones.
 
 - When `claim` takes a job it stamps `locked_by` / `locked_until = now() + lease`
 and flips it to `running` — so no other worker can see it. On success the worker
@@ -117,7 +122,7 @@ makes at-least-once safe.
 
 ### V3. Retries with backoff + the dead-letter queue — *failure as a first-class state*
 
-Jobs fail. In `src/retry.rs`, decide what happens on failure so one bad job can't
+Jobs fail. In `src/job_queue/retry.py`, decide what happens on failure so one bad job can't
 take the system down.
 
 - On failure, increment `attempts`, record `last_error`, and — if attempts
@@ -128,8 +133,7 @@ retrying forever.
 - The backoff must be **exponential with jitter**, capped at a maximum. Fixed
 retries synchronise every failing worker into a thundering herd; exponential
 *without* jitter still does (everyone retries at exactly `2^n`). Jitter spreads
-them out. (You'll want a small RNG — add `rand` to the workspace deps when you
-get here.)
+them out. (`random.uniform` is all the RNG you need — it is in the stdlib.)
 - A **poison message** — one that fails every time — is the case the DLQ exists
 for: it must land in the DLQ and stop, not loop. Make the DLQ inspectable; a
 dead job you can't see or requeue is a silent data-loss bug.
@@ -150,7 +154,7 @@ release valve that keeps one bad job from becoming an outage.
 ### V4. Scheduling + LISTEN/NOTIFY — *low latency without busy-polling*
 
 Delayed jobs already "work" through V1 (the claim filters `run_at <= now()`), so a
-worker that polls every second will eventually pick them up. In `src/scheduler.rs`,
+worker that polls every second will eventually pick them up. In `src/job_queue/scheduler.py`,
 remove the latency-vs-load tradeoff that polling forces on you.
 
 - **Polling** is the floor: a worker that `SELECT`s every *N* ms adds up to *N* ms
@@ -193,7 +197,7 @@ Each item is **done when its criterion is observably true** — same rule as the
   cap payload size), `GET /jobs/{id}` for status, and a way to **list the
   DLQ** and **requeue** a dead job.
 - [x] Sensible status codes (`201` on enqueue, `404` for an unknown id, `400` for
-  a malformed body) via the `AppError` → response mapping.
+  a malformed body) via the `AppError` → response mapping in `src/job_queue/errors.py`.
 - [ ] Graceful shutdown: stop claiming new work, let in-flight jobs finish (or let
   their leases expire so another worker retries), then exit — never `abort()`
   a worker mid-job and lose the ack.
@@ -230,7 +234,21 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [x] Counters: jobs enqueued / completed / retried / dead-lettered, leases
   reaped (a non-zero reap rate means workers are dying or leases are too
   short), claims that came back empty.
-- [x] Histograms: job execution time and end-to-end latency (enqueue → done) p50/p99. A `tracing` span per job carrying `job.id`, `kind`, and `attempt`.
+- [x] Histograms: job execution time and end-to-end latency (enqueue → done) p50/p99. A bound log context per job carrying `job_id`, `kind`, and `attempt`.
+
+
+
+### Python craft
+
+- [x] **pyright strict passes clean** — every `# type: ignore` carries a justifying comment.
+- [ ] **No blocking call on the event loop** — runs clean under `PYTHONASYNCIODEBUG=1`;
+  any sync I/O is in a thread/process pool deliberately.
+- [ ] **Bounded pool sized on purpose** — pool size and worker count tuned *together*
+  (each idle worker holds a connection for its `LISTEN`), with the reasoning in the
+  design doc.
+- [ ] **Graceful shutdown** drains in-flight work on SIGTERM via the FastAPI lifespan.
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/04-benchmarks.md`, naming the top bottleneck.
 
 ---
 
@@ -255,27 +273,32 @@ guarantees will eventually hand you.
 The project is **done when ALL true:**
 
 1. Every vertical + horizontal box above is checked (each with its **Proof** artifact).
-2. A `bench/` load test (a Rust or `k6` client that enqueues a large backlog and
+2. A `bench/` load test (a Python or `k6` client that enqueues a large backlog and
   runs a worker pool to drain it) reporting: sustained **throughput** (jobs/sec)
    and end-to-end **latency** p50/p99 under load; the throughput **with the claim
    index vs. without it** (the V1 payoff); a **chaos run** that kills a worker
    mid-batch and shows every job still completes exactly once *to completion*
    (V2); and a **poll vs. LISTEN/NOTIFY** comparison of pickup latency on an
    otherwise-idle queue (V4). Numbers in `docs/04-benchmarks.md`.
-3. A short `docs/04-design.md`: your claim query and the index behind it; the
+3. A **profile**, not just numbers: a `py-spy` flamegraph and a `memray` run
+  under load, committed to `docs/04-benchmarks.md` and naming the top bottleneck.
+   Where CPython cannot reach a target above, the gap *is* the finding — record
+   where it topped out and why (GIL contention? GC pauses? allocation? a blocking
+   call on the loop?). Targets are not scaled down to make them reachable.
+4. A short `docs/04-design.md`: your claim query and the index behind it; the
   lease length you chose and the at-least-once/idempotency reasoning; the retry
    backoff curve and DLQ policy; and the LISTEN/NOTIFY design including why the
    poll fallback stays.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p job-queue` are
-  green; no `todo!()` remains on a checked path.
+5. `make verify` is green — `ruff format --check`, `ruff check`, `pyright`
+  (strict) and `pytest`, the same gate CI runs; no `raise NotImplementedError`
+   remains on a checked path.
 
 
 
 ## Suggested order of attack
 
 1. Get the API up: `POST /jobs` inserts a row, `GET /jobs/{id}` reads it back.
-  (Add the first real `sqlx` queries here — `docker compose up -d`,
-   `sqlx migrate run`, then `cargo sqlx prepare` so compile-time checking works.)
+  (`make deps` for Postgres, then `make migrate`.)
 2. Build the claim engine (V1): `FOR UPDATE SKIP LOCKED`, a batch claim, and the
   ack. Run **two** workers against a backlog and prove no job runs twice.
 3. Make claims leases and add the reaper (V2): kill a worker mid-job and watch
@@ -292,23 +315,23 @@ The project is **done when ALL true:**
 ## Run the dependencies
 
 ```bash
-docker compose up -d        # postgres
-cp .env.example .env        # then fill in values (DATABASE_URL etc.)
-sqlx migrate run            # cargo install sqlx-cli --no-default-features -F native-tls,postgres
+docker compose up -d postgres   # or: make deps
+cp .env.example .env            # then fill in values (ENQUEUE_TOKEN etc.)
+make migrate                    # applies migrations/*.sql — no sqlx-cli needed
 
 # Terminal 1 — the API + (optionally) the worker pool:
-cargo run -p job-queue
-#   RUN_WORKERS=false (default) → enqueue API only; the bare scaffold serves
-#   cleanly and a POST /jobs panics with the V1 todo — that panic is the worklist.
-#   RUN_WORKERS=true            → spins up the worker pool + reaper too.
+make run
+#   RUN_WORKERS=false (default) → enqueue API only.
+#   RUN_WORKERS=true            → spins up the worker pool + reaper + gauge sampler.
 
 # Terminal 2 — enqueue a job:
 curl -X POST localhost:8080/jobs \
   -H 'content-type: application/json' \
-  -d '{"queue":"default","kind":"send_email","payload":{"to":"a@b.c"}}'
+  -H "authorization: Bearer $ENQUEUE_TOKEN" \
+  -d '{"queue":"default","kind":"sleep","payload":{"ms":250}}'
 
-# Multi-process test (V1/V2): run a second `cargo run -p job-queue` with
-# RUN_WORKERS=true against the SAME database and watch the two pools share work.
+# Multi-process test (V1/V2): run a second `make run` with RUN_WORKERS=true on a
+# different PORT against the SAME database, and watch the two pools share work.
 ```
 
 ## 🔬 From the field

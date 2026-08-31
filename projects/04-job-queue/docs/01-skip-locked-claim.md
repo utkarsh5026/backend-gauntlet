@@ -4,7 +4,7 @@
 > table without ever grabbing the same row — *before* you build it.
 > No prior knowledge assumed.
 >
-> Prepares you for **V1** in [`src/queue.rs`](../src/queue.rs) (`enqueue`, `claim`,
+> Prepares you for **V1** in [`src/job_queue/queue.py`](../src/job_queue/queue.py) (`enqueue`, `claim`,
 > `ack`, `get`) and the index TODO in [`migrations/0001_init.sql`](../migrations/0001_init.sql).
 > Concept overview: [`00-how-job-queues-work.md`](./00-how-job-queues-work.md) §6–7.
 > This doc goes *deeper* on the locking mechanism and the decisions you'll make —
@@ -127,7 +127,7 @@ claim 10: [~1ms RTT][run 5ms × 10]                    → RTT amortized across 
 But a bigger batch isn't free: a worker holding 10 claimed jobs has leased all 10, so
 if it dies, 10 jobs wait for the reaper instead of 1. **The tradeoff:** throughput
 (bigger batch) vs. blast radius on crash and fairness (smaller batch). The scaffold
-exposes this as `CLAIM_BATCH` / `claim_batch` in [`WorkerConfig`](../src/worker.rs),
+exposes this as `CLAIM_BATCH` / `claim_batch` in [`WorkerConfig`](../src/job_queue/worker.py),
 default 10. Your job: pick a number and be able to defend it in
 [`04-design.md`](./04-design.md).
 
@@ -178,12 +178,12 @@ see [`02-leases-visibility-timeout.md`](./02-leases-visibility-timeout.md).
 
 | Piece | Location |
 |---|---|
-| `enqueue` — the `INSERT` | [`Queue::enqueue`](../src/queue.rs) `todo!("V1: insert…")` |
-| `claim` — the atomic dequeue (the heart) | [`Queue::claim`](../src/queue.rs) `todo!("V1: claim…")` |
-| `ack` — mark done | [`Queue::ack`](../src/queue.rs) `todo!("V1: mark…")` |
-| `get` — read one back | [`Queue::get`](../src/queue.rs) `todo!("V1: fetch…")` |
+| `enqueue` — the `INSERT` | [`Queue::enqueue`](../src/job_queue/queue.py) `todo!("V1: insert…")` |
+| `claim` — the atomic dequeue (the heart) | [`Queue::claim`](../src/job_queue/queue.py) `todo!("V1: claim…")` |
+| `ack` — mark done | [`Queue::ack`](../src/job_queue/queue.py) `todo!("V1: mark…")` |
+| `get` — read one back | [`Queue::get`](../src/job_queue/queue.py) `todo!("V1: fetch…")` |
 | the partial index | [`migrations/0001_init.sql`](../migrations/0001_init.sql) TODO(V1) |
-| the concurrency test | `tests` module in [`src/queue.rs`](../src/queue.rs) |
+| the concurrency test | `tests` module in [`src/job_queue/queue.py`](../src/job_queue/queue.py) |
 
 **This doc unlocks (V1 "Done when ALL true"):** atomic select+lock in one statement;
 two+ workers never claim the same row; batch claim respecting `run_at`/order/queue; the

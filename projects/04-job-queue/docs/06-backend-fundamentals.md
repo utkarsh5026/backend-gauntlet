@@ -6,8 +6,8 @@
 >
 > Prepares you for the **Horizontal checklist** in [`SPEC.md`](../SPEC.md) and the
 > **Rapid-fire round** in [`CONCEPTS.md`](../CONCEPTS.md). Anchored to
-> [`src/routes.rs`](../src/routes.rs), [`src/error.rs`](../src/error.rs),
-> [`src/main.rs`](../src/main.rs), [`src/worker.rs`](../src/worker.rs).
+> [`src/job_queue/routes.py`](../src/job_queue/routes.py), [`src/job_queue/errors.py`](../src/job_queue/errors.py),
+> [`src/job_queue/main.py`](../src/job_queue/main.py), [`src/job_queue/worker.py`](../src/job_queue/worker.py).
 > These are woven in as you build the verticals — not bolted on at the end.
 
 ---
@@ -22,7 +22,7 @@ keeps one open endpoint or one bad deploy from taking you down.**
 
 ## 1. The producer/admin API — and why enqueue is a dangerous endpoint
 
-The HTTP surface is small and already scaffolded in [`routes.rs`](../src/routes.rs):
+The HTTP surface is small and already scaffolded in [`routes.py`](../src/job_queue/routes.py):
 
 | Route | Purpose | Status |
 |---|---|---|
@@ -31,7 +31,7 @@ The HTTP surface is small and already scaffolded in [`routes.rs`](../src/routes.
 | `GET /healthz` | liveness | wired |
 | *list the DLQ* / *requeue a dead job* | admin (V3) | **you add** |
 
-Status codes follow from the [`AppError`](../src/error.rs) mapping already in place:
+Status codes follow from the [`AppError`](../src/job_queue/errors.py) mapping already in place:
 `201` on enqueue, `404` for an unknown id (`AppError::NotFound`), `400` for a malformed
 body (`AppError::BadRequest`), `500` for a DB error. Note enqueue returns the **job
 row/id, not a result** — it's async "we accepted this," closer in spirit to `202` than
@@ -104,8 +104,8 @@ turning a routine restart into duplicate or lost effects. The right order:
 3. then exit
 ```
 
-The wiring is already there: [`main.rs`](../src/main.rs) broadcasts shutdown over a
-`watch` channel, and [`worker::run`](../src/worker.rs) checks it between jobs. The
+The wiring is already there: [`main.py`](../src/job_queue/main.py) broadcasts shutdown over a
+`watch` channel, and [`worker::run`](../src/job_queue/worker.py) checks it between jobs. The
 `shutdown_signal` function carries a `TODO(SPEC)` to get this order right. Notice the
 lease (V2) makes shutdown *safe by default*: even a hard kill mid-job just leaves an
 expired lease the reaper cleans up — you never *need* to abort to avoid losing a job.
@@ -157,12 +157,12 @@ Deciding which — and where the threshold sits — is a design call to record i
 
 | Piece | Location |
 |---|---|
-| auth + input caps on enqueue | [`enqueue`](../src/routes.rs) `TODO(security)` |
-| DLQ list + requeue endpoints | add to [`routes.rs`](../src/routes.rs) (V3) |
-| error → status mapping | [`AppError`](../src/error.rs) (extend as needed) |
-| graceful-shutdown order | [`shutdown_signal`](../src/main.rs) `TODO(SPEC)` + [`worker::run`](../src/worker.rs) |
-| metrics (gauges/counters/histograms) | wire across `queue.rs`, `lease.rs`, `worker.rs` |
-| pool/worker tuning | `DB_MAX_CONNECTIONS` / `WORKER_CONCURRENCY` in [`main.rs`](../src/main.rs) |
+| auth + input caps on enqueue | [`enqueue`](../src/job_queue/routes.py) `TODO(security)` |
+| DLQ list + requeue endpoints | add to [`routes.py`](../src/job_queue/routes.py) (V3) |
+| error → status mapping | [`AppError`](../src/job_queue/errors.py) (extend as needed) |
+| graceful-shutdown order | [`shutdown_signal`](../src/job_queue/main.py) `TODO(SPEC)` + [`worker::run`](../src/job_queue/worker.py) |
+| metrics (gauges/counters/histograms) | wire across `queue.py`, `lease.py`, `worker.py` |
+| pool/worker tuning | `DB_MAX_CONNECTIONS` / `WORKER_CONCURRENCY` in [`main.py`](../src/job_queue/main.py) |
 
 **This doc unlocks (Horizontal checklist):** the typed JSON API with DLQ list/requeue
 and sensible status codes; graceful shutdown; authenticated + capped enqueue; the

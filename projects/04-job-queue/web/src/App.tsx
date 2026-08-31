@@ -59,7 +59,7 @@ export default function App() {
         {showError && (
           <Banner tone="error" icon={<WifiOff className="size-4" />}>
             Can't reach <code>GET /metrics</code>. Is the backend running? Start it with{' '}
-            <code>cargo run -p job-queue</code> (the dev proxy forwards to{' '}
+            <code>make run</code> (the dev proxy forwards to{' '}
             <code>localhost:8080</code>). {m.error && <span className="text-muted-foreground">— {m.error}</span>}
           </Banner>
         )}

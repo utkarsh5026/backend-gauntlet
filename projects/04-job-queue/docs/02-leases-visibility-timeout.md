@@ -3,8 +3,8 @@
 > Teaches why "claiming a job" must be a time-boxed lease, not permanent ownership —
 > and the price it charges: at-least-once delivery. No prior knowledge assumed.
 >
-> Prepares you for **V2** in [`src/lease.rs`](../src/lease.rs) (`reap_expired`,
-> `extend_lease`) and the lease stamp inside [`Queue::claim`](../src/queue.rs).
+> Prepares you for **V2** in [`src/job_queue/lease.py`](../src/job_queue/lease.py) (`reap_expired`,
+> `extend_lease`) and the lease stamp inside [`Queue::claim`](../src/job_queue/queue.py).
 > Concept overview: [`00-how-job-queues-work.md`](./00-how-job-queues-work.md) §8.
 > This doc goes deeper on the failure model and the tradeoffs you must decide.
 
@@ -70,9 +70,9 @@ The job is invisible to other workers *only until* `locked_until`. Two outcomes:
 
 The **reaper** is the second half of V2. It's a periodic sweep: *"any job that's
 `running` but whose `locked_until` is in the past → back to `ready`, clear the lock."*
-The loop is already wired for you in [`reap_loop`](../src/lease.rs) (runs every
+The loop is already wired for you in [`reap_loop`](../src/job_queue/lease.py) (runs every
 `REAPER_INTERVAL_SECS`); you write the one-statement sweep in
-[`reap_expired`](../src/lease.rs). That sweep is the *entire reason* a crashed worker
+[`reap_expired`](../src/job_queue/lease.py). That sweep is the *entire reason* a crashed worker
 doesn't lose its job.
 
 ---
@@ -105,7 +105,7 @@ twice harmless**, i.e. **idempotent handlers**. Two ways to get there:
 
 Every "exactly-once" product you'll ever see (Kafka EOS included) is at-least-once +
 dedup underneath. In this project the real work lives in your
-[`handle`](../src/worker.rs) function — making *that* idempotent is your job, and the
+[`handle`](../src/job_queue/worker.py) function — making *that* idempotent is your job, and the
 SPEC requires you to document the strategy in [`04-design.md`](./04-design.md).
 
 ---
@@ -135,7 +135,7 @@ exceeds your p99 job duration, with headroom. Two related sub-decisions:
 
 If a job legitimately runs longer than any sane lease, a fixed timeout can't win —
 too short reaps it alive, too long delays every real crash. The fix is a **heartbeat**:
-the running handler periodically calls [`extend_lease`](../src/lease.rs) ("still alive,
+the running handler periodically calls [`extend_lease`](../src/job_queue/lease.py) ("still alive,
 push my deadline out"), so a slow-but-healthy worker is never reaped out from under
 itself, while a *dead* one stops heartbeating and is reclaimed promptly. This is the
 `extend_lease` stretch `todo!()`.
@@ -157,11 +157,11 @@ itself, while a *dead* one stops heartbeating and is reclaimed promptly. This is
 
 | Piece | Location |
 |---|---|
-| stamp `locked_by`/`locked_until` on claim | inside [`Queue::claim`](../src/queue.rs) (V1 + V2) |
-| the reaper sweep | [`reap_expired`](../src/lease.rs) `todo!("V2: requeue…")` |
-| the reaper loop (already wired) | [`reap_loop`](../src/lease.rs) |
-| heartbeat / lease extension (stretch) | [`extend_lease`](../src/lease.rs) `todo!()` |
-| idempotent work | your [`handle`](../src/worker.rs) |
+| stamp `locked_by`/`locked_until` on claim | inside [`Queue::claim`](../src/job_queue/queue.py) (V1 + V2) |
+| the reaper sweep | [`reap_expired`](../src/job_queue/lease.py) `todo!("V2: requeue…")` |
+| the reaper loop (already wired) | [`reap_loop`](../src/job_queue/lease.py) |
+| heartbeat / lease extension (stretch) | [`extend_lease`](../src/job_queue/lease.py) `todo!()` |
+| idempotent work | your [`handle`](../src/job_queue/worker.py) |
 
 **This doc unlocks (V2 "Done when ALL true"):** claim stamps the lease and a success
 acks to `done`; the reaper returns expired `running` jobs to `ready`; a worker killed
