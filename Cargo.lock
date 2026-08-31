@@ -2310,26 +2310,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
-name = "raft-kv"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "common-config",
- "common-telemetry",
- "proptest",
- "rand 0.9.4",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower-http",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "rand"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

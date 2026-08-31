@@ -47,7 +47,7 @@ for itself, and asks every peer for a vote. A majority makes it leader; a split
 vote makes everyone retry at a fresh random interval. Two rules keep it *safe*,
 not merely live: a node grants **at most one vote per term** (and remembers that
 across a crash), and it refuses any candidate whose log is **less up-to-date**
-than its own. Build it in `src/election.rs`.
+than its own. Build it in `src/raft_kv/election.py`.
 
 The trap is that "elect a leader" is easy; "**never** elect two leaders for one
 term, even across crashes and partitions" is the whole job. A node that forgets
@@ -80,7 +80,7 @@ leader pushes to followers via `AppendEntries`. Each such message names the
 only if it holds that exact entry, else it rejects and the leader walks back and
 retries — repairing a diverged tail. An entry is **committed** once a majority
 stores it, and only then is it applied to the state machine. Build it in
-`src/replication.rs`.
+`src/raft_kv/replication.py`.
 
 The subtle, data-losing trap is the commit rule: a leader may advance its commit
 index only for an entry **from its own term**. Committing a previous term's entry
@@ -115,7 +115,8 @@ and are deceptively hard: a naive `GET` off any node can return **stale** data (
 lagging follower, or a leader that was just deposed and doesn't know yet). A
 linearizable read must be served by a leader that has **confirmed it still leads**
 (read-index / lease) and has applied up to the read point. Build the machine in
-`src/store.rs` (the read path is enforced in `replication.rs::read`).
+`src/raft_kv/store.py` (the read path is enforced in `replication.py`'s
+`read`).
 
 **Done when ALL true:**
 - [ ] Applying the same committed log on two fresh nodes yields **byte-identical** state — the apply step is deterministic and order-strict.
@@ -142,7 +143,7 @@ its history) and discard every entry the snapshot covers, recording the
 `last_included_(index, term)` so the consistency check still aligns at the seam.
 This also forces `InstallSnapshot`: a leader that has compacted past what a slow
 follower needs ships the whole snapshot instead of the missing entries. Build it
-in `src/snapshot.rs`.
+in `src/raft_kv/snapshot.py`.
 
 **Done when ALL true:**
 - [ ] Once the log passes a threshold, the node **snapshots and compacts** — retained entry count drops, while applied state and all subsequent reads are unchanged.
@@ -184,9 +185,17 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] **Peer trust boundary is stated:** the `/raft/*` endpoints let a caller drive consensus (force a term bump, inject entries) — the design doc states the trust assumption (private network / mTLS between nodes) and, at minimum, key/size validation on client input.
 
 ### Observability
-- [ ] `tracing` span per request (via `common-telemetry`), with a request id.
+- [ ] A structured span per request (via `common_telemetry`), with a request id.
 - [ ] Structured logs on the state transitions that matter: **election started**, **became leader/follower**, **term change**, **snapshot taken**, **`InstallSnapshot` sent**.
 - [ ] Metrics at `/metrics`: **current term**, **role**, **commit index vs. last-applied lag**, and **per-follower replication lag** (leader's view of `match_index`) — the numbers you watch to see consensus health.
+
+### Python & the runtime
+- [ ] **pyright strict passes clean** — every `# type: ignore` carries a justifying comment.
+- [ ] **No blocking call on the event loop** — runs clean under `PYTHONASYNCIODEBUG=1`; the `fsync` behind every `persist()` and the snapshot write are in a thread pool *deliberately*, not by accident.
+- [ ] **Bounded pool sized on purpose** — the peer-RPC timeout, the fsync thread pool and the heartbeat interval are tuned *together*, with the reasoning in the design doc: a persist slower than the heartbeat interval elects a new leader.
+- [ ] **Graceful shutdown** drains in-flight requests on SIGTERM via the FastAPI lifespan, cancelling the driver *before* the final flush.
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in `docs/09-benchmarks.md`, naming the top bottleneck.
+- [ ] **Every `await` in a consensus path is audited** — the role/term is re-checked after each one, because the loop can run an inbound RPC that deposes this node while it waits. Name the re-check in the design doc; this is the Python shape of Rust's "never hold the lock across `.await`".
 
 ### Cross-cutting scale skills
 - [ ] The consensus state has **one clear ownership/locking model** — mutations serialize, the lock is never held across a peer RPC `await`, and that discipline is deliberate (documented), not incidental.
@@ -201,15 +210,21 @@ The project is **done when ALL true:**
    & latency** (committed ops/s, p50/p99) for a 3-node cluster; **failover time**
    (leader kill → new leader serving) as a distribution; and **read throughput**
    for linearizable vs. (if implemented) follower/stale reads.
-3. `docs/09-design.md` records the decisions the SPEC grades: the **persisted
+3. `docs/09-benchmarks.md` also carries a **profile**, not just numbers: a
+   `py-spy` flamegraph and a `memray` run naming the top bottleneck, and — where
+   a target was missed — *why* (GIL contention? GC pauses? JSON encoding of the
+   log? a blocking `fsync` left on the loop?). Numbers alone don't close this;
+   you have to know why they are what they are.
+4. `docs/09-design.md` records the decisions the SPEC grades: the **persisted
    state + durability ordering** (V1/V2), the **commit rule + no-op-on-election**
    (V2), the **linearizable-read technique** (V3), and the **snapshot/compaction
    ordering** (V4) — plus the peer-trust assumption.
-4. A **jepsen-lite** harness exists: an automated run that injects leader kills
+5. A **jepsen-lite** harness exists: an automated run that injects leader kills
    and network partitions under a concurrent write load and checks a
    linearizability / no-lost-committed-write invariant — and passes.
-5. `cargo clippy --workspace -- -D warnings` and `cargo test -p raft-kv` are
-   green; no `todo!()` remains on a checked path.
+6. `make verify` is green — `ruff format --check`, `ruff check`, `pyright`
+   (strict) and `pytest` — and no `raise NotImplementedError` remains on a
+   checked path.
 
 ## Suggested order of attack
 1. Boring path: a single-node "cluster" — `propose` appends to the local log,
@@ -231,10 +246,18 @@ The project is **done when ALL true:**
 ## Run it
 ```bash
 cp .env.example .env        # then set NODE_ID / PEERS per node
-# One node (default single-node cluster):
-cargo run -p raft-kv
-# A 3-node cluster (three terminals) — no external deps, disk IS the durable state:
-NODE_ID=1 cargo run -p raft-kv
-NODE_ID=2 cargo run -p raft-kv
-NODE_ID=3 cargo run -p raft-kv
+uv sync                     # or: make sync
+make run                    # one node — no external deps, disk IS the durable state
+make cluster                # every node in PEERS, in one terminal
+make watch                  # poll /status on all of them and watch an election happen
+make walk                   # write a key, read it back, delete it
+```
+
+A cluster is N copies of this process sharing one `PEERS` map, each with its own
+`NODE_ID`. `make cluster` starts them all; three terminals works too:
+
+```bash
+NODE_ID=1 make run
+NODE_ID=2 make run
+NODE_ID=3 make run
 ```
