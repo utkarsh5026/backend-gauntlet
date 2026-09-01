@@ -27,7 +27,7 @@ dev = [
     # The V1 proof asks for a property test (a random op sequence never exceeds
     # capacity) — that's what hypothesis is for.
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done.
     "py-spy>=0.4",

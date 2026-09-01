@@ -39,7 +39,7 @@ dev = [
     # V1's proof asks for property tests (uniqueness under concurrency,
     # base62 round-trip).
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # asyncpg ships no type information of its own.
     "asyncpg-stubs>=0.30",

@@ -15,7 +15,7 @@ dev = [
     "httpx>=0.28",
     # The bar for this package is "a real AWS SDK understands what we emit", so
     # the reference client is a test dependency here exactly as it is in 29.
-    "botocore>=1.35",
+    "botocore>=1.43.83",
     "ruff>=0.8",
     "pyright>=1.1.390",
 ]

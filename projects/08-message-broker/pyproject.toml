@@ -29,7 +29,7 @@ dev = [
     # V1 asks for a framing round-trip proof and V3 for key-stability /
     # keyless-spread — both are properties over generated inputs, not examples.
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done.
     "py-spy>=0.4",

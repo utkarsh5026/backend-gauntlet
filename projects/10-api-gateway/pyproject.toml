@@ -41,7 +41,7 @@ dev = [
     # generated inputs rather than examples — this is the `proptest` the Rust
     # manifest declared.
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done. A proxy is judged on the
     # latency it *adds*, so "where did the microseconds go" is a graded question.

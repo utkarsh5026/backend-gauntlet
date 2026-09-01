@@ -37,7 +37,7 @@ dev = [
     # socket. WebSocket tests use Starlette's TestClient instead — see
     # tests/conftest.py for why httpx can't do that one.
     "httpx>=0.28",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done.
     "py-spy>=0.4",
