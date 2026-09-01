@@ -13,7 +13,6 @@ members = [
     "projects/16-live-platform",
     "projects/17-global-conferencing",
     "projects/18-ledger-payments-core",
-    "projects/19-bittorrent",
 ]
 
 # Shared dependency versions live here so every project pins the same line.
