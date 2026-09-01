@@ -36,22 +36,23 @@ blocked-on: ~            # free text, or ~ for none
 ### V1. Bencode — the wire's data format
 Everything in BitTorrent is **bencoded**: the `.torrent`, the tracker's reply, the DHT.
 Four types — integers `i42e`, byte-strings `4:spam`, lists `l…e`, dicts `d…e` (keys
-sorted as raw bytes). Build the codec in `src/bencode.rs`. The twist that makes this a
+sorted as raw bytes). Build the codec in `src/bittorrent/bencode.py`. The twist that makes this a
 *challenge*: to compute the infohash (V2) you must SHA-1 the **exact original bytes** of
 the `info` dict, so your decoder has to surface a value's precise byte span and your
 encoder has to be **canonical** (sorted keys, no leading zeros, no whitespace) — else a
 round-trip changes the bytes and every infohash you produce is wrong.
 
 **Done when ALL true:**
-- [ ] Decode handles all four types incl. arbitrary nesting, and **rejects malformed input** (leading zeros `i03e`, negative zero `i-0e`, truncation, a length that overruns, duplicate/unsorted dict keys, trailing junk) with an `Err` — never a panic.
+- [ ] Decode handles all four types incl. arbitrary nesting, and **rejects malformed input** (leading zeros `i03e`, negative zero `i-0e`, truncation, a length that overruns, duplicate/unsorted dict keys, trailing junk) by **raising** — never by crashing, and never a `RecursionError` from nesting.
 - [ ] Encode is **canonical**: dict keys sorted as raw byte strings, integers with no leading zeros, no extra bytes.
 - [ ] **Byte-exact round-trip**: for every value in the corpus, `encode(decode(x)) == x`.
-- [ ] Byte-strings are **binary-safe** — they may hold non-UTF-8 bytes (piece hashes are raw SHA-1), so keys/strings are bytes, not `String`.
+- [ ] Byte-strings are **binary-safe** — they may hold non-UTF-8 bytes (piece hashes are raw SHA-1), so keys/strings are `bytes`, not `str`.
 - [ ] You can recover the **exact byte range** of a nested value (the `info` dict) without re-encoding it.
 
 **Proof:** unit tests over a checked-in real `.torrent` corpus + a property test
-`prop_bencode_roundtrips`; a test that every malformed input returns `Err` rather than
-panicking.
+`prop_bencode_roundtrips` (hypothesis); a test that every malformed input raises
+`BencodeError` rather than crashing the caller — including a deeply nested one, which is
+a `RecursionError` unless you cap the depth yourself.
 
 *Concept to internalize:* canonical serialization, and why a content hash is a hash of
 *bytes*, not of a parsed structure — the #1 source of "why doesn't my infohash match?"
@@ -61,7 +62,7 @@ Parse a `.torrent` into a typed `Metainfo` and compute the **infohash = SHA-1(ex
 `info` bytes)** — the 20-byte name every peer and tracker uses for this content. There
 is no registry; two clients agree they mean the same file because they independently
 hashed the same bytes. Also parse `magnet:?xt=urn:btih:…` links (infohash + trackers,
-but no metainfo — that comes from peers later). Build it in `src/metainfo.rs`.
+but no metainfo — that comes from peers later). Build it in `src/bittorrent/metainfo.py`.
 
 **Done when ALL true:**
 - [ ] A valid `.torrent` parses into typed fields: piece length, the piece-hash table (each exactly 20 bytes), and the file list (single- **and** multi-file).
@@ -70,7 +71,7 @@ but no metainfo — that comes from peers later). Build it in `src/metainfo.rs`.
 - [ ] `magnet:` links parse: infohash as **hex or base32**, every `tr=` tracker, the optional `dn=` name.
 - [ ] Parse is **consistency-checked**: `piece_count == ceil(total_length / piece_length)` and `total_length == Σ file lengths`; a doctored torrent is rejected, not trusted.
 
-**Proof:** a test asserting the checked-in torrent's `info_hash.to_hex()` equals the
+**Proof:** a test asserting the checked-in torrent's `info_hash.hex()` equals the
 known value; a hex-vs-base32 magnet test resolving to the same infohash; a
 consistency-rejection test.
 
@@ -79,7 +80,7 @@ single-file vs multi-file layout.
 
 ### V3. Tracker announce — peer discovery over HTTP *and* UDP
 Ask a tracker "who has infohash X?" and report your progress, over **both** transports.
-Build it in `src/tracker.rs`. HTTP (BEP 3): a `GET /announce` whose bencoded reply
+Build it in `src/bittorrent/tracker.py`. HTTP (BEP 3): a `GET /announce` whose bencoded reply
 carries a **compact** peer list (6 bytes/peer). UDP (BEP 15): a binary protocol where
 you first `connect` for a short-lived connection-id (cheap anti-spoofing), then
 `announce`, everything big-endian and paired by transaction-id. Announces are a periodic
@@ -101,7 +102,7 @@ discovery via a Kademlia **DHT** (BEP 5) and Local Peer Discovery.
 connection-id handshake as spoofing defense.
 
 ### V4. Peer wire protocol — the raw-TCP conversation
-Over a raw TCP socket in `src/peer.rs`: the fixed **68-byte handshake**
+Over a raw TCP socket in `src/bittorrent/peer.py`: the fixed **68-byte handshake**
 (`<19>"BitTorrent protocol"<8 reserved><infohash><peer_id>`), then a stream of
 **length-prefixed messages** (`choke/unchoke/interested/not-interested/have/bitfield/
 request/piece/cancel`; a zero-length frame is keep-alive). Track the four-flag
@@ -120,11 +121,11 @@ same messages back; an oversized-length test that rejects without a big allocati
 **Bonus:** a real handshake + bitfield exchange against the `transmission` reference peer.
 
 *Concept to internalize:* turning a byte stream into messages (length-prefix +
-`read_exact`), the choke/interest state machine, and "never trust a peer" as a coding
+`readexactly`), the choke/interest state machine, and "never trust a peer" as a coding
 discipline (bound before you allocate).
 
 ### V5. Piece selection & verification — assembling from strangers
-Drive the leech loop in `src/download.rs`: pick a piece (**rarest-first** from peers'
+Drive the leech loop in `src/bittorrent/download.py`: pick a piece (**rarest-first** from peers'
 bitfields, not sequential), split it into ≤ 16 KiB block `request`s pipelined across
 unchoked peers, reassemble, and **verify the piece's SHA-1 against the metainfo hash
 before writing it**. A piece that fails is discarded and refetched — a lying peer cannot
@@ -147,7 +148,7 @@ selection strategy.
 the trust boundary, and endgame as a latency/bandwidth trade.
 
 ### V6. The seeder — serving pieces fairly under load
-The upload half, in `src/seeder.rs`: accept inbound peers, answer `request`s with
+The upload half, in `src/bittorrent/seeder.py`: accept inbound peers, answer `request`s with
 `piece` data from the verified store, and run the **choke algorithm** — a fixed number
 of **upload slots** (regular unchokes, refreshed ~every 10 s) plus one **optimistic
 unchoke** (~every 30 s) to probe newcomers, and a cap on total connections. You *can't*
@@ -157,7 +158,7 @@ unchoke everyone; bounded, deliberate scheduling is what lets one seed survive a
 - [ ] Accepts inbound peers (handshake + bitfield) and answers valid `request`s with the **correct** `piece` bytes read from the store.
 - [ ] **Upload slots are capped**: at most `K` peers unchoked at once, regardless of how many connect — verifiable in logs/metrics.
 - [ ] An **optimistic unchoke** rotates a slot to a random choked peer periodically (new peers get a chance).
-- [ ] A request for a piece you don't have, or an out-of-range/oversized one, is **refused** — not served, not a panic.
+- [ ] A request for a piece you don't have, or an out-of-range/oversized one, is **refused** — not served, and never an unhandled exception.
 - [ ] Per-peer memory is **bounded** (blocks streamed from disk — no whole-file-per-peer buffering); total connections are capped.
 - [ ] On graceful shutdown the seeder stops accepting, finishes in-flight sends, and the client announces `stopped` to the tracker.
 
@@ -187,13 +188,20 @@ These are the cross-cutting concerns, distinct from the per-vertical criteria ab
 - [ ] The tracker `key`/`peer_id` are stable per run and **never logged raw** alongside anything that would deanonymize a peer.
 
 ### Observability
-- [ ] A `tracing` span per **peer session** and per **announce**, carrying the infohash + peer addr (via `common-telemetry`). *(Proof: spans visible in logs.)*
+- [ ] A **bound log context** per **peer session** and per **announce**, carrying the infohash + peer addr (structlog `bind_contextvars`, via `common_telemetry`) — so every line a session emits is attributable without threading a logger through it. *(Proof: the context visible on a session's log lines.)*
 - [ ] `/metrics` exports **bytes down/up, pieces verified (ok\|failed), peers connected, peers unchoked, announces (http\|udp)** — and the unchoked-peers gauge is what proves the V6 slot cap. *(Proof: a metrics-endpoint test.)*
 - [ ] Live **progress + rates** are queryable at `GET /torrents/{info_hash}` while a download runs.
 
+### Python (the day-job axis)
+- [ ] **pyright strict passes clean** — every `# type: ignore` carries a justifying comment saying what claim it is making. *(Proof: `make types` is green; each ignore reads as a decision.)*
+- [ ] **No blocking call on the event loop** — runs clean under `PYTHONASYNCIODEBUG=1`, which logs any callback that holds the loop for over 100 ms. Piece `os.pread`/`os.pwrite` and the SHA-1 verify are in a pool *deliberately*, not by accident. *(Proof: a boss-fight run under the debug flag with no slow-callback warnings.)*
+- [ ] **Bounded pool sized on purpose** — `DISK_WORKERS` and `MAX_PEERS` tuned *together*, never independently, with the reasoning in `docs/19-design.md`. A pool that is the interpreter's shared default is a pool nobody sized. *(Proof: the design doc names both numbers and why.)*
+- [ ] **Graceful shutdown drains on SIGTERM** via the FastAPI lifespan — in-flight HTTP requests finish, peer sessions mid-send finish, and only then does the client close. *(Proof: `docker stop` on the running container reaches `shutdown complete`.)*
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in `docs/19-benchmarks.md`, naming the top bottleneck. On CPython the boss fight is won or lost in the profile, not the code review. *(Proof: both artifacts, with the bottleneck named in prose.)*
+
 ### Ship it
 - [ ] **Graceful shutdown**: stop accepting peers, flush in-flight piece writes, announce `stopped` to trackers, then exit — no half-written pieces (ties the V6 shutdown box to the app lifecycle).
-- [ ] A `Dockerfile` builds a release image; `/healthz` is a readiness probe.
+- [ ] A `Dockerfile` builds a runnable image and the container **boots under uvloop**; `/healthz` answers and `docker stop` shuts down cleanly. *(Proof: `docker build` + a run that logs `shutdown complete` on stop — the only check that exercises uvloop and PID-1 signals, both of which `make verify` cannot see.)*
 
 ---
 
@@ -204,8 +212,11 @@ The project is **done when ALL true:**
    numbers in `docs/19-benchmarks.md`.
 3. `docs/19-design.md` records the decisions the SPEC grades: **piece-selection
    strategy, the choke/unchoke policy, and the resource caps** (with the trade-offs).
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p bittorrent` are green;
-   no `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` -> `ruff check` -> `pyright` (strict)
+   -> `pytest`; no `raise NotImplementedError` remains on a checked path.
+5. The **profile is committed**: a `py-spy` flamegraph and a `memray` run in
+   `docs/19-benchmarks.md`, naming the top bottleneck. Numbers alone don't close this —
+   you have to know *why* they are what they are.
 
 ## 🐉 Boss fight — The Flash Crowd
 
@@ -217,8 +228,8 @@ The project is **done when ALL true:**
 > exactly this: serve a few peers *well*, rotate fairly, and let the pieces you hand out
 > get re-shared so the swarm heals itself.
 
-**Arena:** `bench/` harness against a **release build** (`cargo run --release`, seeder
-on). It spins up a flood of leechers — containers of the reference client, or a load
+**Arena:** `bench/` harness against the real server (`make run` with `RUN_SEEDER=true`,
+under uvicorn's uvloop — not pytest's stdlib loop, which is a different program). It spins up a flood of leechers — containers of the reference client, or a load
 tool that opens many concurrent peer sessions — all fetching the **same** torrent from
 your one seeder, and measures completion, the instantaneous unchoke count, aggregate
 throughput, and the seeder's RSS.
@@ -246,5 +257,7 @@ reproducible via `bench/`).
 ```bash
 docker compose up -d        # opentracker (HTTP+UDP) + a transmission reference peer
 cp .env.example .env        # then adjust if needed
-cargo run -p bittorrent     # control plane on :8080; set RUN_SEEDER=true to seed
+uv sync                     # or `make setup`
+make run                    # control plane on :8080; set RUN_SEEDER=true to seed
+make verify                 # fmt-check -> lint -> types -> test, the gate CI runs
 ```

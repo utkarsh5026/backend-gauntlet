@@ -36,7 +36,6 @@ PROJECTS: list[tuple[str, str]] = [
     ("live-platform", "projects/16-live-platform"),
     ("global-conferencing", "projects/17-global-conferencing"),
     ("ledger-payments-core", "projects/18-ledger-payments-core"),
-    ("bittorrent", "projects/19-bittorrent"),
 ]
 
 # Frontend dirs (must contain package.json to be built).
@@ -211,12 +210,12 @@ def self_test() -> int:
         [
             "projects/11-vod-streaming/src/isobmff.rs",
             "projects/06-object-store/web/src/App.tsx",
-            "projects/19-bittorrent/src/peer.rs",
+            "projects/13-live-ingest/src/rtmp.rs",
         ],
         force_all=False,
     )
     assert rust_all is False
-    assert pkgs == ["vod-streaming", "bittorrent"], pkgs
+    assert pkgs == ["vod-streaming", "live-ingest"], pkgs
     assert fes == ["projects/06-object-store/web"], fes
 
     # Frontend-only → no rust package for that project.

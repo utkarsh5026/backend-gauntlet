@@ -25,6 +25,7 @@ members = [
     "projects/08-message-broker",
     "projects/09-raft-kv",
     "projects/10-api-gateway",
+    "projects/19-bittorrent",
     "projects/20-full-text-search",
     "projects/21-workflow-engine",
     "projects/22-lsm-redis",
