@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — RESP: framing a protocol real clients speak *(V1 · `src/resp.rs`)*
+## 🧠 Card 1 — RESP: framing a protocol real clients speak *(V1 · `src/lsm_redis/resp.py`)*
 
 **The problem.** TCP hands you a byte stream with no message boundaries: `SET hello world` may arrive one byte at a time, or glued to three more pipelined commands in a single read. "Read a line" fails twice — values are binary (a value containing `\r\n` shreds line-based parsing) and a lying length header is an allocation bomb. And you don't get to define the protocol: `redis-cli` already speaks RESP, and it is the compatibility test.
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — The WAL: durability before the acknowledgement *(V2 · `src/wal.rs`)*
+## 🧠 Card 2 — The WAL: durability before the acknowledgement *(V2 · `src/lsm_redis/wal.py`)*
 
 **The problem.** The fast write path is an in-memory table — and a crash vaporizes it. The moment your server says `OK`, the client is entitled to that write *forever*, across `kill -9`, power loss, and whatever the page cache was doing. But `write()` returning success means almost nothing: the bytes are in kernel memory, not on the platter. And a crash mid-append leaves a *torn tail* — half a record that a naive replay would deserialize into garbage state.
 
@@ -51,7 +51,7 @@
 
 ---
 
-## 🧠 Card 3 — Memtable + SSTable: the LSM write path *(V3+V4 · `src/memtable.rs`, `src/sstable.rs`)*
+## 🧠 Card 3 — Memtable + SSTable: the LSM write path *(V3+V4 · `src/lsm_redis/memtable.py`, `src/lsm_redis/sstable.py`)*
 
 **The problem.** B-trees update pages *in place* — every write is a random I/O somewhere in a big file, and random writes are the slowest thing storage does. To absorb a write firehose you want every disk write to be sequential — but you still owe fast reads and real deletes, and "just append everything" makes reads a full scan.
 
@@ -75,7 +75,7 @@
 
 ---
 
-## 🧠 Card 4 — Bloom filters: skipping disk you never needed *(V5 · `src/bloom.rs`)*
+## 🧠 Card 4 — Bloom filters: skipping disk you never needed *(V5 · `src/lsm_redis/bloom.py`)*
 
 **The problem.** A GET for an *absent* key is the LSM's worst case: it's not in the memtable, not in any of 30 SSTables — and proving each "not here" costs an index probe and possibly a block read, ×30, for nothing. Miss-heavy workloads (checking existence, cache-miss lookups) turn read amplification into a disk storm.
 
@@ -98,7 +98,7 @@
 
 ---
 
-## 🧠 Card 5 — Compaction: paying down write debt *(V6 · `src/compaction.rs`)*
+## 🧠 Card 5 — Compaction: paying down write debt *(V6 · `src/lsm_redis/compaction.py`)*
 
 **The problem.** Every flush adds an SSTable. Left alone: reads consult ever more files (read amplification grows without bound), overwritten values and tombstoned keys hold disk forever (space amplification), and eventually flushes outrun the disk and the engine does the one thing a database must never do — **stop accepting writes**. Real engines call it a write stall; it has paged real humans at real companies.
 
@@ -121,7 +121,7 @@
 
 ---
 
-## 🧠 Card 6 — The block cache: a hand-built LRU under the read path *(V7 · `src/block_cache.rs`)*
+## 🧠 Card 6 — The block cache: a hand-built LRU under the read path *(V7 · `src/lsm_redis/block_cache.py`)*
 
 **The problem.** Real workloads are skewed — the same hot blocks are read constantly. Without a cache, every hot read re-pays a block read + CRC + decode; with an *unbounded* cache you re-invent the OOM. And this cache sits under every concurrent connection, so a single coarse lock makes the cache itself the bottleneck.
 

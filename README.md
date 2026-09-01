@@ -161,7 +161,7 @@ Then pick a project:
 
 ```bash
 cd projects/23-dynamodb-core
-make run                       # 15 projects are Python; see the Roadmap above
+make run                       # 16 projects are Python; see the Roadmap above
 make verify                    # fmt-check → lint → types → test (the CI gate)
 ```
 
