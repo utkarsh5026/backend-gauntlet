@@ -38,7 +38,7 @@ dev = [
     # Canonical encoding is a claim about *every* value, not about a corpus, and
     # a corpus is exactly what a hand-written test can only ever be.
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done. On CPython the boss fight is
     # won or lost in the profile, not the code review.

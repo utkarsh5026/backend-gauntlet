@@ -38,7 +38,7 @@ dev = [
     "httpx>=0.28",
     # V1's proof asks for a property test (many refills never drift the budget).
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # Codegen + type stubs for it. `grpcio-tools` carries protoc, so `make proto`
     # needs no system protobuf — the Python answer to `protoc-bin-vendored`.

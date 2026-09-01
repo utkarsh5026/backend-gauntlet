@@ -29,7 +29,7 @@ dev = [
     # V1's whole proof is "a request signed by a real AWS SDK verifies unmodified".
     # botocore is that SDK's signer — it is a *test* dependency on purpose, because
     # depending on it at runtime would be borrowing the answer.
-    "botocore>=1.35",
+    "botocore>=1.43.83",
     # V2's ARN parsing and condition operators are exactly the shape property
     # tests were invented for.
     "hypothesis>=6.115",

@@ -31,7 +31,7 @@ dev = [
     # the network — the filesystem IS the index. It is here only to drive the
     # ASGI app in tests.
     "httpx>=0.28",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done.
     "py-spy>=0.4",

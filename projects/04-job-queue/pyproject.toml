@@ -35,7 +35,7 @@ dev = [
     "pytest-asyncio>=0.24",
     # Drives the app over ASGI, so handlers are tested without binding a socket.
     "httpx>=0.28",
-    "ruff>=0.8",
+    "ruff>=0.16.5",
     "pyright>=1.1.390",
     # asyncpg ships no type information of its own.
     "asyncpg-stubs>=0.30",
