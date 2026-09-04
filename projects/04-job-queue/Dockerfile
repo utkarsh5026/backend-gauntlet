@@ -22,7 +22,7 @@ RUN uv sync --frozen --no-dev --package job-queue --no-install-project
 COPY projects/04-job-queue/ projects/04-job-queue/
 RUN uv sync --frozen --no-dev --package job-queue
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 # curl is only here for the compose healthcheck (GET /healthz).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
