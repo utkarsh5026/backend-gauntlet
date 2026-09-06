@@ -21,3 +21,7 @@ projects/*/data/
 # Project 24's sandbox scratch: one directory per execution environment under
 # SANDBOX_ROOT, created on cold start and removed when the environment is reaped.
 projects/*/run/
+
+# Project 11's media library: MEDIA_DIR is a source of video, not source code.
+# `make fixture` generates tens of MB of .mp4 in here. Never commit them.
+projects/*/media/

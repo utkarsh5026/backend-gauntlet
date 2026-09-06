@@ -2,8 +2,8 @@
 
 > A beginner-friendly guide. **No prior knowledge of video files assumed.**
 > This teaches the *idea* behind **V1** so you can write the demuxer yourself.
-> It prepares you for [`src/isobmff.rs`](../src/isobmff.rs) — the `demux()` and
-> `read_box_header()` `todo!()`s — and the "Done when ALL true" list in
+> It prepares you for [`src/isobmff.rs`](../src/vod_streaming/isobmff.py) — the `demux()` and
+> `iter_boxes()` `NotImplementedError`s — and the "Done when ALL true" list in
 > [`SPEC.md`](../SPEC.md) for V1. It does **not** contain the parser; the interesting
 > part is yours to build.
 
@@ -82,8 +82,9 @@ Normal:  [ size:u32 ][ type:u32 ][ payload ... ]          header = 8 bytes
 Large:   [ 1:u32    ][ type:u32 ][ size:u64 ][ payload ]  header = 16 bytes
 ```
 
-`read_box_header()` in the scaffold is exactly this. Its `todo!()` note says *"parse
-a box header with 32/64-bit size + bounds checks"* — the bounds checks are the point
+`iter_boxes()` in the scaffold walks exactly this, one box at a time. Its
+`NotImplementedError` note says *"walk the box tree with 32/64-bit sizes + bounds
+checks"* — the bounds checks are the point
 (see §7).
 
 ---
@@ -109,10 +110,10 @@ moov
                      └── stss     which samples are keyframes
 ```
 
-The scaffold's [`demux()` TODO](../src/isobmff.rs) is literally this descent:
+The scaffold's [`demux()` TODO](../src/vod_streaming/isobmff.py) is literally this descent:
 *find `moov`, for each `trak` descend `mdia/minf/stbl`, read the tables, pull
 `timescale` from `mdhd` and kind from `hdlr`.* Your output type is already defined —
-a [`Track`](../src/isobmff.rs) with a `Vec<Sample>` where each `Sample` is
+a [`Track`](../src/vod_streaming/isobmff.py) with a `list[Sample]` where each `Sample` is
 `{ offset, size, decode_time, duration, composition_offset, is_sync }`.
 
 ---
@@ -149,7 +150,7 @@ encodes *one dimension* of the per-sample list, and cleverly:
 
 **The work of V1 is the join:** walk these compressed/cross-referenced tables and
 expand them into one row per sample. Nothing downstream (segmenting, manifests) ever
-touches a box again — they read your flat `Vec<Sample>`.
+touches a box again — they read your flat `list[Sample]`.
 
 ### Worked example: resolving one sample's byte offset
 
@@ -241,9 +242,10 @@ A box claims size = 900000, but only 40 bytes remain in the buffer.
 
 The same check applies to a `size == 1` 64-bit header that claims there are 8 more
 bytes to read the u64 from, a table `entry_count` that would run past the box, and a
-sample offset that points outside the file. `bytes::Buf::get_u32/get_u64` read
-big-endian (the box wire order) — but they *panic* if the buffer is too short, so you
-check *first*. Every `todo!()` in `isobmff.rs` mentions this; it's not paranoia, it's
+sample offset that points outside the file. `struct.unpack_from(">I", ...)` and
+`int.from_bytes(..., "big")` read big-endian (the box wire order) — but slicing a
+short buffer *doesn't* raise, it just hands back fewer bytes and a plausible wrong
+number, so you check *first*. Every `NotImplementedError` in `isobmff.py` mentions this; it's not paranoia, it's
 the spec of the function.
 
 **Depth probe worth answering before you build:** *why must a progressive-download mp4
@@ -271,21 +273,21 @@ Packager, and every browser/player demuxer. The same format underlies `.mov`, CM
 | Box | length-prefixed `[size][fourcc][payload]`; skip-by-length = forward-compatible |
 | `moov` vs `mdat` | index vs media; the tree exists to find these two |
 | `stbl` tables | each encodes one dimension (timing / size / geometry / keyframes), compressed |
-| Sample table | your flat `Vec<Sample>` — the join of all those tables |
+| Sample table | your flat `list[Sample]` — the join of all those tables |
 | DTS vs PTS | decode order (file) vs display order; `ctts` bridges them; B-frames create the gap |
 | Sync sample | decodes alone; the only legal segment/seek boundary |
 | Totality | check length before index → `Err`, never panic |
 
 ## Where you'll build this
 
-[`src/isobmff.rs`](../src/isobmff.rs):
-- `read_box_header()` — the `[size][type]` parse with 32/64-bit sizes + bounds checks.
-- `demux()` — the descent + the table join into `Vec<Sample>` per `Track`.
+[`src/isobmff.rs`](../src/vod_streaming/isobmff.py):
+- `iter_boxes()` — the `[size][type]` walk with 32/64-bit sizes + bounds checks.
+- `demux()` — the descent + the table join into `list[Sample]` per `Track`.
 
 **This doc unlocks these V1 "Done when ALL true" boxes:** per-track timescale/codec +
 full sample table; sample count & duration match the source; `stco` **and** `co64`
 handled; `ctts` applied (PTS recoverable); codec init data (`avcC`/SPS/PPS) retained;
-malformed input rejected without panic.
+malformed input rejected without a wrong answer.
 
 **When you hit the interesting decisions** — how to structure the recursive descent,
 how exactly to expand `stsc` into per-sample chunk membership, how to keep the parser

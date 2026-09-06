@@ -4,8 +4,8 @@
 > [doc 01 (segments)](./01-fragmented-mp4-segmenter.md) and
 > [doc 02 (manifests)](./02-manifests-hls-and-dash.md).
 > This teaches the *idea* behind **V4** so you can write the delivery layer yourself.
-> It prepares you for [`src/delivery.rs`](../src/delivery.rs) — the `resolve_range()`
-> and `serve_ranged()` `todo!()`s — plus the ABR alignment work in the segmenter, and
+> It prepares you for [`src/delivery.rs`](../src/vod_streaming/delivery.py) — the `resolve_range()`
+> and `serve_ranged()` `NotImplementedError`s — plus the ABR alignment work in the segmenter, and
 > the V4 checklist in [`SPEC.md`](../SPEC.md). It teaches the HTTP `Range` state
 > machine and the ABR alignment *constraint*; the parser body is yours.
 
@@ -77,16 +77,16 @@ Range header?
 The `416` response is specific: status `416 Range Not Satisfiable`, header
 `Content-Range: bytes */<total>` (note the `*`), empty body. It tells the client "your
 range made no sense; here's how long the resource actually is, try again." The scaffold
-models the three outcomes as the [`Resolved`](../src/delivery.rs) enum
+models the three outcomes as the [`Resolved`](../src/vod_streaming/delivery.py) enum
 (`Full` / `Partial{start,end}` / `Unsatisfiable`) — `resolve_range()` returns one; and
 `serve_ranged()` turns it into the status + `Content-Range`/`Content-Length` +
 `Accept-Ranges` + the right body slice.
 
 **The bytes-out contract:** on `206`, `Content-Length` = `end - start + 1` (the slice),
-and the body is *exactly* those bytes. Slicing `Bytes` is O(1) and shares the buffer —
-so a range costs memory bounded by a chunk, not by re-reading or copying the segment.
-The scaffold notes this: *`Bytes::slice` keeps a single segment's worth, which is the
-bound that matters.*
+and the body is *exactly* those bytes. Slicing a `memoryview` is O(1) and shares the
+buffer (slicing `bytes` copies) — so a range costs memory bounded by a chunk, not by
+re-reading or copying the segment. The scaffold notes this, and adds the Python catch:
+`StreamingResponse` will not set `Content-Length` for you.
 
 > **Ambiguous inputs are yours to decide (and document).** Multi-range
 > (`bytes=0-9,20-29`), a malformed header, `total == 0` — the scaffold explicitly says
@@ -227,13 +227,13 @@ the cold-cut vs memoized first-byte latency (a Definition-of-done bench number).
 
 ## Where you'll build this
 
-[`src/delivery.rs`](../src/delivery.rs):
+[`src/delivery.rs`](../src/vod_streaming/delivery.py):
 - `resolve_range()` — parse `bytes=` (`a-b`/`a-`/`-n`) against `total` → `Resolved` (§2).
 - `serve_ranged()` — assemble `200`/`206`/`416` with the right headers + body slice.
 
 Plus the ABR half: a **second rendition** whose segment boundaries **align** with the
 first (in the segmenter + master playlist), and the caching/`ETag` horizontal work
-(memoize cut segments — see the TODO in [`catalog.rs`](../src/catalog.rs)).
+(memoize cut segments — see the TODO in [`catalog.py`](../src/vod_streaming/catalog.py)).
 
 **This doc unlocks these V4 "Done when ALL true" boxes:** `206`+`Content-Range` for a
 range, `200` for none; open-ended/suffix ranges + `416` for unsatisfiable;
