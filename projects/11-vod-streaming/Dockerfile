@@ -11,7 +11,7 @@
 # Both stages sit on the same base image so the virtualenv built in `build` has
 # valid interpreter paths when copied into `runtime` — a venv is not relocatable
 # across different Python installs.
-FROM python:3.13-slim-bookworm AS build
+FROM python:3.14-slim-bookworm AS build
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -26,7 +26,7 @@ RUN uv sync --package vod-streaming --frozen --no-dev --no-install-project
 COPY projects/11-vod-streaming/ projects/11-vod-streaming/
 RUN uv sync --package vod-streaming --frozen --no-dev
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 # curl is here to probe /healthz from inside the container when host port
 # publishing is not available.
 RUN apt-get update \
