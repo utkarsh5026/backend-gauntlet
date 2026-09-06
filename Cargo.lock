@@ -3431,25 +3431,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vod-streaming"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "common-config",
- "common-telemetry",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower-http",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3901,7 +3882,6 @@ dependencies = [
  "md-5",
  "memchr",
  "num-traits",
- "ppv-lite86",
  "rand 0.8.6",
  "rand 0.9.4",
  "rand_chacha 0.9.0",

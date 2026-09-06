@@ -3,8 +3,8 @@
 > A beginner-friendly guide. **No prior knowledge assumed** beyond
 > [doc 01 (the segments exist now)](./01-fragmented-mp4-segmenter.md).
 > This teaches the *idea* behind **V3** so you can write the manifest generators
-> yourself. It prepares you for [`src/manifest.rs`](../src/manifest.rs) — the
-> `hls_media_playlist()`, `hls_master_playlist()`, and `dash_mpd()` `todo!()`s — and
+> yourself. It prepares you for [`src/manifest.rs`](../src/vod_streaming/manifest.py) — the
+> `hls_media_playlist()`, `hls_master_playlist()`, and `dash_mpd()` `NotImplementedError`s — and
 > the V3 checklist in [`SPEC.md`](../SPEC.md). It teaches the tag/XML *vocabulary* and
 > the *arithmetic contract*; the golden-file output is yours to produce.
 
@@ -57,7 +57,7 @@ A player's flow: fetch **master** → pick a starting rung → fetch that rung's
 playlist** → fetch its init + segments → (measure bandwidth, maybe switch rungs — that's
 V4). Your routes already mirror this:
 `/vod/{asset}/master.m3u8` and `/vod/{asset}/{rendition}/index.m3u8`
-(see [`routes.rs`](../src/routes.rs)).
+(see [`routes.py`](../src/vod_streaming/routes.py)).
 
 ### The media playlist, tag by tag
 
@@ -107,7 +107,7 @@ GOP). This is the concrete downstream reason V2's per-segment durations must be 
 Each `#EXT-X-STREAM-INF` is one rung: a `BANDWIDTH` (peak bits/sec) and `RESOLUTION`,
 followed by that rung's media-playlist URI. This is *the* data ABR needs — the player
 reads the menu here and switches rungs against its measured throughput (V4). The
-scaffold models a rung as [`RenditionInfo`](../src/manifest.rs) `{ id, bandwidth,
+scaffold models a rung as [`RenditionInfo`](../src/vod_streaming/manifest.py) `{ id, bandwidth,
 width, height, uri }`; `hls_master_playlist()` renders one `#EXT-X-STREAM-INF` line per
 rung.
 
@@ -229,7 +229,7 @@ that.
 
 ## Where you'll build this
 
-[`src/manifest.rs`](../src/manifest.rs):
+[`src/manifest.rs`](../src/vod_streaming/manifest.py):
 - `hls_media_playlist()` — the tags + one exact `#EXTINF` per segment + `ENDLIST`.
 - `hls_master_playlist()` — one `#EXT-X-STREAM-INF` per `RenditionInfo`.
 - `dash_mpd()` — the same segment list as a `static` MPD.

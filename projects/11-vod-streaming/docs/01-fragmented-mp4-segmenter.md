@@ -3,9 +3,9 @@
 > A beginner-friendly guide. **No prior knowledge assumed** beyond
 > [doc 00 (the box tree & sample table)](./00-iso-bmff-and-sample-tables.md).
 > This teaches the *idea* behind **V2**, the marquee vertical, so you can write the
-> segmenter yourself. It prepares you for [`src/segment.rs`](../src/segment.rs) —
+> segmenter yourself. It prepares you for [`src/segment.rs`](../src/vod_streaming/segment.py) —
 > the `plan_segments()`, `build_init_segment()`, and `build_media_segment()`
-> `todo!()`s — and the V2 checklist in [`SPEC.md`](../SPEC.md). It teaches the *shape*
+> `NotImplementedError`s — and the V2 checklist in [`SPEC.md`](../SPEC.md). It teaches the *shape*
 > of the fMP4 boxes and the segmentation *policy*; it does **not** write them for you.
 
 ---
@@ -142,7 +142,7 @@ Two things are easy to get subtly wrong, and the scaffold calls both out:
 
 - **The `mdat` bytes come from V1.** For each sample in the segment you copy
   `source[sample.offset .. sample.offset + sample.size]`, in order. `build_media_segment`
-  receives `source: &[u8]` and the `entry.samples` range for exactly this.
+  receives `source: memoryview` and the `entry.samples` range for exactly this.
 
 ### Why memory stays bounded (a graded criterion)
 
@@ -172,7 +172,7 @@ segment N's start_time  ==  sum of all prior segments' durations
 start_time[n+1]  ==  start_time[n] + duration[n]      (gapless, no rounding)
 ```
 
-The scaffold's [`SegmentEntry`](../src/segment.rs) already models this: `start_time`
+The scaffold's [`SegmentEntry`](../src/vod_streaming/segment.py) already models this: `start_time`
 "equals the summed durations of all prior segments," and the `plan_segments` TODO
 requires consecutive segments be gapless. Compute in the **integer timescale**, never
 in floating seconds — summing floats accumulates error and your anchors drift.
@@ -185,7 +185,7 @@ This is the decision at the heart of V2, and the SPEC deliberately leaves the *h
 you. The shape of the problem:
 
 You have a **target** duration (say ~6 s, `DEFAULT_TARGET_SEGMENT_SECS` in
-[`main.rs`](../src/main.rs)). You want segments near that length. **But** every segment
+[`main.py`](../src/vod_streaming/main.py)). You want segments near that length. **But** every segment
 must *begin on a keyframe* so it decodes standalone (doc 00, §6). Keyframes occur only
 at GOP boundaries — maybe every 2 s, maybe every 10 s, whatever the encoder chose. So
 the target and the keyframes fight, and one has to yield.
@@ -254,7 +254,7 @@ count that disagrees with `mdat`, a missing `trex`) is your bug list.
 
 ## Where you'll build this
 
-[`src/segment.rs`](../src/segment.rs):
+[`src/segment.rs`](../src/vod_streaming/segment.py):
 - `plan_segments()` — the keyframe-aligned grouping policy (§6).
 - `build_init_segment()` — `ftyp` + setup-only `moov` + `mvex`/`trex`, deterministic (§3).
 - `build_media_segment()` — `styp` + `moof` + `mdat` for one entry (§4–5).

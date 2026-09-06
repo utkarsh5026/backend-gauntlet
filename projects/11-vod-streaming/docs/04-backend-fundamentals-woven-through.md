@@ -5,8 +5,8 @@
 > browser players, graceful shutdown, and the metrics that matter. **No prior knowledge
 > assumed.** This prepares you for the horizontal checklist in [`SPEC.md`](../SPEC.md)
 > and the rapid-fire round in [`CONCEPTS.md`](../CONCEPTS.md). It's anchored to
-> [`routes.rs`](../src/routes.rs), [`delivery.rs`](../src/delivery.rs),
-> [`catalog.rs`](../src/catalog.rs), and [`main.rs`](../src/main.rs). These are the
+> [`routes.py`](../src/vod_streaming/routes.py), [`delivery.py`](../src/vod_streaming/delivery.py),
+> [`catalog.py`](../src/vod_streaming/catalog.py), and [`main.py`](../src/vod_streaming/main.py). These are the
 > things that make a *correct* packager into a *production* one.
 
 ---
@@ -25,7 +25,7 @@ separates "it decodes on my laptop" from "it survives a CDN and the public inter
 An HTTP response is just bytes plus a `Content-Type` label. Players (and browsers)
 dispatch on that label — hand them the correct segment bytes under the *wrong* type and
 they refuse to parse it. There's no sniffing to fall back on for these formats. The four
-that matter (already defined as constants in [`routes.rs`](../src/routes.rs)):
+that matter (already defined as constants in [`routes.py`](../src/vod_streaming/routes.py)):
 
 | Resource | `Content-Type` | Why |
 |----------|----------------|-----|
@@ -71,7 +71,7 @@ an `If-None-Match` match returns `304`. Playlists are cacheable too (VOD only �
 
 ### Memoization is the server-side twin
 
-The [`catalog.rs`](../src/catalog.rs) caching TODO is the *other* half: don't re-demux
+The [`catalog.py`](../src/vod_streaming/catalog.py) caching TODO is the *other* half: don't re-demux
 and re-mux a segment on every request. **Cut once, memoize the bytes** (keyed by
 asset/rendition/index), reuse thereafter. This isn't only speed — it's what makes the
 `ETag` *stable* (you're literally handing back the same buffer) and lets you measure the
@@ -83,7 +83,7 @@ cold-cut-vs-memoized latency the bench asks for. Determinism, memoization, and t
 ## 3. Path traversal: the filesystem *is* the database, so jail it
 
 This project has no DB — `MEDIA_DIR/<asset>/<rendition>.mp4` on disk *is* the source of
-truth (see the `Catalog::load` scan in [`catalog.rs`](../src/catalog.rs)). That makes
+truth (see the `Catalog.load` scan in [`catalog.py`](../src/vod_streaming/catalog.py)). That makes
 **path traversal** the marquee security risk: a request naming an asset/rendition
 becomes a filesystem path, and an attacker will try to escape the media directory.
 
@@ -129,7 +129,7 @@ Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges
 
 Without the `Expose-Headers` line, the fetch *succeeds* but JavaScript can't see
 `Content-Range` — so the player can't tell what slice it got, and range logic **fails
-silently.** The scaffold's [`routes.rs`](../src/routes.rs) currently uses
+silently.** The scaffold's [`routes.py`](../src/vod_streaming/routes.py) currently uses
 `CorsLayer::permissive()` with a `TODO(horizontal)` to tighten it *and* add the expose
 list — that expose list is the media-specific gotcha this checklist item is testing.
 
@@ -141,7 +141,7 @@ When the server gets `SIGTERM` (a deploy, a scale-down), the naive thing is to d
 every connection immediately. For a media server that's a *visible* error: a viewer
 streaming `seg/40` gets a truncated segment and the player throws. **Graceful shutdown**
 means: stop accepting new connections, but **let in-flight segment streams finish
-draining** before exiting. `main.rs` already wires an axum shutdown signal; the concept
+draining** before exiting. `main.py` already wires the FastAPI lifespan and uvicorn's shutdown budget; the concept
 to own is *why* — a mid-segment cut isn't a silent server metric, it's a glitch the user
 sees. The horizontal criterion is exactly "drains in-flight segment streams on SIGTERM,
 no mid-segment connection drops."
@@ -151,7 +151,7 @@ no mid-segment connection drops."
 ## 6. Observability: metrics you can actually debug a media server from
 
 `common-telemetry` gives you a `tracing` span per request (wired via
-`make_request_span` in [`routes.rs`](../src/routes.rs)). The discipline is to enrich it
+`make_request_span` in [`routes.py`](../src/vod_streaming/routes.py)). The discipline is to enrich it
 with *media-specific* context and to count the things whose ratios reveal problems:
 
 - **Span fields:** `asset`, `rendition`, and — for a media response — the **byte range
@@ -202,10 +202,10 @@ learning.
 ## Where you'll build this
 
 Woven across the modules rather than one vertical:
-[`routes.rs`](../src/routes.rs) (content types, CORS, spans),
-[`delivery.rs`](../src/delivery.rs) (`Cache-Control`/`ETag` on media responses),
-[`catalog.rs`](../src/catalog.rs) (memoization; the `MEDIA_DIR` scan + name validation),
-and [`main.rs`](../src/main.rs) (graceful shutdown, telemetry init).
+[`routes.py`](../src/vod_streaming/routes.py) (content types, CORS, spans),
+[`delivery.py`](../src/vod_streaming/delivery.py) (`Cache-Control`/`ETag` on media responses),
+[`catalog.py`](../src/vod_streaming/catalog.py) (memoization; the `MEDIA_DIR` scan + name validation),
+and [`main.py`](../src/vod_streaming/main.py) (graceful shutdown, telemetry init).
 
 **This doc unlocks the horizontal checklist boxes:** correct content types;
 `Range`→`206`/`416` with `Accept-Ranges`; CORS with exposed headers; graceful shutdown;

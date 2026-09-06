@@ -1,5 +1,5 @@
 // Typed client for the project-11 VOD server. Requests go to same-origin paths;
-// Vite proxies /vod + /assets to the Rust backend (see vite.config.ts).
+// Vite proxies /vod + /assets to the backend (see vite.config.ts).
 
 export type Asset = {
   asset: string
