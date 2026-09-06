@@ -5,10 +5,10 @@
 > datagrams to an IP:port".
 >
 > Prepares you for **V1** in [SPEC.md](../SPEC.md) — the STUN codec + ICE-lite
-> agent in [ice.rs](../src/ice.rs) (`StunMessage::parse` / `encode`,
-> `message_integrity`, `fingerprint`, `IceAgent::handle` — all currently
-> `todo!()`). The muxed socket that feeds it is wired in
-> [pump.rs](../src/pump.rs) and [wire.rs](../src/wire.rs).
+> agent in [ice.py](../src/webrtc_sfu/ice.py) (`StunMessage.parse` / `encode`,
+> `message_integrity`, `fingerprint`, `IceAgent.handle` — all currently
+> `NotImplementedError`). The muxed socket that feeds it is wired in
+> [pump.py](../src/webrtc_sfu/pump.py) and [wire.py](../src/webrtc_sfu/wire.py).
 
 ---
 
@@ -64,7 +64,7 @@ error anywhere.
 ## 2. STUN: the message format
 
 A STUN message is a fixed 20-byte header followed by attributes
-(see the diagram in [ice.rs](../src/ice.rs)):
+(see the diagram in [ice.py](../src/webrtc_sfu/ice.py)):
 
 ```
  0                   1                   2                   3
@@ -84,10 +84,10 @@ Piece by piece:
 
 - **Top two bits `00`** — this is also what makes STUN demuxable from RTP on a
   shared port: a STUN first byte is `0x00..=0x03`, an RTP first byte is
-  `0x80..=0xBF` (see [`classify`](../src/wire.rs) and doc
+  `0x80..=0xBF` (see [`classify`](../src/webrtc_sfu/wire.py) and doc
   [05](05-the-wire-and-the-guardrails.md)).
 - **14-bit message type** — a *class* (request / indication / success /
-  error, the [`StunClass`](../src/ice.rs) enum) and a 12-bit *method*
+  error, the [`StunClass`](../src/webrtc_sfu/ice.py) enum) and a 12-bit *method*
   (Binding, `0x001`, is the only one ICE uses here) packed together, with the
   two class bits *interleaved into* the method bits rather than adjacent.
   The two values you'll see constantly: **Binding request = `0x0001`**,
@@ -103,7 +103,7 @@ Piece by piece:
 
 **Attributes** are TLVs: 2-byte type, 2-byte length, then the value, then
 zero-padding to the next 4-byte boundary. The ones this SFU models are the
-[`StunAttribute`](../src/ice.rs) enum: `USERNAME`, `XOR-MAPPED-ADDRESS`,
+[`StunAttribute`](../src/webrtc_sfu/ice.py) enum: `USERNAME`, `XOR-MAPPED-ADDRESS`,
 `MESSAGE-INTEGRITY`, `FINGERPRINT`, `PRIORITY`, `USE-CANDIDATE`,
 `ICE-CONTROLLING`/`ICE-CONTROLLED`.
 
@@ -111,14 +111,17 @@ zero-padding to the next 4-byte boundary. The ones this SFU models are the
 > send it arbitrary bytes. Every length you read is an attacker-controlled
 > number until you've range-checked it against the buffer. The V1 criteria
 > demand parsing be *total on garbage* — a runt datagram, a wrong cookie, or
-> an attribute length that overruns the buffer is a clean `Err`
-> ([`SfuError::Truncated` / `BadMagic` / `Malformed`](../src/error.rs)), never
-> a panic or out-of-bounds read. `parse` in the scaffold already shows the
-> first two checks; the TLV walk is yours.
+> an attribute length that overruns the buffer raises a `MediaError`
+> ([`TruncatedError` / `BadMagicError` / `MalformedError`](../src/webrtc_sfu/errors.py)),
+> which the pump catches and drops. Never an unhandled exception, and — the
+> Python-specific half — never a **silent short slice**: `data[4:8]` on a
+> five-byte buffer returns one byte and raises nothing at all, so the bug
+> surfaces layers away as a nonsensical length. Check before you slice.
+> The `parse` docstring names the first two checks; the TLV walk is yours.
 
 ## 3. The ICE dance, from the SFU's chair
 
-Signaling happens first, over HTTP ([signaling.rs](../src/signaling.rs)): the
+Signaling happens first, over HTTP ([routes.py](../src/webrtc_sfu/routes.py)): the
 browser and SFU exchange short credentials — a `ufrag` (username fragment) and
 a `pwd` (password) each — plus the SFU's media address. Then, on the media
 port:
@@ -160,9 +163,11 @@ Three things to internalize from that picture:
    to that peer — and from nowhere else (doc
    [05](05-the-wire-and-the-guardrails.md)).
 
-In [ice.rs](../src/ice.rs) this is [`IceAgent::handle`](../src/ice.rs)
-returning an [`IceAction`](../src/ice.rs): `Respond(bytes)`, and additionally
-`Nominated { peer }` when `USE-CANDIDATE` was present and authentic.
+In [ice.py](../src/webrtc_sfu/ice.py) this is [`IceAgent.handle`](../src/webrtc_sfu/ice.py)
+returning an [`IceResult`](../src/webrtc_sfu/ice.py): a `response` to send back, and a
+`nominated` address when `USE-CANDIDATE` was present and authentic. Both fields
+at once, not either/or — a nomination arrives *with* a response that still has
+to be sent.
 
 ## 4. XOR-MAPPED-ADDRESS: a worked example
 
@@ -199,8 +204,11 @@ nominates a path".
   *given* the pwd can produce a valid check. HMAC-SHA1 always yields 20
   bytes — e.g. keyed with `pass1234pass1234pass1234` over a sample 20-byte
   header it comes out `2138aba31f96186f…` (20 bytes, verified) — and
-  [`message_integrity`](../src/ice.rs) is the one place the `hmac`/`sha1`
-  crates appear.
+  [`message_integrity`](../src/webrtc_sfu/ice.py) is one `hmac.new(key, msg,
+  hashlib.sha1).digest()`, both stdlib. Verify it with `hmac.compare_digest`,
+  never `==`: a comparison that short-circuits on the first wrong byte leaks,
+  in its timing, how many leading bytes were right — a forgery oracle against
+  a port that answers as fast as you can ask.
 - **FINGERPRINT** is `CRC32(message) ^ 0x5354554E`. Not security — CRC32 has
   no key — just a cheap "this really is STUN" checksum. The XOR constant is
   the ASCII bytes `"STUN"` (`0x53 0x54 0x55 0x4E`), a deliberate signature.
@@ -217,7 +225,7 @@ interesting part of `encode`.
 ## 6. The design space (what's yours to decide)
 
 The SPEC fixes *what*; these are the *hows* you'll choose in
-[ice.rs](../src/ice.rs) and record in `docs/15-design.md`:
+[ice.py](../src/webrtc_sfu/ice.py) and record in `docs/15-design.md`:
 
 - **The TLV walk.** How you iterate attributes so that every slice is
   bounds-checked before indexing, padding is skipped correctly, and unknown
@@ -252,11 +260,11 @@ When you're ready to build: `/quest` scaffolds the acceptance tests first;
 
 ## 8. Where you'll build this
 
-Everything lands in [ice.rs](../src/ice.rs): `StunMessage::parse`,
-`StunMessage::encode`, `message_integrity`, `fingerprint`, and
-`IceAgent::handle` — each `todo!()` is annotated with its contract. The wired
-[pump](../src/pump.rs) already routes every STUN-classified datagram to
-[`Sfu::handle_stun`](../src/sfu.rs), so the first real browser check will hit
+Everything lands in [ice.py](../src/webrtc_sfu/ice.py): `StunMessage.parse`,
+`StunMessage.encode`, `message_integrity`, `fingerprint`, and
+`IceAgent.handle` — each `NotImplementedError` is annotated with its contract. The wired
+[pump](../src/webrtc_sfu/pump.py) already routes every STUN-classified datagram to
+[`Sfu.handle_stun`](../src/webrtc_sfu/sfu.py), so the first real browser check will hit
 your `parse` immediately.
 
 This doc unlocks V1's **Done when ALL true** (see [SPEC.md](../SPEC.md)):

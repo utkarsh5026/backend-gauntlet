@@ -6,9 +6,9 @@
 > physics is derived from scratch.
 >
 > Prepares you for **V4** in [SPEC.md](../SPEC.md) — the
-> [`BandwidthEstimator`](../src/bwe.rs) (`on_transport_feedback`, `on_loss`)
-> and [`Allocator`](../src/bwe.rs) (`split`) — all `todo!()`. Its output is
-> exactly what V3's [`LayerSelector::set_budget`](../src/simulcast.rs)
+> [`BandwidthEstimator`](../src/webrtc_sfu/bwe.py) (`on_transport_feedback`, `on_loss`)
+> and [`Allocator`](../src/webrtc_sfu/bwe.py) (`split`) — all `NotImplementedError`. Its output is
+> exactly what V3's [`LayerSelector.set_budget`](../src/webrtc_sfu/simulcast.py)
 > consumes.
 
 ---
@@ -48,7 +48,7 @@ Two consequences make this the SFU's problem, not the network's:
    [CONCEPTS.md](../CONCEPTS.md): one global estimate ("the server's uplink
    is shared, average it") starves fibre viewers and drowns mobile ones
    *simultaneously*, because the constraint is each viewer's private
-   downlink. Hence: one [`BandwidthEstimator`](../src/bwe.rs) **per
+   downlink. Hence: one [`BandwidthEstimator`](../src/webrtc_sfu/bwe.py) **per
    subscriber**, each running its own loop. (This is project 14's congestion
    controller, moved server-side and multiplied by N viewers.)
 
@@ -68,7 +68,7 @@ it learns when each **arrived**. Absolute clocks don't align across machines
 > telling you it can't drain what you're sending — **before dropping
 > anything.**
 
-A worked batch (the shape of [`ArrivalSample`](../src/bwe.rs) — `sent_ms`,
+A worked batch (the shape of [`ArrivalSample`](../src/webrtc_sfu/bwe.py) — `sent_ms`,
 `arrived_ms`; the constant receiver-clock offset cancels in the differences):
 
 | Packet | Sent (ms) | Arrived (ms) | Send gap | Arrival gap | Gradient |
@@ -95,7 +95,7 @@ RTCP receiver reports carry `fraction_lost` — what share of packets never
 arrived. By the time loss is sustained, the queue already overflowed: you're
 not near the limit, you're **past** it. Blunt, laggy — but unambiguous, and
 immune to the delay signal's noise. The scaffold's
-[`on_loss`](../src/bwe.rs) TODO states the classic GCC rule of thumb it
+[`on_loss`](../src/webrtc_sfu/bwe.py) TODO states the classic GCC rule of thumb it
 wants:
 
 | `fraction_lost` | Regime | Action |
@@ -114,7 +114,7 @@ Each signal has a failure mode — delay: noise (false alarms); loss: latency
 (true alarms, too late). The combination rule is conservative: **min** of
 the two. If *either* says trouble, believe it; claiming more room than the
 gloomier signal supports is how queues get built. And always **clamp to
-`[min_bps, max_bps]`** ([`new`](../src/bwe.rs) already clamps the start):
+`[min_bps, max_bps]`** ([`new`](../src/webrtc_sfu/bwe.py) already clamps the start):
 the V4 criterion says *no sequence of hostile or garbage feedback* — absurd
 timestamps, NaN-inducing spacings, loss > 100% — may drive the estimate
 negative, zero-stuck, unbounded, or NaN. On an open port, feedback is
@@ -129,8 +129,8 @@ subscriber:
         feedback (TWCC batches, RR loss)
               │
               ▼
-   BandwidthEstimator ──estimate──▶ Allocator::split ──per-stream budget──▶
-   LayerSelector::set_budget ──layer choice──▶ changed send rate ──▶
+   BandwidthEstimator ──estimate──▶ split_budget ──per-stream budget──▶
+   LayerSelector.set_budget ──layer choice──▶ changed send rate ──▶
    the LINK responds (queue grows/drains) ──▶ new feedback ──▶ …
 ```
 
@@ -146,7 +146,7 @@ subscribers converge to the low layer and fibre subscribers to high within
 
 ### The allocator: why you never hand out 100%
 
-[`Allocator::split`](../src/bwe.rs) divides a subscriber's budget across the
+[`split_budget`](../src/webrtc_sfu/bwe.py) divides a subscriber's budget across the
 streams they receive (trivial for one video stream; real for camera +
 screen-share). One rule is non-negotiable: **reserve headroom — never
 allocate the full budget.** Two derivations for the same rule:
@@ -200,10 +200,10 @@ back off, and recover." Your decisions for `docs/15-design.md`:
 
 ## 7. Where you'll build this
 
-[`BandwidthEstimator::on_transport_feedback`](../src/bwe.rs),
-[`BandwidthEstimator::on_loss`](../src/bwe.rs) and
-[`Allocator::split`](../src/bwe.rs) in [bwe.rs](../src/bwe.rs). The wired
-core feeds RTCP into them from [`Sfu::handle_rtcp`](../src/sfu.rs) and pipes
+[`BandwidthEstimator.on_transport_feedback`](../src/webrtc_sfu/bwe.py),
+[`BandwidthEstimator.on_loss`](../src/webrtc_sfu/bwe.py) and
+[`split_budget`](../src/webrtc_sfu/bwe.py) in [bwe.py](../src/webrtc_sfu/bwe.py). The wired
+core feeds RTCP into them from [`Sfu.handle_rtcp`](../src/webrtc_sfu/sfu.py) and pipes
 the estimate into V3.
 
 This doc unlocks V4's **Done when ALL true** ([SPEC.md](../SPEC.md)):

@@ -11,7 +11,7 @@ and renders the live topology from `GET /rooms`.
 bun install
 bun run dev            # http://localhost:5115  (WebRTC needs a secure origin;
                        #  localhost counts as secure, so getUserMedia works)
-cargo run -p webrtc-sfu             # signaling :8080, media UDP :7000
+make run   # or: uv run webrtc-sfu   # signaling :8080, media UDP :7000
 ```
 
 The dev server proxies the **signaling + admin** HTTP API to `:8080`. The **media

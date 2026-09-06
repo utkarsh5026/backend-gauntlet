@@ -454,15 +454,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
-name = "crc32fast"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3611,31 +3602,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "webrtc-sfu"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "common-config",
- "common-telemetry",
- "crc32fast",
- "hmac",
- "metrics",
- "metrics-exporter-prometheus",
- "proptest",
- "rand 0.9.4",
- "serde",
- "serde_json",
- "sha1",
- "thiserror",
- "tokio",
- "tower-http",
- "tracing",
- "workspace-hack",
 ]
 
 [[package]]

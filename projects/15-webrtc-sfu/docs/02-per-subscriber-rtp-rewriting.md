@@ -6,9 +6,9 @@
 > here (project 14 built it; the refresher below is self-contained).
 >
 > Prepares you for **V2** in [SPEC.md](../SPEC.md) — the [`Rewriter`] in
-> [forward.rs](../src/forward.rs) (`rewrite`, `skip`, `to_origin_seq` — all
-> `todo!()`), operating through the wired zero-copy header accessors in
-> [wire.rs](../src/wire.rs).
+> [forward.py](../src/webrtc_sfu/forward.py) (`rewrite`, `skip`, `to_origin_seq` — all
+> `NotImplementedError`), operating through the wired zero-copy header accessors in
+> [wire.py](../src/webrtc_sfu/wire.py).
 
 ---
 
@@ -25,7 +25,7 @@ enough memory of the mapping to route a NACK back to the origin packet.**
 ## 1. Thirty seconds of RTP (the fields that matter here)
 
 Every RTP packet carries a 12-byte header the SFU reads and rewrites via
-[`RtpView`](../src/wire.rs):
+[`RtpPacket`](../src/webrtc_sfu/wire.py):
 
 | Field | Size | Meaning to a receiver |
 |---|---|---|
@@ -74,13 +74,13 @@ which the subscriber correctly NACKs.
 
 ## 3. The rewriter: a private outbound line per subscriber
 
-One [`Rewriter`](../src/forward.rs) lives **per subscriber** (not per origin
+One [`Rewriter`](../src/webrtc_sfu/forward.py) lives **per subscriber** (not per origin
 — that placement is exactly what makes a layer switch invisible: the origin
 changes, the rewriter doesn't). It owns:
 
 - the subscriber's **stable outbound SSRC** (assigned at subscribe time by the
-  wired [`Sfu::subscribe`](../src/sfu.rs), returned by
-  [`out_ssrc()`](../src/forward.rs)),
+  wired [`Sfu.subscribe`](../src/webrtc_sfu/sfu.py), returned by
+  [`out_ssrc()`](../src/webrtc_sfu/forward.py)),
 - whatever running state keeps the outbound sequence contiguous and the
   timestamp monotonic (that's the `_state: ()` placeholder — your design),
 - a **bounded** history mapping outbound → origin sequence, for NACKs.
@@ -99,8 +99,8 @@ The SFU skips two packets (deselected/pacing), forwards the rest:
 | 5982 | **drop** → `skip` | — | *nothing happened* |
 | 5983 | forward → `rewrite` | 4129 | packet 4129 ✓ |
 
-Note the contract split in the API: [`rewrite`](../src/forward.rs) stamps and
-records a forwarded packet; [`skip`](../src/forward.rs) accounts for a
+Note the contract split in the API: [`rewrite`](../src/webrtc_sfu/forward.py) stamps and
+records a forwarded packet; [`skip`](../src/webrtc_sfu/forward.py) accounts for a
 not-forwarded one. The caller (wired core + V3's selector) promises to call
 exactly one of them per origin packet; the rewriter's job is that the
 outbound line stays `…4126, 4127, 4128, 4129…` regardless of the mix.
@@ -129,7 +129,7 @@ The subscriber's NACKs name **outbound** sequence numbers — the only ones it
 knows. Suppose it NACKs 4128 (from the table above; real loss on its last
 hop). The SFU's retransmit path needs the **origin** packet, and 4128 was
 origin seq 5981. Someone has to remember that pair. That someone is the
-rewriter: [`to_origin_seq(4128) == Some(5981)`](../src/forward.rs).
+rewriter: [`to_origin_seq(4128) == Some(5981)`](../src/webrtc_sfu/forward.py).
 
 Three requirements shape it:
 
@@ -151,7 +151,7 @@ Three requirements shape it:
 
 ## 5. The design space (what's yours to decide)
 
-The scaffold comment in [forward.rs](../src/forward.rs) sketches the state
+The scaffold comment in [forward.py](../src/webrtc_sfu/forward.py) sketches the state
 *categories* (an origin↔outbound offset, last outbound seq/ts, current origin
 SSRC, a bounded mapping ring). The decisions that remain — the interesting
 part — include:
@@ -190,12 +190,12 @@ When you reach for a data structure and it feels like the answer, that's the
 
 ## 7. Where you'll build this
 
-[`Rewriter::rewrite`](../src/forward.rs), [`Rewriter::skip`](../src/forward.rs)
-and [`Rewriter::to_origin_seq`](../src/forward.rs) in
-[forward.rs](../src/forward.rs); the header patching goes through
-[`RtpView::set_ssrc` / `set_sequence` / `set_timestamp`](../src/wire.rs),
+[`Rewriter.rewrite`](../src/webrtc_sfu/forward.py), [`Rewriter.skip`](../src/webrtc_sfu/forward.py)
+and [`Rewriter.to_origin_seq`](../src/webrtc_sfu/forward.py) in
+[forward.py](../src/webrtc_sfu/forward.py); the header patching goes through
+[`RtpPacket.ssrc` / `set_sequence` / `set_timestamp`](../src/webrtc_sfu/wire.py),
 already wired. The origin-SSRC → subscribers routing table is bookkeeping the
-wired [sfu.rs](../src/sfu.rs) core keeps — your module is only the per-line
+wired [sfu.py](../src/webrtc_sfu/sfu.py) core keeps — your module is only the per-line
 rewriting brain.
 
 This doc unlocks V2's **Done when ALL true** ([SPEC.md](../SPEC.md)):
