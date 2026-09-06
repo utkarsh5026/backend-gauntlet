@@ -6,8 +6,8 @@
 >
 > This is Card 0 of [CONCEPTS.md](../CONCEPTS.md) — not a vertical you build,
 > but the idea that explains *why* the four verticals you will build
-> ([ice.rs](../src/ice.rs), [forward.rs](../src/forward.rs),
-> [simulcast.rs](../src/simulcast.rs), [bwe.rs](../src/bwe.rs)) exist at all.
+> ([ice.py](../src/webrtc_sfu/ice.py), [forward.py](../src/webrtc_sfu/forward.py),
+> [simulcast.py](../src/webrtc_sfu/simulcast.py), [bwe.py](../src/webrtc_sfu/bwe.py)) exist at all.
 
 ---
 
@@ -111,15 +111,15 @@ four verticals:
 
 | Hidden problem | Why a dumb relay fails | Vertical |
 |---|---|---|
-| The browser is behind NAT — it can't even *reach* you until an authenticated path is negotiated. | Packets to a private address go nowhere; unsolicited inbound is dropped. | **V1** · [ice.rs](../src/ice.rs) |
-| Each subscriber must see one *continuous* stream even as the SFU drops packets under them and switches origins. | A sequence gap reads as network loss; an SSRC jump reads as a broken stream. | **V2** · [forward.rs](../src/forward.rs) |
-| Different links need different quality — without decoding a pixel. | One encoding either melts the 3G viewer or starves the fibre one. | **V3** · [simulcast.rs](../src/simulcast.rs) |
-| Nobody tells you a subscriber's downlink capacity — you must estimate it from feedback. | Sending above capacity builds a queue that delays *everything* on that viewer's link. | **V4** · [bwe.rs](../src/bwe.rs) |
+| The browser is behind NAT — it can't even *reach* you until an authenticated path is negotiated. | Packets to a private address go nowhere; unsolicited inbound is dropped. | **V1** · [ice.py](../src/webrtc_sfu/ice.py) |
+| Each subscriber must see one *continuous* stream even as the SFU drops packets under them and switches origins. | A sequence gap reads as network loss; an SSRC jump reads as a broken stream. | **V2** · [forward.py](../src/webrtc_sfu/forward.py) |
+| Different links need different quality — without decoding a pixel. | One encoding either melts the 3G viewer or starves the fibre one. | **V3** · [simulcast.py](../src/webrtc_sfu/simulcast.py) |
+| Nobody tells you a subscriber's downlink capacity — you must estimate it from feedback. | Sending above capacity builds a queue that delays *everything* on that viewer's link. | **V4** · [bwe.py](../src/webrtc_sfu/bwe.py) |
 
 The plumbing around them — the muxed UDP socket, the RFC 7983 first-byte
 demux, the RTP header accessors, the room/peer bookkeeping — is wired for you
-in [wire.rs](../src/wire.rs), [pump.rs](../src/pump.rs) and
-[sfu.rs](../src/sfu.rs), because those parts are mechanical. The four
+in [wire.py](../src/webrtc_sfu/wire.py), [pump.py](../src/webrtc_sfu/pump.py) and
+[sfu.py](../src/webrtc_sfu/sfu.py), because those parts are mechanical. The four
 primitives above are exactly what you'd otherwise hand to
 `webrtc-rs`/`libwebrtc`, which is why here you build them.
 

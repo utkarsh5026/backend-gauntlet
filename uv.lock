@@ -27,6 +27,7 @@ members = [
     "realtime-pubsub",
     "sqs-queue",
     "url-shortener",
+    "webrtc-sfu",
     "workflow-engine",
 ]
 
@@ -2672,6 +2673,57 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/56/fe/cb8ef3d6f929d14158fdaaad9925985b7310abc9384dcd4d82dd0016fb59/watchfiles-1.2.0-cp315-cp315-manylinux_2_31_riscv64.whl", hash = "sha256:cee9d5efd929efdac5f7e58f72b3376f676b64050a91c5b99a7094c5b2317488", size = 465096, upload-time = "2026-05-18T04:31:30.384Z" },
     { url = "https://files.pythonhosted.org/packages/25/91/80908e835e100527a9267147b08c0eee1fa6ab0ffec15edc04d1d44885f7/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_aarch64.whl", hash = "sha256:b718bf356bbc15e559bd8ef41782b573b8ae0e3f177ab244b440568d7ea02cfb", size = 630638, upload-time = "2026-05-18T04:30:49.89Z" },
     { url = "https://files.pythonhosted.org/packages/46/4b/95ab2f256bb4af3cb2eb23b9317bda984ee6e0f11733a5c004a6c95b06e3/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_x86_64.whl", hash = "sha256:922c0e019fe68b3ae392965a766b02a71ba1168c932cebc3733cd52c5fe5b377", size = 657684, upload-time = "2026-05-18T04:31:32.027Z" },
+]
+
+[[package]]
+name = "webrtc-sfu"
+version = "0.1.0"
+source = { editable = "projects/15-webrtc-sfu" }
+dependencies = [
+    { name = "common-config" },
+    { name = "common-telemetry" },
+    { name = "fastapi" },
+    { name = "prometheus-client" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "structlog" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "hypothesis" },
+    { name = "memray" },
+    { name = "py-spy" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "common-config", editable = "packages/common-config" },
+    { name = "common-telemetry", editable = "packages/common-telemetry" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "prometheus-client", specifier = ">=0.21" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "structlog", specifier = ">=24.4" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "hypothesis", specifier = ">=6.115" },
+    { name = "memray", specifier = ">=1.14" },
+    { name = "py-spy", specifier = ">=0.4" },
+    { name = "pyright", specifier = ">=1.1.390" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "ruff", specifier = ">=0.8" },
 ]
 
 [[package]]

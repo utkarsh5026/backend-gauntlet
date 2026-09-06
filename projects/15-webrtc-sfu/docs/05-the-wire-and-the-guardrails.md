@@ -7,9 +7,9 @@
 > call. No prior knowledge assumed; shorter than the vertical docs because
 > several of these are already wired — the point is *understanding* them.
 >
-> Anchored to [wire.rs](../src/wire.rs) (wired), [pump.rs](../src/pump.rs)
-> (wired), [sfu.rs](../src/sfu.rs) (wired core), [metrics.rs](../src/metrics.rs),
-> [admin.rs](../src/admin.rs) and the [SPEC's](../SPEC.md) horizontal checklist.
+> Anchored to [wire.py](../src/webrtc_sfu/wire.py) (wired), [pump.py](../src/webrtc_sfu/pump.py)
+> (wired), [sfu.py](../src/webrtc_sfu/sfu.py) (wired core), [metrics.py](../src/webrtc_sfu/metrics.py),
+> [routes.py](../src/webrtc_sfu/routes.py) and the [SPEC's](../SPEC.md) horizontal checklist.
 
 ---
 
@@ -46,13 +46,13 @@ RFC 7983's observation: the protocols' first bytes can't collide —
 
 RTP vs RTCP share the `10xxxxxx` band, so the *second* byte disambiguates:
 RTCP packet types live in 192–223; anything else in the band is RTP. All of
-this is wired — [`classify`](../src/wire.rs) is a dozen lines and
-[pump.rs](../src/pump.rs) dispatches on it:
+this is wired — [`classify`](../src/webrtc_sfu/wire.py) is a dozen lines and
+[pump.py](../src/webrtc_sfu/pump.py) dispatches on it:
 
 ```
-recv_from ──▶ classify ──▶ Stun ──▶ Sfu::handle_stun   (V1)
-                       ├─▶ Rtp  ──▶ Sfu::handle_rtp    (V2+V3)
-                       ├─▶ Rtcp ──▶ Sfu::handle_rtcp   (V4+V2)
+recv_from ──▶ classify ──▶ Stun ──▶ Sfu.handle_stun   (V1)
+                       ├─▶ Rtp  ──▶ Sfu.handle_rtp    (V2+V3)
+                       ├─▶ Rtcp ──▶ Sfu.handle_rtcp   (V4+V2)
                        └─▶ Unknown ─▶ drop, count, move on
 ```
 
@@ -63,14 +63,15 @@ loop. On an open port, "crash on bad input" is a remote kill switch.
 ## 2. Every parser is bounds-checked (the security floor)
 
 Three parsers touch attacker-controlled bytes: STUN attribute TLVs (yours,
-V1), the RTP header ([`RtpView::new`](../src/wire.rs) — wired, note it
+V1), the RTP header ([`RtpPacket()`](../src/webrtc_sfu/wire.py) — wired, note it
 refuses runt datagrams before any accessor indexes), and RTCP length words.
 The rule is uniform: **every length field is a hostile number until checked
 against the actual buffer.** An oversized claim, a truncated datagram, an
-attribute that overruns — each is a clean `Err`/drop
-([error.rs](../src/error.rs) has `Truncated`/`BadMagic`/`Malformed` for
-exactly this), never a panic, never an out-of-bounds read, never an
-attacker-sized allocation. The V1 criteria make this testable ("total on
+attribute that overruns — each raises a `MediaError` the pump catches and drops
+([errors.py](../src/webrtc_sfu/errors.py) has `TruncatedError`/`BadMagicError`/
+`MalformedError` for exactly this), never an unhandled exception, never an
+attacker-sized allocation, and — the trap Python adds — never a silent short
+slice that reads past nothing and returns a plausible-looking answer. The V1 criteria make this testable ("total on
 garbage" — property tests feeding random bytes); the horizontal checklist
 extends the same demand to RTP and RTCP.
 
@@ -132,9 +133,9 @@ process is the media plane for *every* room:
 
 | Resource | Bound | Who enforces |
 |---|---|---|
-| Rewriter NACK-translation window | fixed-size (V2 criterion) | your [`Rewriter`](../src/forward.rs) |
-| Rooms / peers per room | `MAX_ROOMS` / `MAX_PEERS_PER_ROOM` ([`SfuConfig`](../src/sfu.rs), from [.env](../.env.example)) | wired signaling — a join flood gets HTTP errors, not an OOM |
-| Datagram size | pump's 2048-byte recv buffer | wired [pump.rs](../src/pump.rs) |
+| Rewriter NACK-translation window | fixed-size (V2 criterion) | your [`Rewriter`](../src/webrtc_sfu/forward.py) |
+| Rooms / peers per room | `MAX_ROOMS` / `MAX_PEERS_PER_ROOM` ([`SfuConfig`](../src/webrtc_sfu/sfu.py), from [.env](../.env.example)) | wired signaling — a join flood gets HTTP errors, not an OOM |
+| Datagram size | pump's 2048-byte recv buffer | wired [pump.py](../src/webrtc_sfu/pump.py) |
 | Retransmit/history caches | capped | wherever you add one |
 
 The invariant, verbatim from the SPEC: *a join flood or a chatty peer
@@ -146,8 +147,8 @@ without an explicit cap is a bug you haven't met yet.
 ## 6. Observability: what an SFU's health looks like
 
 You can't watch pixels — the process never decodes any. Health is expressed
-in the quantities the SPEC's checklist names ([metrics.rs](../src/metrics.rs)
-declares them; [admin.rs](../src/admin.rs) serves `/metrics`, `/status`,
+in the quantities the SPEC's checklist names ([metrics.py](../src/webrtc_sfu/metrics.py)
+declares them; [routes.py](../src/webrtc_sfu/routes.py) serves `/metrics`, `/status`,
 `/healthz`, `/readyz`):
 
 - **The amplification ratio** — RTP received vs forwarded. The fan-out *is*
@@ -172,8 +173,8 @@ declares them; [admin.rs](../src/admin.rs) serves `/metrics`, `/status`,
 
 **Graceful shutdown** rounds out the checklist: SIGTERM → stop forwarding,
 drain in-flight HTTP, tear down peers — no half-open sessions. The
-watch-channel plumbing exists in [main.rs](../src/main.rs) and
-[pump.rs](../src/pump.rs); making the drain complete is checklist work.
+watch-channel plumbing exists in [main.py](../src/webrtc_sfu/main.py) and
+[pump.py](../src/webrtc_sfu/pump.py); making the drain complete is checklist work.
 
 ## 7. Mental model summary
 

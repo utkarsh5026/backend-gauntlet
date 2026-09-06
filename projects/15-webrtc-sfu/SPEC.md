@@ -29,7 +29,7 @@ blocked-on: ~            # free text, or ~ for none
 > fits — switching only at keyframes so the decoder never chokes (V3). And to pick, it has to
 > **estimate each subscriber's downlink bandwidth** from feedback and drive the layer choice
 > with it (V4). None of this is a library call here — it's exactly the part you'd hand to
-> `webrtc-rs`/`libwebrtc`, and it's where "just relay the packets" stops being simple.
+> `aiortc`/`libwebrtc`, and it's where "just relay the packets" stops being simple.
 
 ## What it does (the easy part)
 - Binds a **muxed UDP** socket on `MEDIA_PORT` (default `7000`) that carries STUN, RTP and RTCP
@@ -46,7 +46,7 @@ blocked-on: ~            # free text, or ~ for none
   /readyz`, `GET /status`, and `GET /metrics` (Prometheus).
 
 > There is **no database and no docker-compose** here (as in project 14): the SFU *is* the media
-> server, and everything lives in-process. The parts you'd normally hand to `webrtc-rs` — the
+> server, and everything lives in-process. The parts you'd normally hand to `aiortc` — the
 > ICE/STUN agent, the per-subscriber RTP rewriter, the simulcast layer selector, the bandwidth
 > estimator — are exactly the parts you build. To exercise it end-to-end you point a real
 > browser (`getUserMedia` + `RTCPeerConnection` with `sendEncodings` for simulcast) or
@@ -63,8 +63,8 @@ blocked-on: ~            # free text, or ~ for none
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. ICE / STUN connectivity — *let a browser behind NAT actually reach you*
-In `src/ice.rs`, build the **STUN codec + ICE-lite agent** that makes the SFU reachable. Before
-one media byte flows, the browser fires **STUN Binding requests** at the SFU's advertised
+In `src/webrtc_sfu/ice.py`, build the **STUN codec + ICE-lite agent** that makes the SFU
+reachable. Before one media byte flows, the browser fires **STUN Binding requests** at the SFU's advertised
 address; the SFU must answer each with a correct **Binding success response**, and when the
 browser nominates a pair, remember which source address won — that address *is* the peer's media
 path. This SFU is **ICE-lite** (it answers checks, it doesn't gather or send its own), but
@@ -86,11 +86,14 @@ that rewrite payloads can't corrupt it.
   method, transaction id and attributes for a Binding request *and* a Binding success response,
   including `XOR-MAPPED-ADDRESS` for both **IPv4 and IPv6** peers.
 - [ ] Parsing is **bounds-checked and total on garbage**: a datagram shorter than 20 bytes, a
-  wrong magic cookie, or an attribute length that overruns the buffer is a clean `Err`, never a
-  panic or an out-of-bounds read (an open UDP port receives arbitrary bytes from anyone).
+  wrong magic cookie, or an attribute length that overruns the buffer raises a `MediaError`,
+  never an unhandled exception and never a **silent short slice** — `data[4:8]` on a five-byte
+  buffer returns one byte and complains about nothing, so in Python every bound is yours to
+  check (an open UDP port receives arbitrary bytes from anyone).
 - [ ] **MESSAGE-INTEGRITY verifies**: a message signed with a `pwd` validates with that `pwd`
-  and **fails with the wrong key**; **FINGERPRINT** matches a known value — an unauthenticated
-  check is dropped and **never nominates a path**.
+  and **fails with the wrong key**, compared with `hmac.compare_digest` rather than `==` (a
+  short-circuiting comparison against a live UDP port is a forgery oracle); **FINGERPRINT**
+  matches a known value — an unauthenticated check is dropped and **never nominates a path**.
 - [ ] A valid Binding request produces a **valid success response** to the same source address,
   echoing the txid with `XOR-MAPPED-ADDRESS = source`, signed + fingerprinted.
 - [ ] A request carrying **USE-CANDIDATE** (with valid integrity) **nominates** that source
@@ -105,8 +108,8 @@ mDNS candidates, ICE restart) and the credential/exchange model.
 check-and-nominate dance actually accomplishes, and why STUN authenticates every check.
 
 ### V2. Selective RTP forwarding — *rewrite one continuous stream out of a switching origin*
-In `src/forward.rs`, build the **per-subscriber [`Rewriter`]** — the primitive at the heart of an
-SFU. The SFU forwards the publisher's encoded RTP untouched in *payload*, but each subscriber
+In `src/webrtc_sfu/forward.py`, build the **per-subscriber `Rewriter`** — the primitive at the
+heart of an SFU. The SFU forwards the publisher's encoded RTP untouched in *payload*, but each subscriber
 must see one **continuous** RTP stream even though the SFU is dropping packets under them
 (deselected simulcast layers, packets that lost a pacing race) and switching which origin feeds
 them (V3). A gap in the sequence number reads as loss to a browser's jitter buffer and triggers a
@@ -114,7 +117,9 @@ pointless NACK; a jump in SSRC or a backwards timestamp breaks playback outright
 
 So per subscriber the SFU keeps a tiny rewriter that maps whatever origin currently feeds it onto
 that subscriber's **own** line: one **stable outbound SSRC**, outbound sequence numbers that
-increase by exactly one **regardless of SFU-side drops** (wrapping at 65535), and a timestamp that
+increase by exactly one **regardless of SFU-side drops** (wrapping at 65535 — which Python
+will not do for you: `65535 + 1` is `65536`, not `0`, and the wire looks fine long after your
+arithmetic has left the 16-bit world), and a timestamp that
 stays monotonic **across an origin switch**. And it must remember enough of that mapping to
 **translate a NACK back**: when a subscriber asks to re-send *its* sequence 4127, the SFU has to
 know that was the origin's sequence 5981 — the reliability you route across a rewrite. All of it
@@ -146,7 +151,7 @@ sequence continuity is a correctness property (not cosmetics), and what state a 
 actually needs.
 
 ### V3. Simulcast layer selection — *give each subscriber the quality their link can take*
-In `src/simulcast.rs`, build the **per-subscriber [`LayerSelector`]** that decides *which* of a
+In `src/webrtc_sfu/simulcast.py`, build the **per-subscriber `LayerSelector`** that decides *which* of a
 publisher's simulcast encodings to forward. The publisher sends the same video several times at
 once — a low (~150 kbps), a mid (~500 kbps), and a high (~2 Mbps) layer, each its own SSRC — and
 the SFU forwards exactly **one** to each subscriber: the highest layer that fits that subscriber's
@@ -188,7 +193,7 @@ curve; why decodability (keyframes / GoP structure) constrains *when* you can sw
 switch has to be hidden behind a stable downstream identity.
 
 ### V4. Bandwidth estimation — *figure out how much each subscriber's link can take*
-In `src/bwe.rs`, build the **per-subscriber [`BandwidthEstimator`]** (a receive-side, GCC-lite
+In `src/webrtc_sfu/bwe.py`, build the **per-subscriber `BandwidthEstimator`** (a receive-side, GCC-lite
 controller) whose number feeds V3's layer choice. Nobody tells the SFU a subscriber's downlink
 capacity — it must **estimate it from feedback**, and the estimate has to track the link as it
 moves (someone starts a download, a phone drops to 3G). Two signals drive it. The **delay-based**
@@ -208,11 +213,15 @@ subscriber receives — which is exactly what V3 consumes.
   (the lower estimate wins).
 - [ ] **Clamped and robust:** the estimate stays within `[min, max]` and never goes negative,
   zero-stuck, unbounded, or NaN — no sequence of hostile/garbage feedback drives it out of range.
+  Note that `max(lo, min(nan, hi))` returns `nan`: every comparison against a NaN is false, so
+  the idiomatic clamp passes one straight through and it surfaces as a `ValueError` in an
+  unrelated line. Guard the division, not the result.
 - [ ] **Converges + recovers:** on a link capped at capacity *C* the estimate settles near *C*
   (within a documented margin) without wild oscillation; after a sudden capacity drop it **backs
   off** within a bounded time and **climbs back** once the link clears.
 - [ ] **The allocator reserves headroom:** splitting a budget across a subscriber's streams never
-  hands out 100% (leaves room to probe) and sums to ≤ budget.
+  hands out 100% (leaves room to probe) and sums to ≤ budget — including when the split does not
+  divide evenly, which is where integer division quietly breaks the "≤" in either direction.
 
 **Proof:** unit tests `backs_off_on_rising_delay`, `backs_off_on_loss`, `recovers_on_clear`,
 `stays_clamped`, `allocator_reserves_headroom`; a simulated capacity-step test showing convergence
@@ -262,6 +271,35 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] Gauges: **rooms, peers by role, estimated vs selected bitrate** per (busy) subscriber —
   enough to watch a subscriber's quality adapt in real time.
 
+### Python (the day-job axis)
+- [ ] **pyright strict passes clean** — every `# type: ignore` carries a justifying comment
+  saying what claim it is making. *(Proof: `make types` is green; each ignore reads as a
+  decision.)*
+- [ ] **No blocking call on the event loop** — the SFU runs clean under `PYTHONASYNCIODEBUG=1`,
+  which logs any callback that holds the loop for over 100 ms. This matters more here than in a
+  request/response service: the media plane, the fan-out and the HTTP server share **one**
+  thread, so a slow `handle_rtp` does not degrade one subscriber, it stalls every subscriber
+  *and* `/healthz`. *(Proof: a boss-fight run under the debug flag with no slow-callback
+  warnings.)*
+- [ ] **The media queue is sized on purpose** — `MEDIA_INBOX` chosen against the join-storm
+  burst and the drain rate *together*, with the reasoning in `docs/15-design.md`. Too small
+  sheds a burst of ICE checks; too large just moves the latency into a queue, which on a media
+  path is worse than dropping. A bound nobody picked is a bound nobody sized. *(Proof: the
+  design doc names the number and why, and `sfu_rtp_dropped_total{reason="inbox_full"}` is
+  read as a CPython finding, not a network one.)*
+- [ ] **The container boots under uvloop** — `docker build` produces a runnable image,
+  `/healthz` answers inside it, and `docker stop` reaches `shutdown complete`. The only check
+  that exercises uvloop and PID-1 signal handling, neither of which `make verify` can see: the
+  media plane is written on `create_datagram_endpoint` precisely because uvloop has no
+  `loop.sock_*`, and a raw-socket version passes every test and raises here. *(Proof: the build
+  and the stop, in `docs/15-benchmarks.md` or the design doc.)*
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/15-benchmarks.md`, naming the top bottleneck. On CPython the boss fight is won or lost
+  in the profile, not the code review: the candidates here are the per-subscriber `bytearray`
+  copy in the fan-out, the N synchronous `sendto` calls, and GC pressure from allocating a
+  packet per subscriber per packet. *(Proof: both artifacts, with the bottleneck named in
+  prose.)*
+
 ---
 
 ## Cross-cutting scale skills
@@ -288,8 +326,13 @@ The project is **done when ALL true:**
    model** (V1), the **sequence-continuity + NACK-translation scheme** (V2), the **layer-selection
    + keyframe-switch policy** (V3), the **BWE control law + allocation** (V4), and the SRTP/SDP
    scope calls.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p webrtc-sfu` are green; no
-   `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` → `ruff check` → `pyright` (strict) →
+   `pytest` — and no `raise NotImplementedError` remains on a checked path.
+5. The **profile** is committed alongside the numbers: a `py-spy` flamegraph and a `memray`
+   run in `docs/15-benchmarks.md`, naming the top bottleneck. Numbers alone do not close this
+   — you have to know *why* they are what they are. Where CPython cannot reach a boss-fight
+   target, **the gap and its cause are the finding** (GIL contention? GC pauses? allocation in
+   the fan-out? a blocking call on the loop?), recorded rather than designed around.
 
 ## 🐉 Boss fight — The Crowded Room
 
@@ -301,7 +344,9 @@ The project is **done when ALL true:**
 > route the *right* layer to each viewer, switch cleanly as their links move, keep every viewer's
 > stream continuous through it all — and do it forwarding bytes it never decodes.
 
-**Arena:** `bench/` runs a **release build** (`cargo run --release`). One publisher (a browser /
+**Arena:** `bench/` runs the SFU as it actually ships (`make run`, or the container). There is
+no release build to reach for here, and that absence is itself worth writing down — the
+interpreter you profile is the interpreter you deploy. One publisher (a browser /
 `webrtcbin` / synthetic sender at ~1.5 Mbps total across **3 simulcast layers**) publishes into a
 room; a load harness spins up **≥ 50 subscribers** that ICE-connect and receive, on a spread of
 `tc netem` downlink profiles (fibre, 600 kbps cap, and a "sagging" profile that drops to 25% for
@@ -311,7 +356,9 @@ subscribers' received streams + the SFU's metrics, not vibes.
 **The boss falls when ALL true:**
 - [ ] **Fan-out holds:** the SFU sustains the full egress forwarding rate (**≥ 50× the ingress
   packet rate** to ≥ 50 subscribers) for the whole run with **forwarding p99 ≤ 10 ms** (ingress
-  packet → egress `send_to`).
+  packet → egress `sendto`, which is what `sfu_forwarding_seconds` measures). The number is
+  **not** scaled down for CPython: if it cannot be reached, the profile that says why is the
+  deliverable.
 - [ ] **Each link gets the right layer:** capped/mobile subscribers converge to the **low** layer
   and fibre subscribers to the **high** layer within **≤ 3 s** of joining — no subscriber is sent
   a layer above its estimated budget, and no fibre subscriber is stuck on low.
@@ -332,9 +379,11 @@ reproducible via `bench/`).
 ## Suggested order of attack
 1. Get the boring path working: the UDP socket binds, the signaling API creates rooms + peers and
    returns ICE creds, and the admin endpoints answer — no media yet (a real client's first STUN
-   check is the first `todo!()` you hit: V1 `StunMessage::parse`).
+   check is the first `NotImplementedError` you hit: V1 `StunMessage.parse`). `make planes` and
+   `make stun` show you exactly that state.
 2. Build V1: the STUN codec (round-trip + integrity + fingerprint) then the ICE-lite agent —
-   unit-test the codec and integrity before pointing a browser at it; a nominated pair populates
+   unit-test the codec and integrity before pointing a browser at it, and property-test the parser
+   against random bytes, because that is what an open port receives. A nominated pair populates
    the addr→peer route so RTP can flow.
 3. Build V2: the per-subscriber `Rewriter` — contiguous outbound sequence across skips, continuity
    across an origin switch, and NACK translation; forward a single layer to a single subscriber on
@@ -344,13 +393,14 @@ reproducible via `bench/`).
 5. Build V4: the `BandwidthEstimator` + allocator; wire real RTCP feedback in, `tc netem` a
    subscriber's link down and up, and watch its selected layer track the estimate.
 6. Add the parser bounds + ICE-gated media acceptance + metrics + graceful shutdown; then fill the
-   room, degrade the links, and defeat the Crowded Room.
+   room, degrade the links, profile the fan-out, and defeat the Crowded Room.
 
 ## Run it
 ```bash
+uv sync                       # or: make sync
 cp .env.example .env          # set MEDIA_PORT / HTTP_PORT / PUBLIC_IP / limits
-cargo run -p webrtc-sfu
-#   The scaffold compiles and serves. Signaling + admin work immediately:
+make run                      # or: uv run webrtc-sfu
+#   The scaffold starts and serves. Signaling + admin work immediately:
 #     curl localhost:8080/healthz
 #     curl -XPOST localhost:8080/rooms/demo/publish \
 #          -H 'content-type: application/json' \
@@ -359,7 +409,14 @@ cargo run -p webrtc-sfu
 #                          {"rid":"f","ssrc":333,"bitrate_bps":2000000}]}'
 #     curl localhost:8080/rooms            # see the topology
 #   The media plane idles until a real client ICE-connects; the first STUN check it sends
-#   hits the V1 StunMessage::parse todo!() — that panic is your worklist.
+#   reaches StunMessage.parse and raises NotImplementedError. That ends the pump task while
+#   the HTTP server keeps serving — so /healthz stays green and /readyz turns 503. That
+#   message is your worklist.
+
+make planes                   # both planes at a glance (the media port is UDP — see the probe)
+make publish && make sub      # build a room over signaling, no media needed
+make stun                     # send a real STUN Binding request at the media port (V1)
+make verify                   # fmt-check → lint → types → test, the same gate CI runs
 
 # Degrade a subscriber's downlink for the boss fight (Linux):
 sudo tc qdisc add dev lo root netem rate 600kbit delay 40ms 10ms

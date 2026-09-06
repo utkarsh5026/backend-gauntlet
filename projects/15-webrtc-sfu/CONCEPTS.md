@@ -17,7 +17,7 @@
 
 ---
 
-## 🧠 Card 1 — ICE/STUN: reachability before transport *(V1 · `src/ice.rs`)*
+## 🧠 Card 1 — ICE/STUN: reachability before transport *(V1 · `src/webrtc_sfu/ice.py`)*
 
 **The problem.** The browser is behind NAT: it has no public address to advertise, and unsolicited inbound packets are dropped. Before one media byte flows, both sides must discover a working address pair — and because an open UDP port takes datagrams from anyone, the discovery itself must be authenticated or a stranger can nominate themselves into your call path.
 
@@ -40,7 +40,7 @@
 
 ---
 
-## 🧠 Card 2 — Per-subscriber RTP rewriting *(V2 · `src/forward.rs`)*
+## 🧠 Card 2 — Per-subscriber RTP rewriting *(V2 · `src/webrtc_sfu/forward.py`)*
 
 **The problem.** "Forward the packet" is a lie the moment you *don't* forward some packets. The SFU deliberately drops (deselected layers) and switches origins (layer changes) — but the subscriber's browser runs a normal jitter buffer that treats any sequence gap as network loss (cue pointless NACKs) and any SSRC/timestamp jump as a broken stream. The SFU's editorial decisions must be *invisible* downstream.
 
@@ -63,7 +63,7 @@
 
 ---
 
-## 🧠 Card 3 — Simulcast: quality per viewer without decoding *(V3 · `src/simulcast.rs`)*
+## 🧠 Card 3 — Simulcast: quality per viewer without decoding *(V3 · `src/webrtc_sfu/simulcast.py`)*
 
 **The problem.** One encoding can't serve a fibre viewer and a 3G viewer — pick high and the weak link drowns; pick low and everyone watches pixels. The SFU can't transcode (that's the MCU trap). So adaptation must happen by *choosing among* encodings, which means the publisher must offer more than one.
 
@@ -86,7 +86,7 @@
 
 ---
 
-## 🧠 Card 4 — Bandwidth estimation: closing the loop *(V4 · `src/bwe.rs`)*
+## 🧠 Card 4 — Bandwidth estimation: closing the loop *(V4 · `src/webrtc_sfu/bwe.py`)*
 
 **The problem.** The layer selector needs a number — this subscriber's downlink budget — and nobody supplies it. The link changes (someone starts a download, a phone walks out of wifi), and sending above it doesn't just degrade this viewer: the queue it builds delays *everything* on their link.
 

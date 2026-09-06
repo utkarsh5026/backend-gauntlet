@@ -6,9 +6,9 @@
 > it's the constraint the whole vertical hangs on.
 >
 > Prepares you for **V3** in [SPEC.md](../SPEC.md) — the
-> [`LayerSelector`](../src/simulcast.rs) (`set_budget`, `wants_keyframe`,
-> `on_packet`, `selected_bitrate` — all `todo!()`), composing with V2's
-> [`Rewriter`](../src/forward.rs).
+> [`LayerSelector`](../src/webrtc_sfu/simulcast.py) (`set_budget`, `wants_keyframe`,
+> `on_packet`, `selected_bitrate` — all `NotImplementedError`), composing with V2's
+> [`Rewriter`](../src/webrtc_sfu/forward.py).
 
 ---
 
@@ -43,7 +43,7 @@ means the publisher must offer more than one.
 **Simulcast** = the publisher encodes the same picture ~3 times and sends all
 of them, each as its own RTP stream (own SSRC, labeled with an RID). This
 project's canonical layers (see the [SPEC's](../SPEC.md) publish example and
-[`SimulcastLayer`](../src/simulcast.rs)):
+[`SimulcastLayer`](../src/webrtc_sfu/simulcast.py)):
 
 | RID | SSRC (example) | Bitrate | Role |
 |---|---|---:|---|
@@ -141,17 +141,17 @@ Two disciplines hide in there:
 ## 4. Composition with V2: why the switch is invisible
 
 The selector never talks to the subscriber — it decides, per origin packet,
-[`Decision::Forward` or `Decision::Drop`](../src/simulcast.rs). Then:
+[`Decision.FORWARD` or `Decision.DROP`](../src/webrtc_sfu/simulcast.py). Then:
 
 ```
    origin packet (ssrc, is_keyframe)
         │
         ▼
-   LayerSelector::on_packet ──── Drop ───▶ Rewriter::skip     (outbound line stays gapless)
+   LayerSelector.on_packet ──── Drop ───▶ Rewriter.skip     (outbound line stays gapless)
         │
       Forward
         ▼
-   Rewriter::rewrite  ──▶ stable ssrc, next seq, smooth ts ──▶ subscriber
+   Rewriter.rewrite  ──▶ stable ssrc, next seq, smooth ts ──▶ subscriber
 ```
 
 A layer switch is nothing more than *which origin SSRC gets `Forward`*
@@ -175,7 +175,7 @@ invisible" criterion: V2 composed with V3, exercised together.
   through before coding.
 - **PLI vs FIR** as the request mechanism, named in `docs/15-design.md`.
 - **How keyframes are recognized** at the forwarding layer (the wired core
-  passes `is_keyframe` into `on_packet`; the [`RtpView`](../src/wire.rs)
+  passes `is_keyframe` into `on_packet`; the [`RtpPacket`](../src/webrtc_sfu/wire.py)
   marker bit flags frame *ends* — worth noticing which question each
   answers).
 
@@ -196,10 +196,10 @@ acceptance tests.
 
 ## 7. Where you'll build this
 
-[`LayerSelector::set_budget`](../src/simulcast.rs),
-[`wants_keyframe`](../src/simulcast.rs), [`on_packet`](../src/simulcast.rs)
-and [`selected_bitrate`](../src/simulcast.rs) in
-[simulcast.rs](../src/simulcast.rs). The budget arrives from V4's estimator
+[`LayerSelector.set_budget`](../src/webrtc_sfu/simulcast.py),
+[`wants_keyframe`](../src/webrtc_sfu/simulcast.py), [`on_packet`](../src/webrtc_sfu/simulcast.py)
+and [`selected_bitrate`](../src/webrtc_sfu/simulcast.py) in
+[simulcast.py](../src/webrtc_sfu/simulcast.py). The budget arrives from V4's estimator
 via the wired core; the decisions feed V2's rewriter as shown above.
 
 This doc unlocks V3's **Done when ALL true** ([SPEC.md](../SPEC.md)): right
