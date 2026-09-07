@@ -1482,28 +1482,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "media-transport"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "common-config",
- "common-telemetry",
- "metrics",
- "metrics-exporter-prometheus",
- "proptest",
- "rand 0.9.4",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower-http",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

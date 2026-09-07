@@ -26,6 +26,7 @@ members = [
     "projects/09-raft-kv",
     "projects/10-api-gateway",
     "projects/11-vod-streaming",
+    "projects/14-media-transport",
     "projects/15-webrtc-sfu",
     "projects/19-bittorrent",
     "projects/20-full-text-search",

@@ -5,9 +5,9 @@
 > and stitched back. No prior RTP knowledge assumed.
 >
 > Prepares you for **V1** in [SPEC.md](../SPEC.md). Anchored to
-> [rtp.rs](../src/rtp.rs) (`RtpHeader::parse` / `write`,
-> `Packetizer::packetize`, `depacketize` — the `todo!()`s you're about to
-> fill) and the wired call sites in [session.rs](../src/session.rs).
+> [rtp.py](../src/media_transport/rtp.py) (`RtpHeader.parse` / `to_bytes`,
+> `Packetizer.packetize`, `depacketize` — the `NotImplementedError`s you're about to
+> fill) and the wired call sites in [session.py](../src/media_transport/session.py).
 
 ---
 
@@ -42,7 +42,7 @@ buffer at all. V1 is the floor everything stands on.
 
 ## 2. The header, byte by byte
 
-This layout is already in the rustdoc of [rtp.rs](../src/rtp.rs) — it's the
+This layout is already in the module docstring of [rtp.py](../src/media_transport/rtp.py) — it's the
 contract, not the solution. The solution is *your* bounds-checked parser.
 
 ```
@@ -62,14 +62,16 @@ contract, not the solution. The solution is *your* bounds-checked parser.
 All multi-byte fields are **big-endian** (network byte order). The pieces:
 
 - **V** (2 bits) — always `2`. The scaffold already rejects anything else
-  ([rtp.rs](../src/rtp.rs), `BadVersion`).
+  ([rtp.py](../src/media_transport/rtp.py), `BadVersionError`).
 - **P, X** (1 bit each) — padding / extension flags. Rare; parse them, don't
   trip over them.
 - **CC** (4 bits) — *count of CSRC entries* that follow the fixed 12 bytes.
   This is the header's one variable-length knob, and therefore its one
   parser trap: a datagram can *claim* `CC=15` (60 more bytes) while being 13
-  bytes long. **The claim must be checked against `buf.len()` before any
-  read** — that's the "clean error, never a panic or OOB read" criterion.
+  bytes long. **The claim must be checked against `len(data)` before any
+  read** — that's the "clean error, never an unhandled exception or a short
+  read" criterion. Python makes the *second* half the dangerous one:
+  `data[12:72]` on a 13-byte datagram does not raise, it hands you one byte.
 - **M** (1 bit) — the marker: "this is the frame's last packet."
 - **PT** (7 bits) — payload type. Dynamic codecs like H.264 use the 96–127
   range agreed out-of-band (ffmpeg defaults to 96).
@@ -78,8 +80,8 @@ All multi-byte fields are **big-endian** (network byte order). The pieces:
   valid sequence numbers; same reason TCP randomizes its initial sequence.)
 - **timestamp** (32 bits) — the *media* clock. For video: 90,000 ticks per
   second. Also starts at a random offset.
-- **SSRC** (32 bits) — random per stream; [session.rs](../src/session.rs)
-  already does `let ssrc: u32 = rand::random()`.
+- **SSRC** (32 bits) — random per stream; [session.py](../src/media_transport/session.py)
+  already does `ssrc = random.getrandbits(32)`.
 
 ## 3. Sequence vs. timestamp: two clocks that advance independently
 
@@ -155,7 +157,7 @@ fragment.
 
 H.264 encodes video as **NAL units** (Network Abstraction Layer units) — for
 this project, "NAL unit" ≈ "the encoded blob you were handed", and the
-synthetic source in [media.rs](../src/media.rs) emits access units to carry.
+synthetic source in [media.py](../src/media_transport/media.py) emits access units to carry.
 Each NAL starts with a 1-byte header (forbidden bit, importance bits `NRI`,
 and a 5-bit `type`). The packetization rules (RFC 6184) say:
 
@@ -207,11 +209,11 @@ those five payloads, in order, must reproduce the original 6250 bytes exactly
 The wire format is fixed; these decisions are yours:
 
 - **The MTU number itself.** `TransportConfig.mtu` in
-  [session.rs](../src/session.rs) is configurable. What do you assume about
+  [session.py](../src/media_transport/session.py) is configurable. What do you assume about
   the path — 1500-class Ethernet? A conservative 1200 like WebRTC defaults
   to (to survive tunnels/VPNs)? Document the budget in `docs/14-design.md`.
 - **How `parse` reports "the bytes lie".** The scaffold's
-  [error.rs](../src/error.rs) gives you `Truncated` and `BadVersion`;
+  [errors.py](../src/media_transport/errors.py) gives you `TruncatedError` and `BadVersionError`;
   deciding what's checked *before* each read — CC count vs. remaining length,
   FU runs with missing S/E — is the actual craft of V1. A parser on an open
   UDP port is a parser of hostile input, always.
@@ -220,7 +222,7 @@ The wire format is fixed; these decisions are yours:
   friend), how you decide marker placement when a frame is one packet vs.
   many.
 
-That last bullet is the `todo!()` in `Packetizer::packetize` — the exact
+That last bullet is the `NotImplementedError` in `Packetizer.packetize` — the exact
 slicing-and-stamping loop is the build, and this doc stops at its door.
 `/hint 14` for graduated nudges, `/quest` to build it with acceptance tests.
 
@@ -235,11 +237,11 @@ slicing-and-stamping loop is the build, and this doc stops at its door.
 | FU-A S/E bits | Per-fragment loss visibility | Incomplete frames emitted as corrupt bytes |
 | MTU-respecting packetizer | Keep IP from fragmenting | One lost fragment silently kills a whole frame, unNACKably |
 
-**Where you'll build this:** the four `todo!()`s in [rtp.rs](../src/rtp.rs) —
-`RtpHeader::parse`, `RtpHeader::write`, `Packetizer::packetize`,
-`depacketize` (plus `RtpPacket::parse`/`serialize` glue). They unlock all
+**Where you'll build this:** the four `NotImplementedError`s in [rtp.py](../src/media_transport/rtp.py) —
+`RtpHeader.parse`, `RtpHeader.to_bytes`, `Packetizer.packetize`,
+`depacketize` (plus `RtpPacket.parse`/`to_bytes` glue). They unlock all
 five of V1's **Done when ALL true** boxes: header round-trip + truncation
 safety, >MTU fragmentation/reassembly, sequence/timestamp/marker invariants,
 incomplete-frame detection, and MTU respect. The sender loop hits
-`packetize` as its first panic; the receiver loop hits `RtpPacket::parse` —
+`packetize` as its first raise; the receiver loop hits `RtpPacket.parse` —
 that's your worklist order.
