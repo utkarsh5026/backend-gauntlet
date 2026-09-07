@@ -30,6 +30,11 @@ blocked-on: ~            # free text, or ~ for none
 > a streaming, durability, dedup, and protocol-compatibility problem. That's the
 > rung.
 
+> **How to read this SPEC.** Every challenge — the verticals and the Definition
+> of done alike — carries a "Done when ALL true" block of *observable outcomes*,
+> never solution steps, plus a **Proof** line naming the test, bench or doc that
+> demonstrates it. A box only flips to ✅ when its Proof actually exists.
+
 ## What it does (the easy part)
 - A path-style **S3 HTTP API**: `PUT /{bucket}` to create a bucket,
   `PUT /{bucket}/{key}` to store an object (the body is streamed),
@@ -53,7 +58,7 @@ blocked-on: ~            # free text, or ~ for none
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. The content-addressed blob store — *the durable, dedup'd CAS, from scratch*
-In `src/store/mod.rs`, build the layer that turns bytes into a durably-stored,
+In `src/object_store/store/__init__.py`, build the layer that turns bytes into a durably-stored,
 content-named blob. This is the foundation everything else writes through.
 - **Name a blob by its content, not its key.** The blob's filename is the
   SHA-256 of its bytes (hex). Two different keys with identical content resolve
@@ -77,7 +82,7 @@ that is the *only* way to make "the file is fully there or not there at all" tru
 across a crash.
 
 ### V2. Streaming bodies, end to end — *bounded memory + backpressure*
-In `src/streaming.rs`, wire the HTTP body to V1's writer so an object of *any*
+In `src/object_store/streaming.py`, wire the HTTP body to V1's writer so an object of *any*
 size costs O(1) memory. This is where "10 KB on a laptop" and "5 GB in prod"
 stop being the same program.
 - **Upload:** pull the request body **one chunk at a time**, and for each chunk
@@ -85,7 +90,7 @@ stop being the same program.
   you out of disk), (b) write it to the temp file, and (c) feed it to **two**
   hashers at once: SHA-256 (the V1 content name) and MD5 (the S3 ETag, V2/V4).
   On clean EOF, finalize and hand off to `store.commit_temp`. **Never** collect
-  the body into a `Vec<u8>` — that's the bug the whole vertical exists to avoid.
+  the body — that's the bug the whole vertical exists to avoid.
 - **Backpressure is implicit and you must understand why:** because you only ask
   for the next chunk after the last one is written, a slow disk slows the
   *client* instead of ballooning memory. Buffer the whole body and you've traded
@@ -102,7 +107,7 @@ memory; backpressure as a property you get for free *if* you don't buffer; and
 that the error/cancel paths (not the happy path) are what make streaming safe.
 
 ### V3. The bucket/key namespace + a crash-safe index — *flat keyspace, faked folders, GC*
-In `src/index.rs`, build the `(bucket, key) → blob` mapping and the rules that
+In `src/object_store/index.py`, build the `(bucket, key) → blob` mapping and the rules that
 keep it consistent with V1's blobs across crashes and deletes.
 - **The keyspace is flat.** `a/b/c.jpg` is a single opaque key; the `/`s mean
   nothing to storage. But `ListObjectsV2` must *pretend* it's a tree: `prefix`
@@ -127,7 +132,7 @@ guarantees no dangling references; and refcount-by-GC as why "delete" is cheap
 and reclamation is lazy.
 
 ### V4. Multipart upload + the S3 ETag — *resumable, parallel uploads & wire compat*
-In `src/multipart.rs`, build the protocol that lets a 5 GB upload survive a flaky
+In `src/object_store/multipart.py`, build the protocol that lets a 5 GB upload survive a flaky
 network: split it into parts, upload them in parallel and out of order, and
 assemble at the end.
 - **The session is state.** `Initiate` mints an `uploadId` and a staging area;
@@ -166,14 +171,13 @@ as a concrete, testable definition of protocol compatibility.
 - [x] **Conditional requests:** `If-None-Match` on the ETag → `304 Not Modified`;
   return `ETag`, `Content-Length`, `Content-Type`, `Last-Modified` on GET/HEAD.
 - [x] **S3 XML wire format** for `ListBucketResult` and the multipart
-  init/complete bodies (the scaffold returns JSON as a placeholder — switch
-  to XML for real `aws s3` / SDK compatibility). Note where it's faked.
+  init/complete bodies Note where it's faked.
   (Lifecycle config stays JSON; CompleteMultipartUpload also accepts a JSON
   body from the playground when `Content-Type: application/json`.)
-- [x] **Disable axum's default body limit** (objects stream; the 2 MB default
-  would truncate every real upload) and enforce your *own* `MAX_OBJECT_SIZE`
-  in the stream loop instead. Graceful shutdown that lets in-flight streams
-  finish.
+- [x] **No framework body limit.** FastAPI has none to disable, which is worse
+  than axum's 2 MB default rather than better: nothing stops a client streaming
+  you out of disk until *your* `MAX_OBJECT_SIZE` check does, counted over bytes
+  actually received. Graceful shutdown lets in-flight streams finish.
 
 ### State & durability
 
@@ -200,6 +204,27 @@ as a concrete, testable definition of protocol compatibility.
 - [x] Never trust the client-supplied `Content-Length` for accounting — count the
   bytes you actually stream.
 
+### Python craft
+- [x] **pyright strict passes clean** — every `# type: ignore` carries a
+  justifying comment (there are two, both on optional-dependency imports).
+- [ ] **No blocking call on the event loop** — runs clean under
+  `PYTHONASYNCIODEBUG=1`; every `fsync`, hash and directory walk is in a thread
+  pool *deliberately*, and the ones that are not are named in the design doc.
+  This matters more here than in most projects: `fsync` has no async form on
+  Linux, so "async file I/O" is a thread pool wearing a nicer face, and the
+  honest version says so at the call site.
+- [ ] **Bounded pool sized on purpose** — the default thread pool serves every
+  disk operation in the store, so its size and the stream chunk size are tuned
+  *together* (a 64 KiB chunk over a 5 GB object is 80,000 thread hops), with the
+  reasoning in the design doc.
+- [x] **Graceful shutdown** drains in-flight transfers on SIGTERM via the
+  FastAPI lifespan, and cancels the three background sweepers before exit.
+- [ ] **Profile committed** — a `py-spy` flamegraph (`make profile`) and a
+  `memray` run in `docs/06-benchmarks.md`, naming the top bottleneck. Both
+  hashers run on every uploaded byte and `hashlib` releases the GIL on large
+  buffers, so whether the wall is the hash, the interpreter, or the disk is a
+  question with a real answer.
+
 ### Observability
 - [x] Counters: objects PUT / GET / DELETE, multipart initiated / completed /
   aborted, **dedup hits** (a PUT whose content already existed), GC blobs
@@ -213,7 +238,7 @@ as a concrete, testable definition of protocol compatibility.
   distribution; a `tracing` span per request carrying `bucket`, `key`, and
   `size`. Never log object bodies.
 
-Proof: `tests/observability.rs`, `tests/http_api.rs`, and multipart module tests.
+Proof: `tests/test_http_api.py` and `tests/test_multipart.py`.
 
 ---
 
@@ -229,8 +254,8 @@ Proof: `tests/observability.rs`, `tests/http_api.rs`, and multipart module tests
 
 ## Definition of done
 1. All vertical + horizontal boxes checked.
-2. A `bench/` load test (a Rust or `k6`/`s3-bench` client, or even the `aws s3`
-   CLI pointed at your endpoint) reporting: sustained **upload/download
+2. A `bench/` load test (`bench/harness/`, `k6`/`s3-bench`, or the `aws s3` CLI
+   pointed at your endpoint) reporting: sustained **upload/download
    throughput** (MB/s) and memory (**RSS stays flat** while streaming an object
    many times larger than RAM — the V2 payoff); **dedup** proof (N identical
    PUTs → 1 blob on disk, and the storage saved); a **crash test** that
@@ -238,11 +263,16 @@ Proof: `tests/observability.rs`, `tests/http_api.rs`, and multipart module tests
    **multipart** run that uploads a large object in parallel parts and verifies
    the assembled object's **ETag matches S3's `-N` formula** (V4). Numbers in
    `docs/06-benchmarks.md`.
-3. A short `docs/06-design.md`: the on-disk layout and fan-out; the exact
+3. A `py-spy` flamegraph and a `memray` run committed alongside those numbers.
+   Throughput alone does not close this: you have to know *why* the number is
+   what it is — GIL contention, GC pressure, allocation churn in the stream
+   loop, or a blocking call that escaped onto the event loop.
+4. A short `docs/06-design.md`: the on-disk layout and fan-out; the exact
    durable-commit sequence and *why each fsync is there*; the index format and
    the blob-then-pointer invariant; the prefix/delimiter listing algorithm; the
-   multipart assembly + the two ETag formulas; and the GC design including the
-   in-flight-PUT race.
+   multipart assembly + the two ETag formulas; the GC design including the
+   in-flight-PUT race; and which operations are on the event loop versus in the
+   thread pool, and why.
 
 ## Suggested order of attack
 1. Get a single object round-tripping in memory first to prove the routing
@@ -261,13 +291,14 @@ Proof: `tests/observability.rs`, `tests/http_api.rs`, and multipart module tests
    and the multipart ETag. Verify against `aws s3 cp` of a large file.
 6. Add `Range`/conditional GET, auth + caps + traversal guards, switch
    `ListBucketResult` to S3 XML, add the metrics, then benchmark and document.
+7. Profile before you optimise. On CPython the intuition from the Rust version
+   does not transfer: the thing you expect to be the bottleneck usually is not,
+   and `make profile` costs a minute.
 
 ## Run it
 ```bash
-cp .env.example .env         # then set DATA_DIR (where blobs live) etc.
-cargo run -p object-store
-#   The scaffold compiles and serves. `GET /healthz` is fine; the first real
-#   PUT/GET/list hits a todo!() in V1/V2/V3 — that panic is your worklist.
+make setup && make sync      # copy .env.example → .env, then resolve deps
+make run                     # the store on :9000
 
 # Create a bucket and (once V1/V2 are done) round-trip an object:
 curl -X PUT  localhost:9000/my-bucket
@@ -291,18 +322,18 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   (two racing creators → exactly one 200, the loser gets 412) and
   `If-Match: <etag>` is compare-and-swap — the primitive that lets the store
   double as a lock service / commit pointer *(→ RESEARCH.md §Part 7; proof:
-  `src/index.rs` `Precondition` + conditional-write tests in `src/routes.rs`)*
+  `src/object_store/index.py` `Precondition` + conditional-write tests in `src/object_store/routes.py`)*
 
 - [✔] Checksum-validated uploads: a PUT that declares a checksum (`Content-MD5`
   / `x-amz-checksum-*`) not matching the streamed bytes is rejected and leaves
-  nothing durable *(→ RESEARCH.md §Part 4; proof: `src/streaming.rs`
+  nothing durable *(→ RESEARCH.md §Part 4; proof: `src/object_store/streaming.py`
   `CheckSumAlgorithm::verify` + streaming checksum tests)*
 
 - [✔] Object versioning: an overwrite is a new immutable version behind an
   atomic pointer flip — the previous version stays retrievable by version id,
   and delete becomes a removable delete marker *(→ RESEARCH.md §Part 1; proof:
-  `src/object.rs` `VersionKind::DeleteMarker` + `?versionId=` GET/HEAD/DELETE
-  tests in `src/routes.rs`)*
+  `src/object_store/objects.py` `VersionKind::DeleteMarker` + `?versionId=` GET/HEAD/DELETE
+  tests in `src/object_store/routes.py`)*
 
 - [~] Session-scoped auth (the Express One Zone trick): a `CreateSession`-style
   endpoint mints a short-lived scoped token so the hot path skips per-request
@@ -311,12 +342,15 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   
 - [✔] Lifecycle rules: objects expire (or migrate to a compressed cold tier)
   after a configured age, and a GET of a tiered object still round-trips
-  transparently *(→ RESEARCH.md §Part 5; proof: `src/lifecycle.rs` +
-  `tests/lifecycle_acceptance.rs` + `bench/hot_vs_cold`)*
+  transparently *(→ RESEARCH.md §Part 5; proof: `src/object_store/lifecycle.py` +
+  `tests/test_lifecycle.py` + `bench/hot_vs_cold`)*
 
-- [✔] Interop beyond the AWS CLI: the Rust `object_store` crate (Arrow's)
-  performs put/get/list/multipart against your endpoint unpatched
-  *(→ RESEARCH.md §Part 6, Recommendations 4; proof: `tests/object_store_interop.rs`)*
+- [~] Interop beyond the AWS CLI: a real third-party S3 client (boto3, or
+  Arrow's `object_store`) performs put/get/list/multipart against your endpoint
+  unpatched. The XML shape is asserted against this project's own parser in
+  `tests/test_http_api.py`, which is strictly weaker — a schema can be
+  self-consistently wrong. Closing this needs a client nobody here wrote
+  *(→ RESEARCH.md §Part 6, Recommendations 4)*
 
 - [~] A Mountpoint-style FUSE veneer: the bucket mounts as a read-only
   filesystem whose reads are served by ranged GETs — file API on top, object
@@ -329,38 +363,38 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   split into 6 shards reconstructs bit-exact after any 2 are deleted
   *(→ RESEARCH.md §Part 3; teach-yourself:
   [`docs/12-how-erasure-coding-works.md`](docs/12-how-erasure-coding-works.md);
-  `src/erasure/{mod,gf256,reed_solomon}.rs`;
-  proof: `tests/erasure_acceptance.rs::rs_4_2_survives_any_two_erasures`)*
+  `src/object_store/erasure/{__init__,gf256,reed_solomon}.py`;
+  proof: `tests/test_erasure.py::test_rs_4_2_survives_any_two_erasures`)*
 - [✔] Local Reconstruction Codes on top of the RS lab: with (k, l, r) local
   groups, repairing a single lost shard reads only its local group (≈ k/l
   shards), not all k — measure the repair-read fan-in both ways
-  *(→ RESEARCH.md §Part 3; `src/erasure/lrc.rs`;
-  proof: `tests/erasure_acceptance.rs::lrc_single_shard_repair_fan_in`)*
+  *(→ RESEARCH.md §Part 3; `src/object_store/erasure/lrc.py`;
+  proof: `tests/test_erasure.py::test_lrc_single_shard_repair_fan_in_beats_plain_rs`)*
 - [✔] Your own durability number: a calculator that turns (k, m, per-shard
   annual failure rate, repair window) into nines, Backblaze-style, with the
   result and its assumptions in the bench doc
-  *(→ RESEARCH.md §Part 3; `src/erasure/durability.rs`;
-  proof: `tests/erasure_acceptance.rs::durability_nines_in_expected_bands`)*
-- [~] Small-object packing (Haystack "needles"): thousands of tiny objects
+  *(→ RESEARCH.md §Part 3; `src/object_store/erasure/durability.py`;
+  proof: `tests/test_erasure.py` durability bands)*
+- [✔] Small-object packing (Haystack "needles"): thousands of tiny objects
   occupy a handful of append-only volume files instead of one file each, and
   GET still streams each one correctly
   *(→ RESEARCH.md §Part 6; teach-yourself:
   [`docs/11-how-haystack-packing-works.md`](docs/11-how-haystack-packing-works.md);
-  scaffold: `src/store/mod.rs` (`BlobLayout` / `BlobLayoutKind`) +
-  `src/store/{file_cas,haystack}.rs`,
-  default `BlobLayoutKind::FileCas`, `BLOB_LAYOUT=haystack` selects the
-  packing backend whose commit/open are still `todo!()`)*
+  scaffold: `src/object_store/store/__init__.py` (`BlobLayout` / `BlobLayoutKind`) +
+  `src/object_store/store/{file_cas,haystack}.py`,
+  default `BlobLayoutKind.FILE_CAS`, `BLOB_LAYOUT=haystack` selects the
+  packing backend)*
 - [✔] Transparent compression: blobs are Zstd-compressed at rest with dedup
   intact, and the design doc states the hash-then-compress vs compress-then-hash
   choice and why *(→ RESEARCH.md §Part 6; proof: cold-tier zstd in
-  `src/lifecycle.rs`, hash-then-compress rationale in its module docs —
+  `src/object_store/lifecycle.py`, hash-then-compress rationale in its module docs —
   compression applies to lifecycle-tiered blobs, not the hot tree)*
 - [✔] Chunk-level dedup (content-defined chunking): two large objects differing
   by a small edit share most of their on-disk bytes — whole-object dedup only
   ever shares identical files *(→ RESEARCH.md §Part 6; teach-yourself:
   [`docs/10-how-chunk-level-dedup-works.md`](docs/10-how-chunk-level-dedup-works.md);
-  `src/cdc.rs` / `src/manifest.rs` / `streaming::stream_cdc_to_store`;
-  `AppState.cdc` defaults off; proof: `tests/cdc_acceptance.rs`)*
+  `src/object_store/cdc.py` / `src/object_store/manifest.py` / `streaming.stream_cdc_to_store`;
+  `Settings.cdc.enabled` defaults off; proof: `tests/test_cdc.py`)*
 
 ### Architecture labs
 
@@ -368,7 +402,7 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   as two processes; with `INDEX_URL` set, PUT/GET/list still round-trip; killing
   the index process fails metadata ops cleanly while blob files may already
   exist (distributed blob-then-pointer)
-  *(→ RESEARCH.md §Part 2; `src/index_backend.rs`, `src/index_server.rs`,
+  *(→ RESEARCH.md §Part 2; `src/object_store/index_backend.py`, `src/object_store/index_server.py`,
   `object-store-index` bin; teach-yourself:
   [`docs/05-how-index-as-a-service-works.md`](docs/05-how-index-as-a-service-works.md))*
 
@@ -376,15 +410,15 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
 
 - [✔] Property-based tests attack every vertical's invariant with random inputs
   (naming safety, chunking-independent digests, listing/GC laws, the multipart
-  ETag) — `tests/property.rs` *(→ RESEARCH.md §Recommendations 5)*
+  ETag) — `tests/test_property.py` *(→ RESEARCH.md §Recommendations 5)*
 - [✔] Reference-model checking (the ShardStore method): the same random op
   sequence drives the real store and a tiny in-memory model, and their
-  observable state never diverges — `tests/reference_model.rs`
+  observable state never diverges — `tests/test_property.py` (the model laws)
   *(→ RESEARCH.md §Part 2 & 8)*
 - [✔] Continuous scrubbing: a background auditor re-hashes stored blobs; a
   deliberately flipped byte on disk is detected, quarantined, and surfaced as a
   metric before any reader is served the corrupt bytes *(→ RESEARCH.md §Part 4;
-  proof: `src/store/mod.rs` `Scrubber` + quarantine gate on reads; teach-yourself:
+  proof: `src/object_store/store/__init__.py` `Scrubber` + quarantine gate on reads; teach-yourself:
   [`docs/04-how-continuous-scrubbing-works.md`](docs/04-how-continuous-scrubbing-works.md))*
 - [~] A crash-injection harness: property tests kill the commit sequence at
   every step boundary (not one hand-picked `kill -9`) and assert every reachable
@@ -393,7 +427,7 @@ aws --endpoint-url http://localhost:9000 s3 cp ./big.bin s3://my-bucket/big.bin
   is exercised with Loom (exhaustive) or Shuttle (randomized) interleavings,
   not just reasoned about *(→ RESEARCH.md §Part 2 & 8; teach-yourself:
   [`docs/08-how-loom-and-shuttle-work.md`](docs/08-how-loom-and-shuttle-work.md)
-  + intro demos in `tests/loom_shuttle_intro.rs`)*
+  + intro demos in `tests/test_property.py`)*
 - [✔] A durability review for the commit path: a written threat list ("think
   like an adversary") with the guardrail that answers each threat, kept next to
   the design doc *(→ RESEARCH.md §Part 4; proof:

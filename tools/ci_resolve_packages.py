@@ -27,10 +27,8 @@ from pathlib import Path
 # that no longer exists. The Python side is scoped by the `python` paths-filter
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
-    ("object-store", "projects/06-object-store"),
     ("transcode-pipeline", "projects/12-transcode-pipeline"),
     ("live-ingest", "projects/13-live-ingest"),
-    ("media-transport", "projects/14-media-transport"),
     ("live-platform", "projects/16-live-platform"),
     ("global-conferencing", "projects/17-global-conferencing"),
     ("ledger-payments-core", "projects/18-ledger-payments-core"),
@@ -235,10 +233,19 @@ def self_test() -> int:
 
     # sqlx cache counts as rust.
     _, pkgs, _ = resolve(
-        ["projects/06-object-store/.sqlx/query-abc.json"],
+        ["projects/13-live-ingest/.sqlx/query-abc.json"],
         force_all=False,
     )
-    assert pkgs == ["object-store"], pkgs
+    assert pkgs == ["live-ingest"], pkgs
+
+    # A converted project's Python sources must resolve to *no* Rust package —
+    # the guard against leaving a stale entry in PROJECTS after /pythonize.
+    rust_all, pkgs, _ = resolve(
+        ["projects/06-object-store/src/object_store/store/__init__.py"],
+        force_all=False,
+    )
+    assert rust_all is False
+    assert pkgs == [], pkgs
 
     # Shared crate → full workspace.
     rust_all, pkgs, _ = resolve(["crates/common-config/src/lib.rs"], force_all=False)

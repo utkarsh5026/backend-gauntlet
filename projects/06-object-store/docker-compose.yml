@@ -24,8 +24,7 @@ services:
     environment:
       DATA_DIR: /data
       INDEX_PORT: "9106"
-      RUST_LOG: info,object_store=debug
-      LOG_FORMAT: pretty
+      LOG_LEVEL: info
     volumes:
       - storedata:/data
     ports:
@@ -48,8 +47,7 @@ services:
       INDEX_URL: http://index:9106
       MAX_OBJECT_SIZE: "5368709120"
       LIFECYCLE_SCAN_INTERVAL_SECS: "60"
-      RUST_LOG: info,object_store=debug
-      LOG_FORMAT: pretty
+      LOG_LEVEL: info
     volumes:
       - storedata:/data
     ports:
