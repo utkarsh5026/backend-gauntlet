@@ -21,7 +21,7 @@ blocked-on: ~            # free text, or ~ for none
 > retransmission (NACK)** that recovers the losses that matter *before their deadline* and
 > ignores the ones that don't; and **congestion control** that paces your send rate to the
 > bandwidth the path actually has, instead of drowning it. None of this is a library call
-> here — it's the part you'd normally hand to `webrtc-rs`/`libwebrtc`, and it's the part
+> here — it's the part you'd normally hand to `aiortc`/`libwebrtc`, and it's the part
 > where "the network is reliable" stops being a fallacy you can afford.
 
 ## What it does (the easy part)
@@ -39,11 +39,11 @@ blocked-on: ~            # free text, or ~ for none
 
 > There is **no database and no docker-compose** here: the media plane is a raw UDP
 > socket and everything else lives in-process. A built-in **synthetic media source**
-> (`src/media.rs`, fully wired) emits constant-bitrate fake access units so the pipeline
-> has something to carry before you point a real encoder at it. To exercise it for real
+> (`src/media_transport/media.py`, fully wired) emits constant-bitrate fake access units so
+> the pipeline has something to carry before you point a real encoder at it. To exercise it for real
 > you send RTP from `ffmpeg`/`gstreamer` (e.g. `ffmpeg -re -i in.mp4 -an -c:v copy -f rtp
 > rtp://127.0.0.1:5004`) and, for the boss fight, degrade the path with `tc netem` (loss,
-> delay, reorder, a bandwidth cap). The parts you'd normally hand to `webrtc-rs` — the RTP
+> delay, reorder, a bandwidth cap). The parts you'd normally hand to `aiortc` — the RTP
 > packetizer, the jitter buffer, the RTCP/NACK loop, the bandwidth estimator — are exactly
 > the parts you build.
 
@@ -58,7 +58,7 @@ blocked-on: ~            # free text, or ~ for none
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. RTP packetization + depacketization — *turn a frame into datagrams and back*
-In `src/rtp.rs`, parse and build the **RTP header** by hand, and packetize an encoded
+In `src/media_transport/rtp.py`, parse and build the **RTP header** by hand, and packetize an encoded
 access unit into one or more RTP packets — fragmenting when a frame is larger than the
 path MTU, and reassembling on the far side. This is the wire floor everything else stands
 on, and it's pure binary layout over a datagram — no library.
@@ -77,7 +77,9 @@ at the marker) and reassembles the original access unit.
 **Done when ALL true:**
 - [ ] The **RTP header round-trips**: parse∘write (and write∘parse) is identity on the
   fields that matter — version, marker, payload type, sequence, timestamp, SSRC, CSRCs —
-  and a buffer shorter than a full header is a clean error, never a panic or OOB read.
+  and a buffer shorter than a full header is a clean error — never an unhandled exception,
+  and never a short slice quietly parsed as if it were whole (Python's `data[4:8]` does not
+  raise on a 3-byte buffer; it returns 3 bytes).
 - [ ] An access unit **larger than the MTU is fragmented** into multiple RTP packets whose
   payloads reassemble back to the exact original bytes; one small enough ships as a
   **single** packet.
@@ -88,17 +90,18 @@ at the marker) and reassembles the original access unit.
 - [ ] Packetization is **MTU-respecting**: no emitted packet exceeds the configured MTU
   (header + payload), so nothing relies on IP-layer fragmentation.
 
-**Proof:** unit/property tests round-tripping the header (`rtp_header_roundtrips`), a
-fragment-then-reassemble test over a >MTU access unit (`fragmented_frame_reassembles`),
-and a marker/sequence invariant test (`packet_sequence_and_marker_are_correct`);
-`docs/14-design.md` notes the payload format chosen and the MTU budget.
+**Proof:** unit/property tests round-tripping the header (`test_rtp_header_roundtrips`, with
+Hypothesis over the field ranges), a fragment-then-reassemble test over a >MTU access unit
+(`test_fragmented_frame_reassembles`), and a marker/sequence invariant test
+(`test_packet_sequence_and_marker_are_correct`); `docs/14-design.md` notes the payload
+format chosen and the MTU budget.
 
 *Concept to internalize:* why media uses a per-frame *media* timestamp separate from the
 per-packet sequence number, why the marker bit exists, and why you fragment at the
 application layer (path MTU / avoiding IP fragmentation) instead of letting IP do it.
 
 ### V2. Jitter buffer — *make a smooth playout out of a jittery arrival*
-In `src/jitter.rs`, build the **playout buffer** that sits between "packets arrive from the
+In `src/media_transport/jitter.py`, build the **playout buffer** that sits between "packets arrive from the
 network, whenever" and "frames are shown at a steady cadence". This is the vertical that
 makes real-time media *watchable*: the network delivers packets early, late, out of order,
 and duplicated, and the jitter buffer turns that into an ordered, evenly-paced stream at
@@ -131,17 +134,19 @@ and you add needless latency.
   jitter** estimate and current buffer depth.
 
 **Proof:** unit tests for out-of-order insert, duplicate drop, and wraparound ordering
-(`reorders_out_of_order`, `drops_duplicates`, `orders_across_sequence_wrap`); a test that a
-never-arriving packet is skipped rather than stalling (`gap_is_skipped_not_stalled`); a
-property test that random insert orders always play out sorted (`playout_is_always_ordered`);
-`docs/14-design.md` records the target-delay/adaptivity policy.
+(`test_reorders_out_of_order`, `test_drops_duplicates`, `test_orders_across_sequence_wrap`);
+a test that a never-arriving packet is skipped rather than stalling
+(`test_gap_is_skipped_not_stalled`); a Hypothesis property test that random insert orders
+always play out sorted (`test_playout_is_always_ordered`); `docs/14-design.md` records the
+target-delay/adaptivity policy. Drive the clock by passing arrival/now times in — a test
+that `sleep`s for a 100 ms playout target is a suite that takes minutes.
 
 *Concept to internalize:* the latency-vs-smoothness tradeoff a jitter buffer *is*; why a
 16-bit sequence needs unwrapping; and why "wait a little, then give up" beats both
 "play immediately" and "wait forever".
 
 ### V3. RTCP + selective retransmission (NACK) — *recover the losses that still matter*
-In `src/rtcp.rs`, build the **control channel**: parse and build RTCP compound packets
+In `src/media_transport/rtcp.py`, build the **control channel**: parse and build RTCP compound packets
 (receiver reports and RFC 4585 **generic NACK** feedback), and wire the recover loop — the
 receiver asks for the specific packets it's missing, the sender **retransmits** them from a
 small history cache, but only while they can still arrive **before their playout deadline**.
@@ -161,7 +166,8 @@ arrive in time**, because that just wastes bandwidth the congestion controller n
 **Done when ALL true:**
 - [ ] RTCP **parses and builds**: a receiver report and a generic-NACK feedback packet
   round-trip (build∘parse is identity on their fields), a **compound** RTCP packet (multiple
-  stacked) parses into its parts, and a truncated/garbage datagram errors without panicking.
+  stacked) parses into its parts, and a truncated/garbage datagram raises this module's error
+  type without hanging — a length word that advances by zero must not spin the loop.
 - [ ] The **NACK FCI is correct**: a set of missing sequence numbers packs into PID+BLP
   words and unpacks back to exactly that set, **including across the sequence wrap**, using
   the bitmask (not one packet per missing seq).
@@ -176,18 +182,20 @@ arrive in time**, because that just wastes bandwidth the congestion controller n
   measurably lower than raw network loss.
 
 **Proof:** unit tests round-tripping RR and NACK and packing/unpacking a wrapped NACK
-bitmask (`rtcp_roundtrips`, `nack_bitmask_packs_missing`, `nack_packs_across_wrap`); an
-integration test that a dropped packet is NACK'd and retransmitted and arrives before
-deadline (`nack_recovers_dropped_packet`), and that a too-late packet is *not* retransmitted
-(`stale_packet_not_retransmitted`); `docs/14-design.md` records the retransmit-cache size
-and the staleness bound.
+bitmask (`test_rtcp_roundtrips`, `test_nack_bitmask_packs_missing`,
+`test_nack_packs_across_wrap` — the pack/unpack pair is pure, so hand it to Hypothesis);
+a test that a garbage or self-referential length word neither loops nor reads out of bounds
+(`test_malformed_rtcp_never_hangs`); an integration test that a dropped packet is NACK'd and
+retransmitted and arrives before deadline (`test_nack_recovers_dropped_packet`), and that a
+too-late packet is *not* retransmitted (`test_stale_packet_not_retransmitted`);
+`docs/14-design.md` records the retransmit-cache size and the staleness bound.
 
 *Concept to internalize:* why real-time media uses *selective, deadline-bounded*
 retransmission instead of TCP-style total reliability; the RR/NACK feedback vocabulary; and
 the PID+BLP trick for naming many losses in a few bytes.
 
 ### V4. Congestion control — *pace to the bandwidth the path actually has*
-In `src/congestion.rs`, build the **bandwidth estimator + pacer** that decides how fast to
+In `src/media_transport/congestion.py`, build the **bandwidth estimator + pacer** that decides how fast to
 send. UDP won't slow you down when the path is full — it just drops your packets, spikes
 delay, and quietly destroys the stream. So the sender must **estimate the available
 bandwidth** from the feedback signals (loss and/or one-way delay change) and **pace** its
@@ -220,11 +228,13 @@ back off under congestion, and recover**.
   time and, once the link clears, **climbs back** — the controller doesn't get permanently
   stuck low or stuck high.
 
-**Proof:** unit tests that loss raises then a clean path lowers the target and that it stays
-clamped (`bitrate_backs_off_on_loss`, `bitrate_recovers_on_clear_path`,
-`bitrate_stays_clamped`); a pacer spacing test (`pacer_spreads_sends`); a simulated
-capacity-step test showing convergence + recovery in the bench harness; `docs/14-design.md`
-records the control law (AIMD/GCC-lite), the signals used, and the pacer.
+**Proof:** unit tests that loss lowers the target, that a clean path raises it, and that it
+stays clamped (`test_bitrate_backs_off_on_loss`, `test_bitrate_recovers_on_clear_path`,
+`test_bitrate_stays_clamped` — including against `nan`/`inf`/out-of-range feedback, which
+Python will otherwise pass straight through the clamp); a pacer spacing test
+(`test_pacer_spreads_sends`); a simulated capacity-step test showing convergence + recovery
+in the bench harness; `docs/14-design.md` records the control law (AIMD/GCC-lite), the
+signals used, and the pacer.
 
 *Concept to internalize:* why UDP shifts congestion control into *your* application, the
 loss-vs-delay signal tradeoff, AIMD, and why pacing (not bursting) is what keeps the queue —
@@ -254,9 +264,9 @@ Each item is **done when its criterion is observably true** — same rule as the
   frame; a permanently missing packet degrades (a skipped/concealed frame), it does not stall.
 
 ### Security / abuse protection
-- [ ] **Inputs are bounded so a malicious sender can't OOM/panic you:** the RTP/RTCP parsers
+- [ ] **Inputs are bounded so a malicious sender can't OOM or crash you:** the RTP/RTCP parsers
   range-check every length (CSRC count, FU headers, RTCP length words, NACK FCI count) before
-  indexing/allocating; an oversized or truncated datagram is dropped, not fatal. (An open UDP
+  slicing/allocating; an oversized or truncated datagram is dropped, not fatal. (An open UDP
   port takes bytes from anyone.)
 - [ ] **Source validation:** packets are associated with the expected **SSRC**; an
   unexpected/spoofed SSRC (or a flood from a stray source) is ignored/rate-limited rather than
@@ -267,12 +277,53 @@ Each item is **done when its criterion is observably true** — same rule as the
   numbers, can't grow memory without bound.
 
 ### Observability
-- [ ] A `tracing` span/context per stream (SSRC), and structured logs for the lifecycle
-  events (stream start/end, big loss events, bitrate steps) — never log media payload bytes.
+- [ ] A **structlog context bound per stream** (SSRC), so every line emitted while handling
+  that stream carries it, plus structured logs for the lifecycle events (stream start/end, big
+  loss events, bitrate steps) — never log media payload bytes, and never make the SSRC a
+  *metric label* (see the cardinality note in `metrics.py`: a log line has a retention policy,
+  a time series does not).
 - [ ] Counters at `/metrics`: **packets/bytes sent & received, packets lost, NACKs sent /
   received / satisfied, retransmits, duplicates, late drops.**
 - [ ] Gauges/histograms: **interarrival jitter, jitter-buffer depth & added latency, target
   bitrate, and effective vs. raw loss** — enough to watch quality degrade before an eye does.
+
+### Python (the day-job axis)
+- [ ] **pyright strict passes clean** — every `# type: ignore` carries a justifying comment
+  saying what claim it is making. *(Proof: `make types` is green; each ignore reads as a
+  decision.)*
+- [ ] **No blocking call on the event loop** — the transport runs clean under
+  `PYTHONASYNCIODEBUG=1`, which logs any callback that holds the loop for over 100 ms. This
+  matters more here than in a request/response service: the receive path, the playout tick,
+  the feedback timer and the HTTP server share **one** thread, so a slow `insert` does not
+  degrade one thing, it delays the playout tick — and the playout tick's latency lands
+  directly in the added-latency budget you have 150 ms of. *(Proof: a boss-fight run under
+  the debug flag with no slow-callback warnings.)*
+- [ ] **The inbound queue is sized on purpose** — `RTP_INBOX` chosen against the burst it
+  must absorb (a keyframe's fragments, seventeen retransmits answering one NACK) and the
+  drain rate *together*, with the reasoning in `docs/14-design.md`. Too small sheds a
+  keyframe; too large just moves the latency into a queue, which on a media path is worse
+  than dropping — a packet that waits 400 ms to be buffered has already missed its playout.
+  A bound nobody picked is a bound nobody sized. *(Proof: the design doc names the number and
+  why, and `media_transport_datagrams_dropped_total{reason="inbox_full"}` is read as a
+  CPython finding, not a network one.)*
+- [ ] **Bounded structures are bounded in fact, not in intention** — the jitter buffer and
+  the retransmit cache each hold a hard cap under a flood, demonstrated by a test rather than
+  asserted in a comment. Python makes this easy to get wrong quietly: `deque(maxlen=n)` drops
+  silently from the far end, so a `dict` paired with it grows forever while *looking* capped.
+  *(Proof: a test that floods each past capacity and asserts `len(...)` holds, plus flat RSS
+  in the boss fight.)*
+- [ ] **The container boots under uvloop** — `docker build` produces a runnable image,
+  `/healthz` answers inside it, and `docker stop` reaches `shutdown complete`. The only check
+  that exercises uvloop and PID-1 signal handling, neither of which `make verify` can see:
+  the media plane is written on `create_datagram_endpoint` precisely because uvloop has no
+  `loop.sock_*` family, and a raw-socket version passes every test and raises here. *(Proof:
+  the build and the stop, in `docs/14-benchmarks.md` or the design doc.)*
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/14-benchmarks.md`, naming the top bottleneck. On CPython the boss fight is won or
+  lost in the profile, not the code review: the candidates here are per-packet allocation
+  feeding the GC, the 10 ms playout tick's wakeup latency under load, and an O(n) scan
+  (`missing()`, or `min()` over the buffer) that only shows up when the buffer is deep.
+  *(Proof: both artifacts, with the bottleneck named in prose.)*
 
 ---
 
@@ -298,8 +349,13 @@ The project is **done when ALL true:**
    format + MTU/fragmentation**, the **jitter-buffer policy** (target delay, adaptivity,
    wraparound), the **RTCP/NACK + retransmit** design (cache size, staleness bound, RTP/RTCP
    mux), and the **congestion-control law** (signals, AIMD/GCC-lite, pacer).
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p media-transport` are green;
-   no `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` → `ruff check` → `pyright` (strict) →
+   `pytest` — and no `raise NotImplementedError` remains on a checked path.
+5. The **profile** is committed alongside the numbers: a `py-spy` flamegraph and a `memray`
+   run in `docs/14-benchmarks.md`, naming the top bottleneck. Numbers alone do not close this
+   — you have to know *why* they are what they are. Where CPython cannot reach a boss-fight
+   target, **the gap and its cause are the finding** (GIL contention? GC pauses? per-packet
+   allocation? a blocking call on the loop?), recorded rather than designed around.
 
 ## 🐉 Boss fight — The Lossy Mile
 
@@ -310,7 +366,8 @@ The project is **done when ALL true:**
 > hide the jitter, and ride the send rate down and back up with the link — for five straight
 > minutes, and prove the viewer barely noticed.
 
-**Arena:** `bench/` runs a **release build** (`cargo run --release`). One process runs
+**Arena:** `bench/` runs the real server (`uv run media-transport`, uvloop, not pytest's
+loop). One process runs
 `ROLE=sender` (the synthetic source or a real `ffmpeg -re … -f rtp` feed at ~1.5 Mbps),
 another `ROLE=receiver`, with a **degraded link between them** — `tc netem` (or the built-in
 impairment shim) injecting **5% random loss, 30 ms delay ± 10 ms jitter, packet reorder**,
@@ -341,7 +398,8 @@ distribution, the jitter/added-latency trace, and the send-rate-vs-capacity plot
 ## Suggested order of attack
 1. Get the boring path working: the UDP socket binds, the admin server answers `GET /healthz`
    and `GET /metrics`, and (as `ROLE=sender`) the synthetic source produces frames — no
-   packetization yet (the first `todo!()` you hit is your worklist).
+   packetization yet (the first `NotImplementedError` you hit is your worklist —
+  `make status` names it without digging in the log).
 2. Build V1: the RTP header codec, then packetize/depacketize with FU-A fragmentation —
    unit-test the header round-trip and a >MTU fragment/reassemble before sending real bytes.
 3. Build V2: the jitter buffer — reorder, de-dup, wraparound-safe ordering, and playout
@@ -355,19 +413,30 @@ distribution, the jitter/added-latency trace, and the send-rate-vs-capacity plot
 
 ## Run it
 ```bash
-cp .env.example .env          # set RTP_PORT / HTTP_PORT / ROLE / REMOTE_ADDR
-cargo run -p media-transport
-#   The scaffold compiles and serves. GET /healthz and /metrics work. As ROLE=receiver it
-#   binds and idles until a packet arrives; as ROLE=sender it produces a frame and hits the
-#   V1 packetize todo!() — that panic is your worklist.
+make setup && make sync       # .env from .env.example, then the virtualenv from uv.lock
+make run
+#   The scaffold starts and serves. GET /healthz, /status and /metrics work immediately.
+#   As ROLE=receiver it binds and idles until a datagram arrives, then reaches
+#   RtpPacket.parse; as ROLE=sender it produces a frame within 33 ms and reaches
+#   Packetizer.packetize. Either way the session task ends and /readyz goes red —
+#   that NotImplementedError is your worklist, and `make status` names it.
 
-# Loopback smoke test (two terminals):
-RTP_PORT=5004 HTTP_PORT=8080 ROLE=receiver               cargo run -p media-transport
-RTP_PORT=5005 HTTP_PORT=8081 ROLE=sender REMOTE_ADDR=127.0.0.1:5004 cargo run -p media-transport
+make send                     # send a real, hand-built RTP datagram at the media port (V1)
+make planes                   # who is up: the admin plane (TCP), the media port (UDP)
+make pair                     # the loopback test below, as one command
+
+# Loopback smoke test by hand (two terminals):
+RTP_PORT=5004 HTTP_PORT=8080 ROLE=receiver uv run media-transport
+RTP_PORT=5005 HTTP_PORT=8081 ROLE=sender REMOTE_ADDR=127.0.0.1:5004 uv run media-transport
 
 # Feed real RTP from ffmpeg instead of the synthetic source:
 ffmpeg -re -i sample.mp4 -an -c:v copy -f rtp rtp://127.0.0.1:5004
 
-# Degrade the link for the boss fight (Linux):
+# Degrade the link for the boss fight (Linux) — `make netem` prints these with the teardown:
 sudo tc qdisc add dev lo root netem loss 5% delay 30ms 10ms reorder 25% 50%
+sudo tc qdisc del dev lo root   # …and put it back, or you will debug it tomorrow
+
+# Boot the container — the only check that exercises uvloop and PID-1 signals:
+docker build -f projects/14-media-transport/Dockerfile -t media-transport .   # from the repo root
+docker run --rm -p 8080:8080 -p 5004:5004/udp media-transport
 ```

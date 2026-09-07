@@ -7,7 +7,6 @@ members = [
     "projects/06-object-store",
     "projects/12-transcode-pipeline",
     "projects/13-live-ingest",
-    "projects/14-media-transport",
     "projects/16-live-platform",
     "projects/17-global-conferencing",
     "projects/18-ledger-payments-core",

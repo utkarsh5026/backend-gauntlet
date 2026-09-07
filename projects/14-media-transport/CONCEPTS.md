@@ -15,7 +15,7 @@
 
 ---
 
-## 🧠 Card 1 — RTP: making a stream out of datagrams *(V1 · `src/rtp.rs`)*
+## 🧠 Card 1 — RTP: making a stream out of datagrams *(V1 · `src/media_transport/rtp.py`)*
 
 **The problem.** UDP datagrams are lonely — no order, no timing, no identity. To reconstruct media you need to know: which packets belong together (one frame), in what order, at what moment they should play, and from which source. Also, encoded frames routinely exceed the path MTU — but letting IP fragment for you means one lost fragment silently kills the whole datagram, with no way to ask for just the missing piece.
 
@@ -38,7 +38,7 @@
 
 ---
 
-## 🧠 Card 2 — The jitter buffer: smoothness bought with latency *(V2 · `src/jitter.rs`)*
+## 🧠 Card 2 — The jitter buffer: smoothness bought with latency *(V2 · `src/media_transport/jitter.py`)*
 
 **The problem.** The network delivers packets early, late, out of order, and twice. Play each the instant it arrives and motion stutters; wait for stragglers forever and the stream freezes on the first true loss. Between those failures sits a genuine trade: every millisecond of buffering absorbs a millisecond of network variance — and adds a millisecond between the speaker's mouth and the listener's ear.
 
@@ -61,7 +61,7 @@
 
 ---
 
-## 🧠 Card 3 — RTCP + NACK: reliability you choose per packet *(V3 · `src/rtcp.rs`)*
+## 🧠 Card 3 — RTCP + NACK: reliability you choose per packet *(V3 · `src/media_transport/rtcp.py`)*
 
 **The problem.** The sender is blind: it has no idea what the receiver is experiencing — loss, jitter, gaps. And full reliability is the wrong goal: retransmitting *everything* is TCP again, spending bandwidth on packets whose deadlines already passed while starving the ones that still matter.
 
@@ -84,7 +84,7 @@
 
 ---
 
-## 🧠 Card 4 — Congestion control: pacing to the path's truth *(V4 · `src/congestion.rs`)*
+## 🧠 Card 4 — Congestion control: pacing to the path's truth *(V4 · `src/media_transport/congestion.py`)*
 
 **The problem.** TCP would slow you down when the path fills; UDP just lets you drown it — your own packets queue, delay balloons (bufferbloat), then loss cascades, and the stream you were protecting collapses. Nobody tells you the capacity; it changes mid-call (someone starts a download); you must *estimate* it from feedback and respect the estimate.
 

@@ -5,9 +5,9 @@
 > 16-bit sequence wrap is the classic bug. No prior knowledge assumed.
 >
 > Prepares you for **V2** in [SPEC.md](../SPEC.md). Anchored to
-> [jitter.rs](../src/jitter.rs) (`JitterBuffer::insert`, `pop_frame`,
-> `missing` — your `todo!()`s) and the receiver loop in
-> [session.rs](../src/session.rs) that calls them.
+> [jitter.py](../src/media_transport/jitter.py) (`JitterBuffer.insert`, `pop_frame`,
+> `missing` — your `NotImplementedError`s) and the receiver loop in
+> [session.py](../src/media_transport/session.py) that calls them.
 
 ---
 
@@ -77,7 +77,7 @@ verdicts"), and each increments a specific counter in `JitterStats`:
 And one verdict on the release side: a gap whose wait has expired is
 **skipped** (`skipped` counter), because "wait a little, then give up" is the
 only posture that neither stutters nor stalls. The scaffold's `pop_frame`
-rustdoc states the contract precisely: release the next *complete frame*
+docstring states the contract precisely: release the next *complete frame*
 (consecutive packets up to a marker — V1's framing invariants earn their keep
 here) once the head has aged past `target_delay`; past the window with an
 unfilled gap, skip it so the buffer **never stalls forever**.
@@ -116,14 +116,17 @@ ever-increasing 64-bit index by tracking which "lap" you're on:
    unwrapped (u64):  65534   65535   65536   65537   65538   ← monotonic
 ```
 
-The scaffold has already committed to this shape — `packets:
-BTreeMap<u64, …>` is *keyed by the unwrapped sequence*, with `base_sequence`
-as the anchor and `highest` tracking the frontier. What it deliberately does
-not tell you: how to decide, for an incoming raw `u16`, whether it belongs to
+The scaffold commits to the *idea* — the buffer is **keyed by the unwrapped
+sequence**, with an anchor to unwrap against and a high-water mark tracking the
+frontier — but not to the container. Python has no ordered map in the stdlib, so
+which one you reach for (a `dict` alongside `bisect.insort` over a sorted index
+list, a `dict` plus a `heapq`, or a third-party `SortedDict`) is a decision the
+module docstring lays out and leaves to you. What none of them tell you: how to
+decide, for an incoming raw 16-bit sequence, whether it belongs to
 the current lap, the next one (a wrap just happened), or the previous one (a
 straggler from before the wrap). That decision — a comparison in a circular
 space where "ahead" and "behind" are ambiguous — is the interesting part of
-`insert`, and it's yours. (`nack_packs_across_wrap` in V3 faces the same
+`insert`, and it's yours. (`test_nack_packs_across_wrap` in V3 faces the same
 circular-space reasoning; solve it well once.)
 
 ## 4. Sizing the window: the RFC 3550 jitter estimate
@@ -170,7 +173,7 @@ The scaffold fixes the interfaces; these choices are the vertical:
   adjustments (Card 2's depth probe). Either way, `docs/14-design.md` must
   record the policy.
 - **The capacity policy** — `JITTER_CAPACITY = 4096` packets is wired in
-  [session.rs](../src/session.rs) (≈ 6 MB worst case at MTU-sized packets:
+  [session.py](../src/media_transport/session.py) (≈ 6 MB worst case at MTU-sized packets:
   the OOM guard). *What* you evict when a flood hits the cap — newest?
   oldest? — decides whether an attacker flooding future sequences can push
   out legitimate packets. Hostile-peer thinking, on a buffer.
@@ -187,12 +190,12 @@ The scaffold fixes the interfaces; these choices are the vertical:
 | The jitter estimate | Smoothed \|arrival spacing − timestamp spacing\|, in ticks; sizes the window, feeds RR + metrics |
 | The gap list | `missing()` is V3's shopping list — this buffer *finds* losses, V3 *buys them back* |
 
-**Where you'll build this:** the three `todo!()`s in
-[jitter.rs](../src/jitter.rs) — `insert`, `pop_frame`, `missing`. They unlock
+**Where you'll build this:** the three `NotImplementedError`s in
+[jitter.py](../src/media_transport/jitter.py) — `insert`, `pop_frame`, `missing`. They unlock
 V2's five **Done when ALL true** boxes: reordering across the wrap, de-dup,
 paced complete-frame release within the latency bound, late/lost handling
 that never stalls, and gap reporting + the jitter estimate. The receiver loop
-in [session.rs](../src/session.rs) already calls all three on its playout and
-feedback ticks — the moment `insert` stops panicking, packets start flowing
+in [session.py](../src/media_transport/session.py) already calls all three on its playout and
+feedback ticks — the moment `insert` stops raising, packets start flowing
 through your buffer. `/hint 14` when stuck; `/quest` to build it against
 acceptance tests.

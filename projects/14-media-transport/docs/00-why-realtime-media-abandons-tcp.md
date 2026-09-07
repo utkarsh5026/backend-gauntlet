@@ -92,16 +92,16 @@ The price is that you now own four failure modes the kernel used to hide:
 
 | Failure mode | What the network does | Who handles it here |
 | --- | --- | --- |
-| **Loss** | Drops your datagram silently | V3 — NACK-based selective retransmission ([rtcp.rs](../src/rtcp.rs)), for the losses that still matter |
-| **Reordering** | Delivers 7 before 6 | V2 — the jitter buffer reorders by sequence ([jitter.rs](../src/jitter.rs)) |
-| **Duplication** | Delivers the same datagram twice | V2 — the jitter buffer de-dups ([jitter.rs](../src/jitter.rs)) |
-| **Jitter** | Varies the delay packet-to-packet | V2 — the playout delay absorbs it ([jitter.rs](../src/jitter.rs)) |
-| *(and the fifth)* **Congestion** | Drops more and delays more when you send too fast | V4 — bandwidth estimation + pacing ([congestion.rs](../src/congestion.rs)) |
+| **Loss** | Drops your datagram silently | V3 — NACK-based selective retransmission ([rtcp.py](../src/media_transport/rtcp.py)), for the losses that still matter |
+| **Reordering** | Delivers 7 before 6 | V2 — the jitter buffer reorders by sequence ([jitter.py](../src/media_transport/jitter.py)) |
+| **Duplication** | Delivers the same datagram twice | V2 — the jitter buffer de-dups ([jitter.py](../src/media_transport/jitter.py)) |
+| **Jitter** | Varies the delay packet-to-packet | V2 — the playout delay absorbs it ([jitter.py](../src/media_transport/jitter.py)) |
+| *(and the fifth)* **Congestion** | Drops more and delays more when you send too fast | V4 — bandwidth estimation + pacing ([congestion.py](../src/media_transport/congestion.py)) |
 
 And one prerequisite before any of that is possible: a bare datagram doesn't
 even tell you *which packets belong together, in what order, at what moment
 they should play*. That metadata is V1 — the RTP header
-([rtp.rs](../src/rtp.rs)) — the thin layer that turns lonely datagrams into a
+([rtp.py](../src/media_transport/rtp.py)) — the thin layer that turns lonely datagrams into a
 *stream*.
 
 ## 4. Reliability as an economic decision
