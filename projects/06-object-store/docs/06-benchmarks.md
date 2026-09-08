@@ -22,7 +22,28 @@ write, but not TCP.
 | **Flat RSS** | growth over a 256 MiB object | **0.8 MiB (0.29%)** | V2's payoff |
 | Dedup | 8 identical PUTs | 1 blob, 87.5% saved | V1's payoff |
 | Multipart ETag | matches `md5(concat(part md5s))-N` | ✅ exact | V4's wire compat |
-| Crash mid-PUT | all-or-nothing | see `crash.py` | Needs a real process |
+| Crash mid-PUT | all-or-nothing | 5/5, 0 truncated | `crash.py`, 32 MiB, 3 runs identical |
+
+### Crash consistency
+
+`uv run python bench/harness/crash.py`, `SIZE_MB=32`. Five attempts: four kills
+swept across the upload window, one fired only after the child's PUT returned.
+
+```text
+attempt 1 (0.20x =  41 ms): nothing (crashed before the commit)
+attempt 2 (0.50x = 101 ms): nothing
+attempt 3 (0.80x = 162 ms): nothing
+attempt 4 (1.20x = 243 ms): whole object (33554432 bytes)
+attempt 5 (after the PUT returned): whole object (33554432 bytes)
+
+5/5 all-or-nothing (3 nothing, 2 whole), 0 truncated
+```
+
+Three consecutive runs produced identical results. "0 truncated" is the claim:
+no blob under `objects/` ever failed to hash to its own filename, and no
+acknowledged write was lost. The run is only meaningful because *both* outcomes
+occur — see the harness README on why a fixed kill time silently tests half of
+this.
 
 ### The measurement that lied
 
