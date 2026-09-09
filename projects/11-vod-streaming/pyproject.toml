@@ -41,7 +41,7 @@ dev = [
     # parser must always raise rather than panic, hang, or read out of bounds.
     # This is the `proptest` the Rust manifest declared.
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.6",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done. Muxing is the one genuinely
     # CPU-bound thing in this repo's Python projects, so "where did the seconds

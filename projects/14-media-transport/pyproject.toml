@@ -44,7 +44,7 @@ dev = [
     # receives. A hand-written corpus is exactly the thing that cannot make
     # either claim.
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.6",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done. On CPython the boss fight
     # is won or lost in the profile, not in code review.
