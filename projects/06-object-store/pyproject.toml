@@ -48,7 +48,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "hypothesis>=6.115",
-    "ruff>=0.8",
+    "ruff>=0.16.6",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done. This project has two
     # genuinely CPU-bound paths — hashing on PUT and the scrubber's re-hash — so
