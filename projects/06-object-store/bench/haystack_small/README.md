@@ -5,11 +5,12 @@ Measures the **small-object packing** tradeoff in this store:
 | Layout | On disk | Commit path |
 |--------|---------|-------------|
 | FileCas | one file under `objects/ab/cd/<digest>` | temp → fsync → rename per blob |
-| Haystack | needles in a few `volumes/*.dat` + `needles.json` | append + fsync volume, rewrite idx |
+| Haystack | needles in a few `volumes/*.dat` + `needles.json` | append + fsync volume, WAL line |
 
 Same unique payloads, two write policies. No HTTP — drives
-[`Store::commit_bytes`](../../src/store/mod.rs) / [`Store::open_blob`](../../src/store/mod.rs)
-so the delta is physical layout (inodes / append / ranged read), not the router.
+[`Store.commit_bytes`](../../src/object_store/store/__init__.py) /
+[`Store.open_blob`](../../src/object_store/store/__init__.py) so the delta is physical
+layout (inodes / append / ranged read), not the router.
 
 This is a **From the field** measurement (Haystack packing), not the graded
 Definition-of-done boss fight. Numbers still belong in `docs/06-benchmarks.md`.
@@ -28,14 +29,15 @@ Definition-of-done boss fight. Numbers still belong in `docs/06-benchmarks.md`.
 make bench-haystack
 
 # or directly:
-cargo run --release -p object-store --features bench-tools --bin haystack_small
+uv run python bench/haystack_small/main.py
 
 # knobs (env):
-COUNT=10000 SIZE=4K WARMUP=100 cargo run --release -p object-store \
-  --features bench-tools --bin haystack_small
+COUNT=10000 SIZE=4K WARMUP=100 uv run python bench/haystack_small/main.py
 ```
 
-Always `--release`. Debug builds measure the wrong thing.
+There is no release/debug distinction to get wrong here, but there is a Python
+equivalent: **do not run this under a profiler or with `-X dev`** and then quote
+the numbers. `py-spy` sampling is cheap, `cProfile` is not.
 
 Raw JSON lands in `bench/results/` (gitignored). Curate the table you care
 about into `docs/06-benchmarks.md`.
@@ -44,7 +46,7 @@ about into `docs/06-benchmarks.md`.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `COUNT` | `10000` | unique objects committed (timed) |
+| `COUNT` | `5000` | unique objects committed (timed) |
 | `SIZE` | `4K` | payload bytes (`256`, `1K`, `4K`, `16K`, …) |
 | `WARMUP` | `100` | commits before the timed write phase |
 | `DROP_CACHES` | `0` | set `1` to attempt `sudo` drop between phases/layouts |
@@ -58,6 +60,10 @@ for layout in {file_cas, haystack}:
 → print table  →  write bench/results/haystack_small-*.json
 ```
 
+Reads are shuffled deliberately: committing and then reading back in the same
+order rides sequential locality no real workload has, and it flatters whichever
+layout happens to have written contiguously.
+
 ## Honest-measurement checklist
 
 1. **Page cache.** Second-pass reads are often RAM. For disk-bound numbers use
@@ -66,9 +72,10 @@ for layout in {file_cas, haystack}:
    background task rewrites `needles.json` and truncates the log. Write latency
    should track append+fsync, not full JSON rewrite — unless the WAL grows
    huge before checkpoint.
-3. **Volume soft-cap.** Default is 1 MiB (`DEFAULT_MAX_VOLUME_SIZE`). Set
-   `HAYSTACK_MAX_VOLUME_SIZE=1073741824` (1 GiB, raw bytes) so thousands of
-   4 KiB needles stay in one `.dat`. That `vol_n` column is part of the proof.
+3. **Volume soft-cap.** The store defaults to 1 MiB; this harness defaults to
+   1 GiB (`HAYSTACK_MAX_VOLUME_SIZE`) so thousands of 4 KiB needles stay in one
+   `.dat`. Leave it at the store default and you measure volume rollover
+   instead of packing. That `vol_n` column is part of the proof.
 4. **Unique payloads.** Dedup would make FileCas look artificially cheap on
    repeat commits; this harness stamps each object so every commit is new.
 

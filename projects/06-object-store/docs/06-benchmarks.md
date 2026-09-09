@@ -1,27 +1,105 @@
 # 06 — Benchmarks
 
-Numbers from load / micro benches for this project. Always run with
-`--release`. Raw artifacts live under `bench/results/` (gitignored); curate
-the tables you care about here.
+Numbers from load / micro benches for this project. Raw artifacts live under
+`bench/results/` (gitignored); curate the tables you care about here.
 
 ## Definition of done (graded)
 
-> Placeholder — fill when you run the DoD #2 suite (upload/download throughput,
-> flat RSS on a large stream, dedup savings, crash mid-PUT, multipart ETag).
+Harness: `make bench` → [`bench/harness/`](../bench/harness/README.md). In-process
+against the real ASGI app, so these include routing, streaming and the index
+write, but not TCP.
+
+### Method
+
+- `SIZE=256M PUTS=8 PART_SIZE=16M CHUNK=256K`, page cache warm
+- The **download** is driven against the raw ASGI app, not httpx — see below
+- RSS is `ru_maxrss`, a high-water mark, so it can only climb
 
 | Scenario | Metric | Result | Notes |
 |----------|--------|--------|-------|
-| … | … | … | … |
+| Sustained upload | MiB/s | 58.2 | 256 MiB streamed in 256 KiB chunks |
+| Sustained download | MiB/s | 321.1 | Same object, bounded reads |
+| **Flat RSS** | growth over a 256 MiB object | **0.8 MiB (0.29%)** | V2's payoff |
+| Dedup | 8 identical PUTs | 1 blob, 87.5% saved | V1's payoff |
+| Multipart ETag | matches `md5(concat(part md5s))-N` | ✅ exact | V4's wire compat |
+| Crash mid-PUT | all-or-nothing | 5/5, 0 truncated | `crash.py`, 32 MiB, 3 runs identical |
+
+### Crash consistency
+
+`uv run python bench/harness/crash.py`, `SIZE_MB=32`. Five attempts: four kills
+swept across the upload window, one fired only after the child's PUT returned.
+
+```text
+attempt 1 (0.20x =  41 ms): nothing (crashed before the commit)
+attempt 2 (0.50x = 101 ms): nothing
+attempt 3 (0.80x = 162 ms): nothing
+attempt 4 (1.20x = 243 ms): whole object (33554432 bytes)
+attempt 5 (after the PUT returned): whole object (33554432 bytes)
+
+5/5 all-or-nothing (3 nothing, 2 whole), 0 truncated
+```
+
+Three consecutive runs produced identical results. "0 truncated" is the claim:
+no blob under `objects/` ever failed to hash to its own filename, and no
+acknowledged write was lost. The run is only meaningful because *both* outcomes
+occur — see the harness README on why a fixed kill time silently tests half of
+this.
+
+### The measurement that lied
+
+The first run of this reported **261 MiB of RSS growth** over a 64 MiB object —
+about 4×, which looks exactly like the bug V2 exists to prevent. It was the
+test, not the server: httpx's `ASGITransport` accumulates the entire response
+body in a list before returning a response, so measuring RSS around an httpx
+download measures *the client's* buffer.
+
+Driving the ASGI app directly with a `send` that counts and discards gives the
+0.29% above. The lesson generalises past this project: a memory measurement is
+only about the code you think it is when nothing between you and it buffers.
+
+### Where the ceiling is (why, not just what)
+
+Upload is roughly 5× slower than download, and that asymmetry is the finding.
+The PUT path does three things per chunk that the GET path does not: two hash
+updates (SHA-256 for the content address, MD5 for the ETag) and a
+`asyncio.to_thread` hop for the write. `hashlib` releases the GIL on large
+buffers, so the hashing itself parallelises across threads — but the per-chunk
+interpreter overhead does not, and at a 256 KiB chunk over 256 MiB that is 1,024
+round trips through the thread pool.
+
+The knob to try first is therefore the chunk size, not the hash. **Commit a
+`py-spy` flamegraph (`make profile`) and a `memray` run before believing any of
+this** — the SPEC's Definition of done asks for the profile precisely because
+the paragraph above is a hypothesis until a profile confirms it.
+
+### Haystack vs FileCas (From the field)
+
+Harness: `make bench-haystack` → [`bench/haystack_small/`](../bench/haystack_small/README.md).
+`COUNT=800 SIZE=4K`, volume cap 1 GiB, unique payloads so nothing dedups.
+
+| layout | w ops/s | w p50 | w p99 | r ops/s | r p50 | r p99 | files |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| file_cas | 539 | 1.76 ms | 3.20 ms | 4,532 | 0.21 ms | 0.35 ms | 900 objects |
+| haystack | 617 | 1.58 ms | 2.54 ms | 5,360 | 0.18 ms | 0.28 ms | 1 volume |
+
+Packing is ~14% faster to write and ~18% faster to read at this size, but the
+number that matters is the last column: 900 inodes against 1. The latency win is
+modest because 800 objects is nowhere near where a flat directory hurts; the
+inode win is what compounds, and it is why the technique exists.
 
 ## Hot vs cold tier (From the field)
 
-Transparent lifecycle tiering: hot `objects/<digest>` vs cold `cold/<digest>.zst`.
+Transparent lifecycle tiering: hot `objects/<digest>` vs cold `cold/<ab>/<cd>/<digest>.zst`.
+
+> **Record which codec ran.** The cold tier prefers CPython 3.14's
+> `compression.zstd` and falls back to stdlib gzip when it is absent, so a
+> compression ratio is not comparable across interpreters.
 Harness: `make bench-tier` → [`bench/hot_vs_cold/`](../bench/hot_vs_cold/README.md).
 
 ### Method
 
-- Host: WSL2 Linux, `cargo run --release -p object-store --features bench-tools --bin hot_vs_cold`
-- In-process axum router + `Lifecycle::run_once_at` (no real-time waiting)
+- `uv run python bench/hot_vs_cold/main.py`
+- In-process store + `Lifecycle.run_once_at` with an injected clock (no waiting)
 - `SIZES=1M,4M,16M` · `ITERS=20` · `WARMUP=3` · `DROP_CACHES=0` (page cache warm)
 - Raw JSON: `bench/results/hot_vs_cold-20260719-071111.json` (2026-07-19)
 

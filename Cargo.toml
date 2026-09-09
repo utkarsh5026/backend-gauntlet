@@ -4,7 +4,6 @@ members = [
     "crates/common-telemetry",
     "crates/common-config",
     "crates/workspace-hack",
-    "projects/06-object-store",
     "projects/12-transcode-pipeline",
     "projects/13-live-ingest",
     "projects/16-live-platform",
@@ -209,14 +208,6 @@ dotenvy = "0.15"
 # --- testing ---
 proptest = "1"
 tempfile = "3"
-# Project 06 (object store) From-the-field: concurrency model checkers for the
-# GC↔in-flight-PUT race (and friends). Loom = exhaustive interleavings of small
-# models; Shuttle = randomized schedules that scale larger. See RESEARCH.md
-# §Part 8 (ShardStore lightweight formal methods) and
-# projects/06-object-store/docs/08-how-loom-and-shuttle-work.md.
-loom = "0.7"
-shuttle = "0.9"
-
 # --- internal shared crates ---
 common-telemetry = { path = "crates/common-telemetry" }
 common-config = { path = "crates/common-config" }
