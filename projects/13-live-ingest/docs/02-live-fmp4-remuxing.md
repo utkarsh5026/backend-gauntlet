@@ -6,14 +6,14 @@
 > **monotonic timeline** out of RTMP's wrapping 32-bit millisecond timestamps —
 > in memory that stays flat forever. No prior knowledge of MP4 internals
 > assumed; if you built project 11's segmenter
-> ([isobmff.rs](../../11-vod-streaming/src/isobmff.rs),
-> [segment.rs](../../11-vod-streaming/src/segment.rs)) this will feel familiar —
+> ([isobmff.py](../../11-vod-streaming/src/vod_streaming/isobmff.py),
+> [segment.py](../../11-vod-streaming/src/vod_streaming/segment.py)) this will feel familiar —
 > the point of this doc is what *live* changes.
 >
 > This prepares you for **V3** in [SPEC.md](../SPEC.md) — "Live fMP4
-> repackaging" — anchored to [fmp4.rs](../src/fmp4.rs): the `CodecConfig` and
-> `Sample` types (already defined), and the `build_init` / `Fragmenter::cut_part`
-> `todo!()`s. Box layouts are public ISO-BMFF spec and are taught; the writer
+> repackaging" — anchored to [fmp4.py](../src/live_ingest/fmp4.py): the `CodecConfig` and
+> `Sample` types (already defined), and the `build_init` / `Fragmenter.cut_part`
+> `NotImplementedError`s. Box layouts are public ISO-BMFF spec and are taught; the writer
 > code and the timeline policy are yours.
 
 ---
@@ -99,9 +99,9 @@ fragmented:  [ftyp][moov*]  [moof][mdat]  [moof][mdat]  [moof][mdat]  ...forever
   per stream whose sample description holds the codec config — the video
   `avcC` (SPS/PPS) and the audio `esds` (AudioSpecificConfig) — plus a
   `mvex`/`trex` declaring "samples live in fragments." This is precisely why V2
-  extracted [`CodecConfig`](../src/fmp4.rs) from the sequence headers: it is
+  extracted [`CodecConfig`](../src/live_ingest/fmp4.py) from the sequence headers: it is
   the init segment's entire content. Every viewer fetches it **once**
-  (`GET /live/{key}/init.mp4`, already routed in [routes.rs](../src/routes.rs))
+  (`GET /live/{key}/init.mp4`, already routed in [routes.py](../src/live_ingest/routes.py))
   and prepends it mentally to everything after.
 - Each **fragment** is self-describing: `moof` (metadata for *these* samples:
   sizes, durations, flags, and a timestamp anchor) + `mdat` (their bytes).
@@ -140,16 +140,16 @@ fragment k+1:  tfdt = N + D    ← must be EXACTLY this
 
 That equality — *next tfdt = previous tfdt + previous fragment's total
 duration* — across every part boundary for the entire session is V3's central
-invariant, the `baseMediaDecodeTime_is_monotonic` test, and one of the boss
+invariant, the `test_base_media_decode_time_is_monotonic` test, and one of the boss
 fight's own criteria (proven with `ffprobe`, "not vibes"). The scaffold's
-[`Fragmenter`](../src/fmp4.rs) carries the running anchor as
-`base_decode_time`, advanced at every `cut_part`.
+[`Fragmenter`](../src/live_ingest/fmp4.py) is where that running per-track anchor
+lives, advanced at every `cut_part`.
 
 So where do the ticks come from? You're mapping between two clocks:
 
 | | RTMP timestamps | MP4 timeline |
 | --- | --- | --- |
-| unit | milliseconds | ticks of a per-movie **timescale** (`CodecConfig::timescale`, e.g. 90,000/s) |
+| unit | milliseconds | ticks of a per-movie **timescale** (`fmp4.VIDEO_TIMESCALE`, e.g. 90,000/s) |
 | width | 32-bit — **wraps every 2³² ms ≈ 49.7 days** | 64-bit `tfdt` — never wraps in practice |
 | origin | whatever the encoder felt like | your choice; rebase so the session starts near 0 |
 
@@ -186,13 +186,13 @@ The remaining timeline hazards, concretely:
 
 Two nested cut cadences, driven by different constraints:
 
-- A **part** (~200–350 ms, `IngestConfig::target_part_secs`) is the *latency*
+- A **part** (~200–350 ms, `Settings.target_part_secs`) is the *latency*
   unit — V4 publishes each one the instant it exists. A part is just "whatever
   samples accumulated since the last cut" wrapped in `moof`+`mdat`; it does
   **not** need to be independently decodable.
 - A **segment** (a few seconds, `target_segment_secs`) is the *join* unit — a
   new viewer starts decoding at a segment boundary, so a segment **must begin
-  on an IDR keyframe** (`Sample::keyframe`; the part that opens a segment is
+  on an IDR keyframe** (`Sample.keyframe`; the part that opens a segment is
   the one V4 will mark `INDEPENDENT=YES`).
 
 Why can't parts be the join point too? Because keyframes are *expensive* — a
@@ -209,20 +209,20 @@ segments: ╠═══════════ segment msn=5 ══════�
 ```
 
 Each cut flows into the already-wired shared window:
-[`LiveStream::push_part(part, start_segment)`](../src/live.rs) — where
-`start_segment: true` on a keyframe part opens the next `msn` — and
+[`LiveStream.push_part(part, start_segment)`](../src/live_ingest/live.py) — where
+`start_segment=True` on a keyframe part opens the next `msn` — and
 `finish_segment(full_bytes)` closes one. Note what the window stores: **built
 bytes**. `cut_part` runs *once* per part regardless of viewer count; 200
-viewers are 200 refcount bumps on the same `Bytes`. (The fan-out story lives in
+viewers are 200 refcount bumps on the same `bytes`. (The fan-out story lives in
 [04-fundamentals-woven-through.md](04-fundamentals-woven-through.md).)
 
 And this cadence is *also* the memory bound. The `Fragmenter` holds only
 `pending` — the samples since the last cut, ~300 ms ≈ 100 KB at 4 Mbps — and
 the window holds `window_segments` finished segments. At 4 Mbps (0.5 MB/s), a
 3-segment × 2 s window is **~3 MB**, forever. Without eviction, ten hours of
-broadcast is **18 GB**. The `window_bounds_memory` test and the boss fight's
+broadcast is **18 GB**. The `test_window_bounds_memory` test and the boss fight's
 flat-RSS criterion are this arithmetic made enforceable; the ring itself
-(`VecDeque` + `pop_front`) is already wired in `live.rs` — your job is only to
+(`deque(maxlen=…)`) is already wired in `live.py` — your job is only to
 never hold samples outside it.
 
 ### 4.1 What's inside a cut (box vocabulary, not a recipe)
@@ -252,11 +252,11 @@ box-size arithmetic errors nothing else will.
   vs. a session-ending timeline violation?
 - **Cut trigger placement**: who notices `target_part_secs` has accumulated —
   the session loop pushing samples, or the fragmenter itself? (Look at what
-  [`Session::handle`](../src/session.rs)'s TODO threads to you.)
+  [`PublishSession.handle`](../src/live_ingest/session.py)'s TODO threads to you.)
 - **`mdat` interleaving and `trun` shape** (§4.1).
-- **What you lift from project 11**: `isobmff.rs`'s writer carries over almost
-  wholesale; `segment.rs`'s *logic* mostly doesn't (it walked a finished sample
-  table). Knowing which is which is the reuse lesson the SPEC names.
+- **What you lift from project 11**: `segment.py`'s box writing
+  (`build_init_segment`, `build_media_segment`) carries over almost wholesale;
+  its *segmenting logic* mostly doesn't (it walked a finished sample table). Knowing which is which is the reuse lesson the SPEC names.
 
 Hard stop here — the box-writing code, the conversion math, and the cut logic
 are the vertical. `/hint` for nudges, `/quest` to build it against acceptance
@@ -276,23 +276,23 @@ tests.
 | RTMP clock | 32-bit ms, wraps at ~49.7 days; it is the *media truth* — map it, unwrap it, never substitute arrival time |
 | Part vs segment | Part = latency unit (~200–350 ms, cut on a timer, needn't stand alone); segment = join unit (starts on IDR, `INDEPENDENT` first part) |
 | Memory | `pending` (one part) + a fixed ring of `window_segments` — ~3 MB forever vs 18 GB for a 10-hour naive buffer |
-| Build once | A part is muxed once into `Bytes`; N viewers share refcounts, never re-mux |
+| Build once | A part is muxed once into `bytes`; N viewers share refcounts, never re-mux |
 
 ## 7. Where you'll build this
 
-Both `todo!()`s live in [fmp4.rs](../src/fmp4.rs):
+Both `NotImplementedError`s live in [fmp4.py](../src/live_ingest/fmp4.py):
 
 - `build_init()` — `ftyp` + `moov` from the `CodecConfig` (§2), byte-stable.
-- `Fragmenter::cut_part()` — `moof`+`mdat` from `pending`, advancing
+- `Fragmenter.cut_part()` — `moof`+`mdat` from `pending`, advancing
   `base_decode_time` (§3–4).
 
-They're fed by your V2 dispatcher ([`Session::handle`](../src/session.rs)) and
-their output lands in the wired window ([`LiveStream`](../src/live.rs)) via
+They're fed by your V2 dispatcher ([`PublishSession.handle`](../src/live_ingest/session.py)) and
+their output lands in the wired window ([`LiveStream`](../src/live_ingest/live.py)) via
 `set_init` / `push_part` / `finish_segment`, where V4 will serve it.
 
 This doc unlocks V3's **Done when ALL true** ([SPEC.md](../SPEC.md)):
 byte-stable init · monotonic `tfdt` across the session · parts on a
 configurable target, segments on IDR · `init + parts` passes `ffprobe` with A/V
-in sync · bounded memory. Proof: `fragments_decode_and_are_gapless`,
-`baseMediaDecodeTime_is_monotonic`, `window_bounds_memory`, and the box-layout
+in sync · bounded memory. Proof: `test_fragments_decode_and_are_gapless`,
+`test_base_media_decode_time_is_monotonic`, `test_window_bounds_memory`, and the box-layout
 + timestamp-mapping write-up in `docs/13-design.md`.

@@ -1,5 +1,5 @@
 // Typed client for the project-13 LL-HLS delivery plane. Vite proxies /live to
-// the Rust backend (see vite.config.ts). RTMP ingest lives on a separate TCP
+// the Python backend (see vite.config.ts). RTMP ingest lives on a separate TCP
 // port a broadcaster (OBS/ffmpeg) pushes to — never the browser.
 
 /** `GET /live` — the stream keys currently on air. */

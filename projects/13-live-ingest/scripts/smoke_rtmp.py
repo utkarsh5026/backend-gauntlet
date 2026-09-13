@@ -1,35 +1,41 @@
 #!/usr/bin/env python3
 """End-to-end RTMP ingest smoke test.
 
-Proves the V1 handshake + chunk-stream reader work against a *real* broadcaster
-(ffmpeg) rather than our own synthetic bytes. It:
-  1. builds + starts the live-ingest server on a scratch port,
-  2. pushes ~2s of synthetic H.264/AAC at it over RTMP (no media file needed —
-     ffmpeg's lavfi test source),
-  3. inspects the server log and asserts the handshake completed and the reader
-     reached the command phase.
+Proves the ingest path against a *real* broadcaster (ffmpeg) rather than our own
+synthetic bytes. It:
+  1. starts the live-ingest server (`uv run live-ingest`) on scratch ports,
+  2. pushes a few seconds of synthetic H.264/AAC at it over RTMP (no media file
+     needed — ffmpeg's lavfi test sources),
+  3. reads the server's JSON log and reports how far the connection got.
 
-Why the server log is the source of truth (not ffmpeg's exit code): while V2 (the
-AMF command handler) is still a ``todo!()``, the server closes the connection right
-after reading the first command, so ffmpeg reports an I/O error even though V1 worked
-perfectly. Completion is proved by "handshake complete" appearing in the log — a
-byte-wrong handshake makes ffmpeg hang up *before* that line.
+Why the server log is the source of truth, not ffmpeg's exit code: until V2 is
+built the server closes the connection right after the handshake or the first
+command, so ffmpeg always reports an I/O error — even when V1 is perfect. A
+byte-wrong handshake makes ffmpeg hang up *before* "handshake complete" is
+logged, so that line appearing is the proof.
+
+Milestones, in the order a working build reaches them:
+  * "rtmp connection accepted"     the listener is up and ffmpeg reached it
+  * "handshake complete"           V1's handshake is byte-correct   (gates PASS)
+  * "rtmp session reached an unbuilt vertical"
+                                   names the function to write next
+  * "publish accepted"             V2's state machine let ffmpeg publish, if you
+                                   log that phrase when it does (reported only)
 
 Usage:
-    scripts/smoke_rtmp.py                    # build if needed, run once, PASS/FAIL
+    scripts/smoke_rtmp.py                    # run once, PASS/FAIL
     scripts/smoke_rtmp.py --rtmp-port 19350  # override the scratch RTMP port
     scripts/smoke_rtmp.py --duration 4       # stream for 4s instead of 2s
-    scripts/smoke_rtmp.py --build            # force a cargo rebuild first
     FFMPEG=/path/to/ffmpeg scripts/smoke_rtmp.py
 
-Exit code: 0 = PASS, 1 = FAIL, 2 = setup error (no ffmpeg, port busy, build fail).
+Exit code: 0 = PASS, 1 = FAIL, 2 = setup error (no ffmpeg/uv, port busy).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -37,14 +43,11 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-
+from typing import Any, cast
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
-WORKSPACE_ROOT = PROJECT_DIR.parent.parent
-SERVER_BIN = WORKSPACE_ROOT / "target" / "debug" / "live-ingest"
 
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _COLOR = sys.stdout.isatty()
 
 
@@ -68,26 +71,6 @@ def bad(msg: str) -> None:
     print(_c("31", f"x {msg}"))
 
 
-def strip_ansi(text: str) -> str:
-    return ANSI_RE.sub("", text)
-
-
-def clean_log_line(line: str) -> str:
-    """Trim tracing's ISO-timestamp + crate qualifier for a readable trace.
-
-    Turns
-        2026-07-24T00:47:58.675370Z DEBUG live_ingest::rtmp:  recv C0 …
-    into
-        DEBUG rtmp: recv C0 …
-    The full timestamped log is still written to the file for real debugging; this
-    only tidies what the smoke test prints to the terminal.
-    """
-    line = re.sub(r"^\S+Z\s+", "", line)          # drop the leading ISO-8601 timestamp
-    line = line.replace("live_ingest::", "").replace("live_ingest:", "")  # crate qualifier
-    return re.sub(r"  +", " ", line).rstrip()      # collapse the doubled spaces
-
-
-# --- helpers -----------------------------------------------------------------------
 def resolve_ffmpeg(explicit: str | None) -> str | None:
     """Prefer an explicit path/env, then ~/.local/bin, then PATH."""
     if explicit:
@@ -99,52 +82,89 @@ def resolve_ffmpeg(explicit: str | None) -> str | None:
 
 
 def port_busy(port: int) -> bool:
-    """True if something is already listening on 0.0.0.0:port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("0.0.0.0", port))
+            sock.bind(("0.0.0.0", port))
             return False
         except OSError:
             return True
 
 
-def ffmpeg_version(ffmpeg: str) -> str:
-    try:
-        out = subprocess.run(
-            [ffmpeg, "-version"], capture_output=True, text=True, timeout=10
-        ).stdout
-        return " ".join(out.splitlines()[0].split()[:3]) if out else "unknown"
-    except (subprocess.SubprocessError, OSError):
-        return "unknown"
+def read_events(log_path: Path) -> list[dict[str, Any]]:
+    """The server's structlog output, one JSON object per line.
+
+    stderr is redirected to a file, so `common_telemetry` picks JSON — which is
+    what makes this parseable instead of grep-able.
+    """
+    events: list[dict[str, Any]] = []
+    for line in log_path.read_text(errors="replace").splitlines():
+        try:
+            parsed: object = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            # structlog writes string keys; the cast states what json.loads of
+            # our own log line already guarantees.
+            events.append(cast(dict[str, Any], parsed))
+    return events
 
 
-def wait_for_listen(log_path: Path, proc: subprocess.Popen, timeout_s: float) -> bool:
-    """Poll the server log until it reports the RTMP listener is bound."""
+def logged(events: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
+    return [e for e in events if e.get("event") == event]
+
+
+def wait_for_listen(log_path: Path, proc: subprocess.Popen[bytes], timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            return False  # server exited during startup
-        if "rtmp ingest listening" in log_path.read_text(errors="replace"):
+            return False
+        if logged(read_events(log_path), "rtmp ingest listening"):
             return True
         time.sleep(0.2)
     return False
 
 
+def ffmpeg_command(ffmpeg: str, target: str, duration: float) -> list[str]:
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=320x240:rate=15",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=44100",
+        "-t",
+        str(duration),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-f",
+        "flv",
+        target,
+    ]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="End-to-end RTMP ingest smoke test.")
-    ap.add_argument(
-        "--rtmp-port", type=int, default=int(os.environ.get("RTMP_PORT", 19350))
-    )
-    ap.add_argument(
-        "--http-port", type=int, default=int(os.environ.get("HTTP_PORT", 18080))
-    )
+    ap.add_argument("--rtmp-port", type=int, default=int(os.environ.get("SMOKE_RTMP_PORT", 19350)))
+    ap.add_argument("--http-port", type=int, default=int(os.environ.get("SMOKE_HTTP_PORT", 18080)))
     ap.add_argument("--key", default=os.environ.get("STREAM_KEY", "testkey"))
-    ap.add_argument(
-        "--duration", type=float, default=float(os.environ.get("DURATION", 2))
-    )
+    ap.add_argument("--duration", type=float, default=float(os.environ.get("DURATION", 2)))
     ap.add_argument("--ffmpeg", default=os.environ.get("FFMPEG"))
-    ap.add_argument("--build", action="store_true", help="force a cargo build first")
     args = ap.parse_args()
 
     ffmpeg = resolve_ffmpeg(args.ffmpeg)
@@ -154,205 +174,107 @@ def main() -> int:
             "    curl -L https://johnvansickle.com/ffmpeg/releases/"
             "ffmpeg-release-amd64-static.tar.xz | tar -xJ"
         )
-        print(
-            "    cp ffmpeg-*-static/ffmpeg ~/.local/bin/ && chmod +x ~/.local/bin/ffmpeg"
-        )
+        print("    cp ffmpeg-*-static/ffmpeg ~/.local/bin/ && chmod +x ~/.local/bin/ffmpeg")
         return 2
-    info(f"ffmpeg: {ffmpeg} ({ffmpeg_version(ffmpeg)})")
+    if shutil.which("uv") is None:
+        bad("uv not found — see https://docs.astral.sh/uv/")
+        return 2
+    info(f"ffmpeg: {ffmpeg}")
 
-    for p in (args.rtmp_port, args.http_port):
-        if port_busy(p):
-            bad(
-                f"port {p} is already in use — pass --rtmp-port/--http-port for free ports."
-            )
+    for port in (args.rtmp_port, args.http_port):
+        if port_busy(port):
+            bad(f"port {port} is already in use — pass --rtmp-port/--http-port for free ports.")
             return 2
 
     logdir = Path(tempfile.mkdtemp(prefix="rtmp-smoke-"))
     server_log = logdir / "server.log"
-    ffmpeg_log = logdir / "ffmpeg.log"
+    env = {
+        **os.environ,
+        "STREAM_KEYS": "",  # accept any publish key (dev)
+        "RTMP_PORT": str(args.rtmp_port),
+        "HTTP_PORT": str(args.http_port),
+        "LOG_LEVEL": "debug",
+    }
 
-    if args.build or not (SERVER_BIN.exists() and os.access(SERVER_BIN, os.X_OK)):
-        info("building live-ingest…")
-        build = subprocess.run(
-            ["cargo", "build", "-p", "live-ingest"],
-            cwd=WORKSPACE_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if build.returncode != 0:
-            bad("cargo build failed:")
-            print("\n".join(build.stderr.splitlines()[-20:]))
-            return 2
-
-    server: subprocess.Popen | None = None
+    server: subprocess.Popen[bytes] | None = None
     rc = 0
     try:
         info(f"starting server on rtmp:{args.rtmp_port} / http:{args.http_port} …")
-        env = {
-            **os.environ,
-            "NO_COLOR": "1",  # keep the log greppable
-            "STREAM_KEYS": "",  # accept any publish key (dev)
-            "RTMP_PORT": str(args.rtmp_port),
-            "HTTP_PORT": str(args.http_port),
-        }
-        with server_log.open("w") as log_fh:
+        with server_log.open("wb") as log_fh:
             server = subprocess.Popen(
-                [str(SERVER_BIN)], stdout=log_fh, stderr=subprocess.STDOUT, env=env
+                ["uv", "run", "live-ingest"],
+                cwd=PROJECT_DIR,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                env=env,
             )
-
-        if not wait_for_listen(server_log, server, timeout_s=15):
+        if not wait_for_listen(server_log, server, timeout_s=30):
             bad("server never reported the RTMP listener as up:")
-            print(strip_ansi(server_log.read_text(errors="replace")).strip()[-1000:])
+            print(server_log.read_text(errors="replace")[-1500:])
             return 2
         ok("server up")
 
-        # --- push a synthetic stream ----------------------------------------------
         target = f"rtmp://127.0.0.1:{args.rtmp_port}/live/{args.key}"
         info(f"streaming {args.duration:g}s of synthetic H.264/AAC → {target}")
-        ff_cmd = [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "info",
-            "-re",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=size=320x240:rate=15",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=44100",
-            "-t",
-            str(args.duration),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-f",
-            "flv",
-            target,
-        ]
         try:
             ff = subprocess.run(
-                ff_cmd, capture_output=True, text=True, timeout=args.duration + 20
+                ffmpeg_command(ffmpeg, target, args.duration),
+                capture_output=True,
+                text=True,
+                timeout=args.duration + 20,
             )
             ff_exit = ff.returncode
-            ffmpeg_log.write_text(ff.stdout + ff.stderr)
         except subprocess.TimeoutExpired:
             ff_exit = -1
-            ffmpeg_log.write_text("ffmpeg timed out")
-        # Once V2 (the publish state machine) is implemented, ffmpeg exit 0 means it
-        # completed the publish and streamed its media. Before V2 (or on a broken
-        # reply) the server drops the connection and ffmpeg exits non-zero.
-        exit_note = (
-            "published + streamed OK"
-            if ff_exit == 0
-            else "connection dropped before ffmpeg finished (see server log)"
-        )
-        info(f"ffmpeg exit: {ff_exit} {_c('2', f'({exit_note})')}")
+        note = "published + streamed" if ff_exit == 0 else "connection dropped before the end"
+        info(f"ffmpeg exit: {ff_exit} {_c('2', f'({note})')}")
+        time.sleep(0.5)
 
-        time.sleep(0.5)  # let the server flush its last log line
-
-        # --- assertions ------------------------------------------------------------
-        log = strip_ansi(server_log.read_text(errors="replace"))
-        print("\n── server log " + "─" * 46)
-        wanted = (
-            "connection accepted",
-            "handshake",
-            "connection ended",
-            "panicked",
-            "not yet implemented",
-            "publish",
-            "connect",
-            "DEBUG",  # the per-step C0/C1/S…/C2 handshake trace lines
-        )
-        lines = [ln for ln in log.splitlines() if any(w in ln for w in wanted)]
-        shown = lines or log.splitlines()[-8:]
-        print("\n".join(clean_log_line(ln) for ln in shown))
+        events = read_events(server_log)
+        print("\n── server events " + "─" * 43)
+        for event in events:
+            name = str(event.get("event", ""))
+            if name.startswith(("rtmp", "handshake", "publish")):
+                extra = {k: v for k, v in event.items() if k not in ("event", "timestamp", "level")}
+                print(f"  {event.get('level', ''):<7} {name}  {_c('2', json.dumps(extra))}")
         print("─" * 60 + "\n")
 
-        if "rtmp connection accepted" in log:
+        if logged(events, "rtmp connection accepted"):
             ok("TCP connection accepted")
         else:
-            bad(
-                "server never logged an accepted connection — did ffmpeg reach the port?"
-            )
+            bad("server never logged an accepted connection — did ffmpeg reach the port?")
             rc = 1
 
-        if "handshake complete" in log:
-            ok(
-                "handshake complete — byte-correct against a real broadcaster (V1 handshake ✓)"
-            )
+        if logged(events, "handshake complete"):
+            ok("handshake complete — byte-correct against a real broadcaster (V1 handshake ✓)")
         else:
-            bad(
-                "handshake did NOT complete — ffmpeg hung up; S0/S1/S2 or the C2 echo is wrong."
-            )
-            warn("ffmpeg tail:")
-            print(
-                "\n".join(
-                    strip_ansi(ffmpeg_log.read_text(errors="replace")).splitlines()[-6:]
-                )
-            )
+            bad("handshake did NOT complete — ffmpeg hung up, or V1 is still unbuilt.")
             rc = 1
 
-        # Command phase: in scaffold state the reader parses the first message then
-        # handle() hits its todo!(); post-V2 the panic disappears and real handling
-        # takes over. Either path means we got past the handshake into message reading.
-        if re.search(
-            r"not yet implemented.*handle command|panicked at .*session\.rs", log
-        ):
-            ok(
-                "reached command phase — reader returned a message; V2 handler is a todo (expected)"
-            )
-        elif re.search(r"publish|connect|createStream", log):
-            ok("reached command phase — V2 command handling is active")
-        elif "handshake complete" in log:
-            warn(
-                "handshake completed but no message was dispatched — the chunk reader may not"
-            )
-            warn(f"have parsed the first message. Inspect: {server_log}")
+        for failure in logged(events, "rtmp session reached an unbuilt vertical"):
+            warn(f"worklist: {failure.get('error')}")
 
-        # V2 milestone: the full connect → createStream → publish dance completed with a
-        # real broadcaster, and ffmpeg accepted every reply (exit 0). Reported, not gated,
-        # so the script still passes on V1-only builds where publish isn't implemented yet.
-        if "publish accepted" in log:
-            ok(
-                "publish accepted — connect → createStream → publish completed with a real "
-                "broadcaster (V2 publish state machine ✓)"
-            )
-            if ff_exit == 0:
-                ok("ffmpeg published and streamed its media without the connection dropping")
-            else:
+        if logged(events, "publish accepted"):
+            ok("publish accepted — connect → createStream → publish completed (V2 ✓)")
+            if ff_exit != 0:
                 warn(
-                    f"publish was accepted but ffmpeg exited {ff_exit} — a later reply "
-                    "(onStatus / media path) may be malformed. Inspect the server log."
+                    f"publish was accepted but ffmpeg exited {ff_exit} — "
+                    "a later reply may be malformed"
                 )
-        elif re.search(r"publish rejected|publish unauthorized", log):
-            warn("publish was REJECTED — check the stream key / authorize() gate.")
     finally:
-        if server and server.poll() is None:
+        if server is not None and server.poll() is None:
             server.terminate()
             try:
-                server.wait(timeout=3)
+                server.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 server.kill()
 
     print()
     if rc == 0:
-        ok(
-            _c("32", "SMOKE TEST PASSED")
-            + " — RTMP ingest path works end-to-end through the handshake + reader."
-        )
+        ok(_c("32", "SMOKE TEST PASSED") + " — the RTMP ingest path works through the handshake.")
         shutil.rmtree(logdir, ignore_errors=True)
     else:
-        bad("SMOKE TEST FAILED — see the server log above.")
+        bad("SMOKE TEST FAILED — see the server events above.")
         info(f"logs kept in {logdir}")
     return rc
 

@@ -8,5 +8,5 @@
 ## Learned Workspace Facts
 
 - `rustfmt` and format-on-save do not reformat bodies inside proc macros such as `proptest!`.
-- Active project is `projects/13-live-ingest` (RTMP → LL-HLS); no Docker/DB — run with `cargo run -p live-ingest`, optional `web/` player via Bun.
+- Active project is `projects/13-live-ingest` (RTMP → LL-HLS), now Python; no Docker/DB — run with `make run` (`uv run live-ingest`), optional `web/` player via Bun.
 - Workspace `.vscode` settings point the integrated terminal cwd and env file at `projects/13-live-ingest`.

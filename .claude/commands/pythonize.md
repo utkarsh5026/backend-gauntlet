@@ -50,9 +50,10 @@ Only on the first conversion. Verify each before doing it:
 ## 1. Gate: refuse projects with real work
 
 Run `make status NN`. **Convert only if verticals done == 0 and checklist done == 0.**
-Projects with real implementations — **01, 03, 04, 06, 13** — stay Rust; rewriting
-code the owner already understood costs weeks and teaches nothing. If the target has
-work in it, stop and say so unless `--force` was passed.
+Projects with real implementations stay Rust; rewriting code the owner already
+understood costs weeks and teaches nothing. If the target has work in it, stop and
+say so unless `--force` was passed. (Every project in the roadmap has now been
+converted — 06 and 13 with `--force` — so this gate matters for new projects only.)
 
 ## 2. Produce the layout
 

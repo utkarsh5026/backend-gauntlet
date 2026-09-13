@@ -1,0 +1,80 @@
+[project]
+name = "live-ingest"
+version = "0.1.0"
+description = "Live ingest server from scratch: RTMP handshake + chunk stream, AMF0 publish state machine, live fMP4 remux and Low-Latency HLS blocking reload (project 13)."
+requires-python = ">=3.13"
+dependencies = [
+    "common-config",
+    "common-telemetry",
+    # The delivery plane only — the LL-HLS routes, health and the Prometheus
+    # scrape. The ingest plane is a raw TCP server (`asyncio.start_server`),
+    # because RTMP has never heard of ASGI.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "prometheus-client>=0.21",
+    "structlog>=24.4",
+]
+# Deliberately no RTMP, AMF, FLV, MP4 or HLS dependency. `pyrtmp`, `pymp4` or
+# an `ffmpeg` subprocess would each hand you a vertical in one line, which is
+# the whole thing this project exists not to do. What the verticals need is
+# stdlib: `asyncio.StreamReader.readexactly` for the wire, `struct` for the
+# big-endian layouts (and RTMP's one little-endian field), `collections.deque`
+# for the live window, and `os.urandom` for the handshake's random block.
+
+[project.scripts]
+# Same name the Rust binary had, so the Makefile, Dockerfile and web/ README
+# read the same as every other project in the gauntlet.
+live-ingest = "live_ingest.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    # Test-only: this process makes no outbound HTTP calls. `ASGITransport`
+    # drives the app on the *test's* event loop, which is what lets a test open
+    # a real TCP connection at the RTMP port, push a part into the live window,
+    # and then await a blocking reload unparking — all on one loop.
+    "httpx>=0.28",
+    # The SPEC names property tests: "random/truncated bytes never crash the
+    # chunk reader" and "decode∘encode is identity for any AMF0 value" are claims
+    # about the whole input space, which a hand-written corpus cannot make.
+    "hypothesis>=6.115",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    # The profiling gate in the Definition of done. On CPython the Latency Wall
+    # is won or lost in the profile, not in code review.
+    "py-spy>=0.4",
+    "memray>=1.14",
+]
+
+[tool.uv.sources]
+common-config = { workspace = true }
+common-telemetry = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/live_ingest"]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — RTMP's chunk stream: parsing a stateful binary wire *(V1 · `src/rtmp.rs`)*
+## 🧠 Card 1 — RTMP's chunk stream: parsing a stateful binary wire *(V1 · `src/live_ingest/rtmp.py`)*
 
 **The problem.** A broadcaster's camera feed shares one TCP connection with control messages and audio. Send a 200 KB video frame as one message and every audio message queues behind it — head-of-line blocking *inside* your own connection, audible as stutter. RTMP's answer predates HTTP/2's identical answer: multiplex by shredding every message into small chunks. The cost lands on you, the parser: chunk headers are *delta-compressed against previous chunks on the same chunk-stream id* — the wire is stateful, and reassembly means tracking that state per stream, mid-connection chunk-size changes included.
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — AMF0 & the publish state machine *(V2 · `src/amf.rs`, `src/session.rs`)*
+## 🧠 Card 2 — AMF0 & the publish state machine *(V2 · `src/live_ingest/amf.py`, `src/live_ingest/session.py`)*
 
 **The problem.** Past the handshake, RTMP is an RPC conversation in AMF0, and a broadcaster only starts sending media after a precise call-and-response dance. Answer wrong (or in the wrong order) and the encoder silently disconnects. Answer *too permissively* and you have a security hole: an ingest that accepts media before authenticating the stream key lets anyone hijack any stream on your service.
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🧠 Card 3 — Live remuxing onto a running timeline *(V3 · `src/fmp4.rs`)*
+## 🧠 Card 3 — Live remuxing onto a running timeline *(V3 · `src/live_ingest/fmp4.py`)*
 
 **The problem.** Project 11 packaged a *finished* file: the sample table was complete before you cut segment one. Live has no file — frames arrive forever, the timeline comes from RTMP message timestamps (32-bit, they wrap), and you must emit valid fMP4 fragments *now*, from a stream with no end, in memory that never grows. Re-encoding is off the table: it costs a CPU core and ~100 ms+ you don't have.
 
@@ -73,7 +73,7 @@
 
 ---
 
-## 🧠 Card 4 — LL-HLS: blocking reload & the latency wall *(V4 · `src/llhls.rs`)*
+## 🧠 Card 4 — LL-HLS: blocking reload & the latency wall *(V4 · `src/live_ingest/llhls.py`)*
 
 **The problem.** Classic live HLS: 6-second segments, player buffers three → the viewer is 15–30 s behind the glass. Shrinking segments alone explodes request rates and breaks encoders. And polling faster doesn't work: a player asking "is there a new playlist yet?" every 200 ms mostly gets 304s/404s — wasted round trips that still can't beat segment-granularity latency.
 

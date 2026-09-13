@@ -26,9 +26,11 @@ from pathlib import Path
 # `src/` still resolves here and CI runs `cargo clippy -p <name>` for a package
 # that no longer exists. The Python side is scoped by the `python` paths-filter
 # in ci.yml instead.
-PROJECTS: list[tuple[str, str]] = [
-    ("live-ingest", "projects/13-live-ingest"),
-]
+#
+# Empty since project 13 converted: every project is Python now, and the Cargo
+# workspace holds only the shared `crates/`. Those still resolve through
+# `_WORKSPACE_PREFIXES` below, so Rust CI keeps running when they change.
+PROJECTS: list[tuple[str, str]] = []
 
 # Frontend dirs (must contain package.json to be built).
 FRONTENDS: list[str] = [
@@ -195,20 +197,19 @@ def main() -> int:
 
 
 def self_test() -> int:
-    # Scoped: a crate by its src, a converted project's Python beside it, plus a
-    # frontend that must NOT pull its own crate in. Uses only projects still in
-    # the Cargo workspace — a /pythonize conversion has to update this alongside
-    # PROJECTS.
+    # Converted projects' Python beside a frontend: no crate, just the frontend.
+    # No project is left in the Cargo workspace, so nothing here may resolve to
+    # a package — a stale PROJECTS entry would fail this.
     rust_all, pkgs, fes = resolve(
         [
             "projects/18-ledger-payments-core/src/ledger_payments_core/ledger.py",
             "projects/06-object-store/web/src/App.tsx",
-            "projects/13-live-ingest/src/rtmp.rs",
+            "projects/13-live-ingest/src/live_ingest/rtmp.py",
         ],
         force_all=False,
     )
     assert rust_all is False
-    assert pkgs == ["live-ingest"], pkgs
+    assert pkgs == [], pkgs
     assert fes == ["projects/06-object-store/web"], fes
 
     # Frontend-only → no rust package for that project.
@@ -228,12 +229,12 @@ def self_test() -> int:
     assert rust_all is False
     assert pkgs == []
 
-    # sqlx cache counts as rust.
-    _, pkgs, _ = resolve(
-        ["projects/13-live-ingest/.sqlx/query-abc.json"],
-        force_all=False,
-    )
-    assert pkgs == ["live-ingest"], pkgs
+    # The relevance rules still hold for a Rust project added back later: its
+    # src and sqlx cache count as rust, its frontend and docs do not. Checked on
+    # the rule directly, since PROJECTS is empty.
+    assert is_rust_relevant("projects/99-new/src/main.rs", "projects/99-new")
+    assert is_rust_relevant("projects/99-new/.sqlx/query-abc.json", "projects/99-new")
+    assert not is_rust_relevant("projects/99-new/docs/design.md", "projects/99-new")
 
     # A converted project's Python sources must resolve to *no* Rust package —
     # the guard against leaving a stale entry in PROJECTS after /pythonize.

@@ -28,6 +28,7 @@ members = [
     "projects/10-api-gateway",
     "projects/11-vod-streaming",
     "projects/12-transcode-pipeline",
+    "projects/13-live-ingest",
     "projects/14-media-transport",
     "projects/15-webrtc-sfu",
     "projects/16-live-platform",

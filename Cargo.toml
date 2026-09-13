@@ -4,7 +4,6 @@ members = [
     "crates/common-telemetry",
     "crates/common-config",
     "crates/workspace-hack",
-    "projects/13-live-ingest",
 ]
 
 # Shared dependency versions live here so every project pins the same line.
