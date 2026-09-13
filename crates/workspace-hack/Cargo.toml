@@ -16,7 +16,7 @@ publish = false
 
 ### BEGIN HAKARI SECTION
 [dependencies]
-base64 = { version = "0.22" }
+base64 = { version = "0.23" }
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam-utils = { version = "0.8" }
 crypto-common = { version = "0.1", default-features = false, features = ["std"] }
@@ -52,7 +52,7 @@ tracing-core = { version = "0.1" }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 [build-dependencies]
-base64 = { version = "0.22" }
+base64 = { version = "0.23" }
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam-utils = { version = "0.8" }
 crypto-common = { version = "0.1", default-features = false, features = ["std"] }
