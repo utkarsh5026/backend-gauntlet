@@ -32,8 +32,6 @@ futures-util = { version = "0.3", default-features = false, features = ["async-a
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
 num-traits = { version = "0.2", default-features = false, features = ["i128", "std"] }
-rand = { version = "0.9" }
-rand_chacha = { version = "0.9", default-features = false, features = ["std"] }
 regex-syntax = { version = "0.8" }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }

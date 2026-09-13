@@ -2500,27 +2500,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "transcode-pipeline"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "common-config",
- "common-telemetry",
- "proptest",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tower-http",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3020,8 +2999,6 @@ dependencies = [
  "log",
  "memchr",
  "num-traits",
- "rand 0.9.4",
- "rand_chacha 0.9.0",
  "regex-syntax",
  "serde",
  "serde_core",

@@ -46,7 +46,7 @@ blocked-on: ~            # free text, or ~ for none
 > `ffmpeg` / `ffprobe` are the external codec toolbox — the one thing you *don't*
 > rebuild (an H.264 encoder is not the exercise). Everything *around* the encoder —
 > where to cut, how to schedule, how to parallelize safely, how to stitch — is what
-> you build. `docker compose up -d` brings up Postgres; `ffmpeg` must be on `PATH`.
+> you build. `make up` brings up Postgres; `ffmpeg` must be on `PATH`.
 
 > **How to read this SPEC.** Every challenge below lists **Done when ALL true** —
 > observable criteria you can check off — and a **Proof**: the test/bench/doc that
@@ -54,13 +54,19 @@ blocked-on: ~            # free text, or ~ for none
 > must do*, never *how*; figuring out the how is the entire point. A box only flips
 > to ✅ when its Proof exists.
 
+> **Python.** This project runs on CPython: FastAPI under uvicorn on uvloop, asyncpg,
+> ffmpeg driven through `asyncio` subprocesses, pytest + httpx `ASGITransport` +
+> hypothesis, pyright strict + ruff. `make verify` is the gate CI runs. The boss-fight
+> numbers are the same ones the Rust scaffold was set; where CPython can't reach one,
+> the gap and its cause are the finding (see the Definition of done).
+
 ---
 
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. Keyframe-aligned chunking — *decide where to cut*
-In `src/chunk.rs`, turn the source's keyframe timestamps (from
-`ffmpeg::probe_keyframes`, wired plumbing) and its duration into a set of chunks of
+In `src/transcode_pipeline/chunk.py`, turn the source's keyframe timestamps (from
+`ffmpeg.probe_keyframes`, wired plumbing) and its duration into a set of chunks of
 ~`target_secs` whose boundaries are **all keyframes**. This is the "map" step's
 plan: get it wrong and nothing downstream can be correct.
 
@@ -82,13 +88,13 @@ media bytes), so it's exhaustively property-testable.
   and that tradeoff is visible in the plan.
 - [ ] Chunks are **indexed `0..n` in ascending time order** — so stitch order (V4)
   is just numeric order.
-- [ ] **Degenerate inputs never panic:** a source with one keyframe (or none usable
+- [ ] **Degenerate inputs never raise:** a source with one keyframe (or none usable
   past the start), or a target larger than the whole asset, yields **one** valid
   chunk `[0.0, duration)`.
 
-**Proof:** property tests over random ascending keyframe lists + durations asserting
-boundaries-are-keyframes, gapless-and-total coverage, and no-panic
-(`prop_chunks_are_keyframe_aligned`, `prop_chunks_cover_source`); `docs/12-design.md`
+**Proof:** hypothesis property tests over random ascending keyframe lists + durations
+asserting boundaries-are-keyframes, gapless-and-total coverage, and no exception
+(`test_chunks_are_keyframe_aligned`, `test_chunks_cover_source`); `docs/12-design.md`
 records the target-vs-keyframe policy.
 
 *Concept to internalize:* GOP structure and why only IDR/keyframe boundaries yield
@@ -96,49 +102,51 @@ independently-decodable chunks; open vs closed GOPs; the split/transcode/stitch
 ("map/reduce for video") shape and why the cut points are load-bearing.
 
 ### V2. The job DAG + scheduler — *model the work as a graph*
-In `src/dag.rs` (plus the durable store in `src/job.rs`), express a job as a
-**dependency graph** and schedule it. A transcode job isn't a flat queue: one
-`Split` fans out into one `Transcode` per (chunk × rendition), and each rendition's
-`Stitch` fans those back in. Progress must flow along the edges — a task runs only
-once its upstream tasks are done.
+In `src/transcode_pipeline/dag.py` (plus the durable store in
+`src/transcode_pipeline/store.py`), express a job as a **dependency graph** and
+schedule it. A transcode job isn't a flat queue: one `Split` fans out into one
+`Transcode` per (chunk × rendition), and each rendition's `Stitch` fans those back
+in. Progress must flow along the edges — a task runs only once its upstream tasks
+are done.
 
 The graph is **discovered dynamically**: the `Split` task (run by a worker) learns
-the chunk count from V1, then `dag::expand` builds the transcode + stitch tasks and
-their edges, which the store persists. The scheduler's core is `dag::newly_ready`
-(pure, in-memory) mirrored by `JobStore::promote_ready` (its SQL twin): given the
-task states, which `Pending` tasks now have **all** dependencies `Done`?
+the chunk count from V1, then `dag.expand` builds the transcode + stitch tasks and
+their edges, which the store persists. The scheduler's core is `dag.newly_ready`
+(pure, in-memory) mirrored by `JobStore.promote_ready` (its SQL twin): given the
+task states, which `PENDING` tasks now have **all** dependencies `DONE`?
 
 **Done when ALL true:**
 - [ ] The DAG has the right **shape**: every `Transcode` depends on the job's
   `Split`; every rendition's `Stitch` depends on **all** of that rendition's
   `Transcode` tasks (the fan-in) and no others.
-- [ ] A task becomes **runnable exactly when all its dependencies are `Done`** — never
+- [ ] A task becomes **runnable exactly when all its dependencies are `DONE`** — never
   before (no transcode starts before the split; no stitch starts before its last
   chunk), and every task with satisfied deps *does* become runnable (no deadlock).
 - [ ] The DAG is **durable**: kill and restart the whole coordinator mid-job and it
   resumes from the persisted task states — finished tasks are not redone, unfinished
   ones still run. No task list lives only in memory.
 - [ ] A job's **status is derived from its tasks**: it is `done` only when every task
-  is `Done`, and `failed` if any task is `Failed` — and `GET /jobs/{id}` reports
+  is `DONE`, and `failed` if any task is `FAILED` — and `GET /jobs/{id}` reports
   accurate per-status counts throughout.
 - [ ] The graph is acyclic and **terminates**: for any job, running ready tasks to
-  completion eventually drains every task to `Done` (or a `Failed` that's explained).
+  completion eventually drains every task to `DONE` (or a `FAILED` that's explained).
 
-**Proof:** unit tests on `dag::expand` asserting the edge shape for a 2-rendition,
-N-chunk job (`expand_wires_fan_in`), and on `dag::newly_ready` that a stitch is
-withheld until its last chunk flips `Done` (`stitch_waits_for_all_chunks`); an
-integration test that restarts the store mid-job and shows no task is re-run
-(`dag_resumes_after_restart`); `docs/12-design.md` diagrams the DAG.
+**Proof:** unit tests on `dag.expand` asserting the edge shape for a 2-rendition,
+N-chunk job (`test_expand_wires_fan_in`), and on `dag.newly_ready` that a stitch is
+withheld until its last chunk flips `DONE` (`test_stitch_waits_for_all_chunks`); an
+integration test over the `pg_pool` fixture that restarts the store mid-job and shows
+no task is re-run (`test_dag_resumes_after_restart`); `docs/12-design.md` diagrams the
+DAG.
 
 *Concept to internalize:* DAG scheduling (topological progress, ready-set,
 fan-out/fan-in); why a dependency graph beats a flat queue for multi-stage work;
 and why join nodes (`Stitch`) are where stragglers and deadlocks hide.
 
 ### V3. Parallel transcode workers — *run the chunks, idempotently*
-In `src/worker.rs`, make the fan-out real: a pool of workers each claim a `Ready`
-task, run it, and settle it, so dozens of chunk transcodes run at once. The loop is
-wired; the crux is the **`Transcode`** handler and doing it **safely under
-at-least-once**.
+In `src/transcode_pipeline/worker.py`, make the fan-out real: a pool of workers each
+claim a `READY` task, run it, and settle it, so dozens of chunk transcodes run at
+once. The loop is wired; the crux is the **`Transcode`** handler and doing it
+**safely under at-least-once**.
 
 Because a lease can expire and a task re-run (a worker died, or was just slow), every
 task must be **idempotent**: a re-run reproduces the *same* chunk bytes and commits
@@ -157,16 +165,16 @@ pool.
   bytes**, and the artifact is committed **atomically** — an interrupted attempt
   leaves no partial file that a later step could mistake for done.
 - [ ] A **worker that dies mid-task loses nothing**: its lease expires, the reaper
-  returns the task to `Ready`, another worker completes it, and the final output is
+  returns the task to `READY`, another worker completes it, and the final output is
   correct (no duplicated or missing chunk).
 - [ ] A task that fails is **retried with backoff up to a limit, then dead-lettered**
   — a permanently-bad chunk fails its job cleanly instead of looping forever.
 
 **Proof:** an integration test that submits a job, runs a worker pool, kills a worker
 mid-transcode, and asserts the job still completes with every chunk present exactly
-once (`killed_worker_is_recovered`); a determinism test that a chunk transcoded twice
-is byte-identical (`transcode_is_deterministic`); a `bench/` run showing wall-clock
-speedup vs. worker count in `docs/12-benchmarks.md`.
+once (`test_killed_worker_is_recovered`); a determinism test that a chunk transcoded
+twice is byte-identical (`test_transcode_is_deterministic`); a `bench/` run showing
+wall-clock speedup vs. worker count in `docs/12-benchmarks.md`.
 
 *Concept to internalize:* at-least-once vs exactly-once and why idempotency +
 atomic commit bridge them; leases/visibility-timeout for crash recovery; worker-pool
@@ -174,11 +182,12 @@ parallelism, work-stealing via the shared claim, and backpressure (bounded
 concurrency so you don't fork-bomb ffmpeg).
 
 ### V4. Stitch + remux — *glue the chunks back seamlessly*
-In `src/stitch.rs`, concatenate one rendition's transcoded chunks into a single
-continuous file — the "reduce" that joins the fan-out. Each chunk was encoded on its
-own worker with its own timeline starting at zero; joining them naively produces a
-**seam** at every boundary. Because boundaries are keyframe-aligned (V1), this is a
-**remux** (rewrap + rebase timestamps), not a re-encode.
+In `src/transcode_pipeline/stitch.py`, concatenate one rendition's transcoded chunks
+into a single continuous file — the "reduce" that joins the fan-out. Each chunk was
+encoded on its own worker with its own timeline starting at zero; joining them
+naively produces a **seam** at every boundary. Because boundaries are
+keyframe-aligned (V1), this is a **remux** (rewrap + rebase timestamps), not a
+re-encode.
 
 **Done when ALL true:**
 - [ ] Chunks are joined in **numeric index order** — `10.mp4` follows `9.mp4`, never
@@ -195,9 +204,9 @@ own worker with its own timeline starting at zero; joining them naively produces
 
 **Proof:** an integration test feeding real chunks through `stitch` and asserting via
 `ffprobe` that PTS are monotonic/gapless and total duration matches within a frame
-(`stitched_output_has_no_seam`, `stitched_duration_matches_source`); a numeric-order
-test (`chunks_ordered_numerically`); `docs/12-design.md` records the concat/remux
-method and the timestamp-rebasing rule.
+(`test_stitched_output_has_no_seam`, `test_stitched_duration_matches_source`); a
+numeric-order test (`test_chunks_ordered_numerically`); `docs/12-design.md` records
+the concat/remux method and the timestamp-rebasing rule.
 
 *Concept to internalize:* why independently-encoded chunks have discontinuous
 timelines and how `baseMediaDecodeTime`/PTS rebasing removes the seam; remux vs
@@ -214,10 +223,12 @@ Each item is **done when its criterion is observably true** — same rule as the
   call returns) with the job id; `GET /jobs/{id}` reports live status + task counts;
   an unknown id is a clean **`404`**.
 - [ ] **Content types** are correct (`application/json` on the API) and the job view
-  is stable, documented JSON a dashboard can poll.
+  is stable, documented JSON a dashboard can poll (the `JobView` schema at `/docs`).
 - [ ] **Graceful shutdown**: on SIGTERM the coordinator stops *claiming* first, then
   lets in-flight transcodes finish or their leases expire — never aborts a task and
-  loses its ack, and drains in-flight HTTP requests.
+  loses its ack — and drains in-flight HTTP requests through uvicorn's graceful
+  shutdown and the FastAPI lifespan. *(Proof: a `docker stop -t 30` mid-job that
+  reaches `shutdown complete`, with every task it held later completed.)*
 
 ### Caching / reuse
 - [ ] Finished chunk artifacts are **memoized**: a task whose output already exists
@@ -227,10 +238,10 @@ Each item is **done when its criterion is observably true** — same rule as the
   or CDN in front of `WORK_DIR` stays coherent — the reuse contract V3 depends on.
 
 ### Security / abuse protection
-- [ ] **Path traversal is impossible** (`PipelineConfig::resolve_source`): a client
-  `source` can never escape `WORK_DIR` (`../`, absolute paths, symlinks); a bad path
-  is a clean `400`/`404`, never a filesystem probe or a 500.
-- [ ] **No shell injection into ffmpeg**: arguments are passed as an argv vector, never
+- [ ] **Path traversal is impossible** (`WorkDir.resolve_source`): a client `source`
+  can never escape `WORK_DIR` (`../`, absolute paths, symlinks); a bad path is a clean
+  `400`/`404`, never a filesystem probe or a 500.
+- [ ] **No shell injection into ffmpeg**: arguments are passed as an argv list, never
   interpolated into a shell string — a source name with spaces/`;`/quotes can't run
   commands. Inputs (ladder height/bitrate, names) are **validated and bounded**.
 - [ ] `POST /jobs` is **authenticated** (an open submit lets anyone make your workers
@@ -238,15 +249,48 @@ Each item is **done when its criterion is observably true** — same rule as the
   ceilings are noted (max ladder rungs, max concurrent jobs).
 
 ### Observability
-- [ ] A `tracing` span per request and per task (via `common-telemetry`) carrying
-  `job_id`, `task_id`, and `kind` (chunk index + rendition) — so one chunk's journey
-  is traceable. Never log source paths at info level or ffmpeg's full stderr except
-  on error.
+- [ ] A structured log line per request carrying a request id (via
+  `common_telemetry.RequestIdMiddleware`), and per-task context — `job_id`,
+  `task_id`, and `kind` (chunk index + rendition) — bound onto the task's logger so one
+  chunk's journey is greppable. Never log source paths at info level or ffmpeg's full
+  stderr except on error.
 - [ ] Counters: jobs submitted, tasks by kind + outcome (done/retried/dead-lettered),
   **leases reclaimed** (dead-worker recoveries), and chunk **cache hits** (skipped
   re-transcodes).
 - [ ] Histograms/gauges: **per-chunk transcode time**, DAG **queue depth**
   (ready/running), and **worker utilization** — enough to see a straggler forming.
+
+### Python (the day-job axis)
+- [ ] **pyright strict passes clean** — every `# type: ignore` / `# pyright: ignore`
+  carries a comment saying what claim it makes. *(Proof: `make types` is green; each
+  ignore reads as a decision.)*
+- [ ] **No blocking call on the event loop** — the pool runs clean under
+  `PYTHONASYNCIODEBUG=1`, which logs any callback holding the loop past 100 ms. Every
+  worker, the scheduler and the API share **one** thread, so a `subprocess.run`, a
+  synchronous directory listing of 1,200 chunks, or a hash of a finished artifact
+  stalls all of them at once; any sync I/O runs in a thread on purpose. *(Proof: a
+  boss-fight run under the debug flag with no slow-callback warnings, or each one
+  explained.)*
+- [ ] **Bounded pool sized on purpose, together** — `WORKER_CONCURRENCY` is sized to
+  the cores ffmpeg burns (not to the backlog), and `DB_MAX_CONNECTIONS` × worker
+  processes stays under Postgres `max_connections` with room for the scheduler and
+  the API. *(Proof: `docs/12-design.md` names each number and the arithmetic behind
+  it.)*
+- [ ] **Graceful shutdown drains via the lifespan** — SIGTERM stops claiming, in-flight
+  tasks settle within the drain budget, a cancelled encode kills its ffmpeg child
+  rather than orphaning it, and the pool closes last. *(Proof: a test that sets the
+  shutdown flag mid-task and asserts the task settled, plus the `docker stop` above.)*
+- [ ] **The container boots under uvloop** — `docker build` produces a runnable image
+  with ffmpeg in it, `/healthz` answers inside it, and `docker stop` reaches
+  `shutdown complete` inside the grace period. The only check that exercises uvloop's
+  subprocess handling and PID-1 signals; `make verify` sees neither.
+  *(Proof: the build and the stop, noted in `docs/12-design.md`.)*
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/12-benchmarks.md`, naming the top bottleneck. Expect most wall-clock inside
+  ffmpeg children py-spy can't see; the interesting question is what the *Python*
+  share is — claim round-trips, JSON decoding of a large expansion, log formatting —
+  and whether it grows with worker count. *(Proof: the flamegraph, and one sentence on
+  what it changed.)*
 
 ---
 
@@ -271,8 +315,14 @@ The project is **done when ALL true:**
    policy** (target vs boundary), the **DAG model** (node/edge shape, dynamic
    expansion, readiness rule), the **idempotency + lease/recovery** design, and the
    **stitch/remux + timestamp-rebasing** method.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p transcode-pipeline`
-   are green; no `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` → `ruff check` → `pyright` (strict) →
+   `pytest` — and no `raise NotImplementedError` remains on a checked path.
+5. The **profile** is committed alongside the numbers: a `py-spy` flamegraph and a
+   `memray` run in `docs/12-benchmarks.md`, naming the top bottleneck. Numbers alone do
+   not close this — you have to know *why* they are what they are. Where CPython can't
+   reach a boss-fight target, **the gap and its cause are the finding** (GIL contention
+   in the orchestrator? GC pauses? a blocking call on the loop? claim contention in
+   Postgres?), recorded rather than designed around.
 
 ## 🐉 Boss fight — The Straggler
 
@@ -286,9 +336,10 @@ The project is **done when ALL true:**
 > speed mattered because the output is broken. Defeat the Straggler and you've proven
 > the whole pipeline: wide, recoverable, and seamless.
 
-**Arena:** `bench/` runs a **release build** (`cargo run --release`) with Postgres up
-and a real multi-minute source under `WORK_DIR`. Submit one job over a 3-rendition
-ladder; run a worker pool; partway through, **`kill -9` one worker**. Compare against
+**Arena:** `bench/` runs the **production container** (uvicorn on uvloop,
+`make verify`-clean) with Postgres up and a real multi-minute source under `WORK_DIR`.
+Submit one job over a 3-rendition ladder; run a worker pool as separate processes (so
+one can die alone); partway through, **`kill -9` one worker process**. Compare against
 a serial baseline (1 worker) and an un-killed run.
 
 **The boss falls when ALL true:**
@@ -314,26 +365,27 @@ a serial baseline (1 worker) and an un-killed run.
 1. Get the boring path working: `POST /jobs` inserts a job + a seed `Split` task;
    `GET /jobs/{id}` reports task counts; `GET /healthz` is green — no workers yet.
 2. Build V1: the keyframe chunk planner, pure — property-test boundaries-are-keyframes
-   and gapless coverage before touching ffmpeg.
-3. Build V2: `dag::expand` (the fan-out/fan-in shape) + the store (persist tasks/edges)
+   and gapless coverage with hypothesis before touching ffmpeg (`make fixture` +
+   `make probe` show you real inputs).
+3. Build V2: `dag.expand` (the fan-out/fan-in shape) + the store (persist tasks/edges)
    + `promote_ready`/`newly_ready` (the readiness rule); unit-test the DAG shape.
 4. Build V3: the claim/lease + one `Transcode` handler that deterministically encodes
-   one chunk and commits atomically; turn on `RUN_WORKERS`, run a few, watch the DAG
-   drain; add retries + the reaper.
+   one chunk and commits atomically; `make workers`, run a few, watch the DAG drain;
+   add retries + the reaper.
 5. Build V4: order chunks numerically and stitch/remux into one seamless output;
    validate PTS continuity + duration with `ffprobe`.
 6. Add auth + the traversal guard + argv-safety + metrics; then benchmark the
-   speedup, kill a worker, and document — hand the finished renditions to project 11
-   to package.
+   speedup, kill a worker, profile, and document — hand the finished renditions to
+   project 11 to package.
 
-## Run the dependencies
+## Run it
 ```bash
-docker compose up -d        # postgres
-cp .env.example .env        # set WORK_DIR + DATABASE_URL; ensure ffmpeg is on PATH
-sqlx migrate run            # apply migrations (install: cargo install sqlx-cli)
-# Drop a source under $WORK_DIR (e.g. work/bbb.mp4), then:
-cargo run -p transcode-pipeline
-#   The scaffold compiles and serves the control-plane API. `POST /jobs` hits a
-#   todo!() in V2; flipping RUN_WORKERS=true makes the scheduler/workers panic on
-#   the first store call — those panics are the worklist.
+make setup                  # copy .env.example → .env
+make sync                   # uv: install the workspace venv from uv.lock
+make dev                    # postgres up → migrate → run the control-plane API
+make fixture                # a 2-minute H.264 source at $WORK_DIR/bbb.mp4 (needs ffmpeg)
+make probe                  # V1's input: its keyframes + duration
+make submit                 # POST /jobs — 501 names the V2 todo
+make workers                # RUN_WORKERS=true — each worker stops at its first todo
+make verify                 # fmt-check → lint → types → test (what CI runs)
 ```

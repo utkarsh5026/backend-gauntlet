@@ -1,0 +1,17 @@
+# Local env — never commit this.
+.env
+
+# Python
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+
+# WORK_DIR: sources, chunk transcodes and stitched renditions. Media, not source
+# code — `make fixture` alone writes a multi-MB .mp4 here.
+/work/
+
+# memray's raw capture files — large, binary, and regenerated on demand. The
+# flamegraph from `make profile` is deliberately NOT ignored: the Definition of
+# done asks for it committed next to the numbers in docs/12-benchmarks.md.
+/memray-*.bin

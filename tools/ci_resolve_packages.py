@@ -27,9 +27,7 @@ from pathlib import Path
 # that no longer exists. The Python side is scoped by the `python` paths-filter
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
-    ("transcode-pipeline", "projects/12-transcode-pipeline"),
     ("live-ingest", "projects/13-live-ingest"),
-    ("live-platform", "projects/16-live-platform"),
     ("ledger-payments-core", "projects/18-ledger-payments-core"),
 ]
 
@@ -203,14 +201,14 @@ def self_test() -> int:
     # /pythonize conversion has to update this alongside PROJECTS.
     rust_all, pkgs, fes = resolve(
         [
-            "projects/12-transcode-pipeline/src/ffmpeg.rs",
+            "projects/18-ledger-payments-core/src/ledger.rs",
             "projects/06-object-store/web/src/App.tsx",
             "projects/13-live-ingest/src/rtmp.rs",
         ],
         force_all=False,
     )
     assert rust_all is False
-    assert pkgs == ["transcode-pipeline", "live-ingest"], pkgs
+    assert pkgs == ["live-ingest", "ledger-payments-core"], pkgs
     assert fes == ["projects/06-object-store/web"], fes
 
     # Frontend-only → no rust package for that project.
