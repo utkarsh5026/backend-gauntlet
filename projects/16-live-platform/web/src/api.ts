@@ -9,7 +9,7 @@ export type ChatMessage = {
   sent_at_ms: number
 }
 
-/** Loose view of `GET /status` (admin.rs). Fields firm up as you build the platform. */
+/** Loose view of `GET /status` (admin.py). Fields firm up as you build the platform. */
 export type PlatformStatus = {
   streams_live: number
   streams: unknown[]

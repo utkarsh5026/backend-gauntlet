@@ -37,6 +37,11 @@ blocked-on: ~            # free text, or ~ for none
 > shields the origin, and the chat fan-out that survives a hot channel. If a vertical tempts
 > you to re-solve a lower project, you've drifted — call into that project's idea instead.
 
+> **Python.** This project runs on CPython: FastAPI under uvicorn on uvloop, asyncpg, nats-py,
+> redis-py, pytest + httpx `ASGITransport`, pyright strict + ruff. `make verify` is the gate CI
+> runs. The boss-fight numbers are the same ones the Rust scaffold was set; where CPython
+> cannot reach one, the gap and its cause are the finding (see the Definition of done).
+
 ---
 
 ## Vertical challenges (build these yourself — this is the learning)
@@ -44,7 +49,7 @@ blocked-on: ~            # free text, or ~ for none
 ### V1. Stream control plane / session lifecycle — *the orchestrator*
 Something has to know that *"stream `abc123` is live, ingested on node-2, transcoded to a
 3-rung ladder, playing at `/live/abc123/…`"* — and keep that true as ingests start and stop.
-Build the state machine + registry in `src/control.rs`: a session walks
+Build the state machine + registry in `src/live_platform/control.py`: a session walks
 `Offline → Ingesting → Transcoding → Live → Ended`, and each transition fans work out to the
 other planes (enqueue transcode, register the edge route, open the chat channel) and cleans it
 up on teardown. Postgres is the source of truth so a control-plane restart *reconciles* live
@@ -64,10 +69,10 @@ streams instead of losing them.
 - [ ] `max_streams` is **enforced**: past the cap, a new ingest is rejected rather than
   degrading every existing stream.
 
-**Proof:** state-machine unit/property tests (legal-transition matrix + idempotent replay);
-an integration test that kills and restarts the control plane and asserts the registry
-reconciles from Postgres; `docs/16-design.md` names the transition side-effects and the
-lease/reconcile rule.
+**Proof:** state-machine unit and property tests (hypothesis: the legal-transition matrix +
+idempotent replay); an integration test that kills and restarts the control plane and asserts
+the registry reconciles from Postgres; `docs/16-design.md` names the transition side-effects
+and the lease/reconcile rule.
 
 *Concept to internalize:* orchestration as a state machine — idempotent transitions, a durable
 source of truth, and reconciliation (desired vs. actual) as the pattern that makes a
@@ -76,11 +81,11 @@ distributed system self-heal instead of drift.
 ### V2. Autoscaling transcode worker pool — *keep transcode ahead of demand*
 Transcoding the ABR ladder is the CPU-heavy, bursty part: one streamer going live can 10× the
 work in seconds. The workers run as a k8s Deployment that **autoscales**, and two things make
-that safe — both yours to build in `src/workers.rs`. **(1)** The autoscaler signal: HPA can't
-see "transcode backlog", so you expose *queue depth per worker* as a metric it scales on.
-**(2)** At-least-once leasing under pod churn: a worker *claims* a job under a visibility-timeout
-lease, so when HPA scales down (or a node preempts a pod) an in-flight job redelivers instead of
-vanishing — but a completed job acks exactly once.
+that safe — both yours to build in `src/live_platform/workers.py`. **(1)** The autoscaler
+signal: HPA can't see "transcode backlog", so you expose *queue depth per worker* as a metric it
+scales on. **(2)** At-least-once leasing under pod churn: a worker *claims* a job under a
+visibility-timeout lease, so when HPA scales down (or a node preempts a pod) an in-flight job
+redelivers instead of vanishing — but a completed job acks exactly once.
 
 **Done when ALL true:**
 - [ ] The control plane entering `Transcoding` **enqueues one job per ladder rung**; nothing on
@@ -107,14 +112,14 @@ loop between backlog and replicas — and why at-least-once work distribution ne
 and idempotent completion to survive the pod churn autoscaling *causes*.
 
 ### V3. LL-HLS edge delivery with request coalescing — *shield the origin, cut latency*
-Between the packager (origin) and thousands of viewers sits an edge, in `src/edge.rs`. Its job:
-serve the *same* freshly-produced bytes to a crowd without melting the origin, at low latency.
-Two subtleties. **(1)** Single-flight on a cold segment: the instant the playlist references a
-new partial, every viewer asks for it at once — if the edge doesn't have it, **exactly one** fill
-goes to origin and the rest wait on that fill (a cache stampede, now on video). **(2)** Blocking
-playlist reload: LL-HLS players long-poll the media playlist with `_HLS_msn`/`_HLS_part` — "hold
-the request open until media-sequence N part K exists, then return" — which is what pushes
-glass-to-glass toward ~2s instead of ~10s.
+Between the packager (origin) and thousands of viewers sits an edge, in
+`src/live_platform/edge.py`. Its job: serve the *same* freshly-produced bytes to a crowd without
+melting the origin, at low latency. Two subtleties. **(1)** Single-flight on a cold segment: the
+instant the playlist references a new partial, every viewer asks for it at once — if the edge
+doesn't have it, **exactly one** fill goes to origin and the rest wait on that fill (a cache
+stampede, now on video). **(2)** Blocking playlist reload: LL-HLS players long-poll the media
+playlist with `_HLS_msn`/`_HLS_part` — "hold the request open until media-sequence N part K
+exists, then return" — which is what pushes glass-to-glass toward ~2s instead of ~10s.
 
 **Done when ALL true:**
 - [ ] A cache **hit** serves a segment/partial from the edge and **does not touch origin**.
@@ -140,12 +145,12 @@ request for latency.
 
 ### V4. Chat & presence fan-out at scale — *survive the hot channel*
 Every live channel has a chat, and a viral stream puts 100k people in one room. This is project
-03's WebSocket fan-out, now multi-tenant and pushed hard, in `src/chat.rs`. The failure modes are
-about **isolation and backpressure**: one broadcast channel per stream (a firehose channel must
-not stall a quiet one); each subscriber has a bounded outbox and an explicit overflow policy (a
-viewer on hotel wifi is dropped, never allowed to back-pressure the broadcaster); presence counts
-per channel; and because the platform runs as many pods, a message on one pod reaches the others
-over a Redis bus with each pod dropping its own echoes.
+03's WebSocket fan-out, now multi-tenant and pushed hard, in `src/live_platform/chat.py`. The
+failure modes are about **isolation and backpressure**: one fan-out per stream (a firehose
+channel must not stall a quiet one); each subscriber has a bounded outbox and an explicit overflow
+policy (a viewer on hotel wifi is dropped, never allowed to back-pressure the broadcaster);
+presence counts per channel; and because the platform runs as many pods, a message on one pod
+reaches the others over a Redis bus with each pod dropping its own echoes.
 
 **Done when ALL true:**
 - [ ] A message posted in channel A reaches **A's subscribers only** — no cross-channel leakage.
@@ -183,8 +188,10 @@ Each item is **done when its criterion is observably true** — same rule as the
   validation + a player playing the stream, noted in `docs/16-design.md`.)*
 - [ ] **LL-HLS low latency:** blocking reload is used (not client polling), and the glass-to-glass
   target below is met. *(Proof: the boss fight.)*
-- [ ] **Graceful shutdown:** SIGTERM stops admitting new ingests, drains in-flight HTTP + chat
-  sockets, and lets in-flight transcodes finish or relinquish within the k8s grace period.
+- [ ] **Graceful shutdown:** SIGTERM stops admitting new ingests, drains in-flight HTTP (including
+  held playlist reloads) + chat sockets through uvicorn's graceful shutdown and the FastAPI
+  lifespan, and lets in-flight transcodes finish or relinquish within the k8s grace period.
+  *(Proof: a `docker stop` / pod deletion that reaches `shutdown complete` with no dropped job.)*
 
 ### Caching / delivery
 - [ ] Edge single-flight (V3) collapses a herd to ≤1 origin fill.
@@ -205,9 +212,12 @@ Each item is **done when its criterion is observably true** — same rule as the
   an allowlist/shape — no path traversal into the origin/edge store. *(Proof: traversal-reject test.)*
 
 ### Observability
-- [ ] `tracing` span per request with a request id (via `common-telemetry`).
+- [ ] A structured log line per request carrying a request id (via
+  `common_telemetry.RequestIdMiddleware`), with per-stream context bound through
+  `structlog.contextvars` so every line about one stream can be pulled out of the firehose.
 - [ ] **Glass-to-glass latency is measured** end-to-end (capture ts → playable at edge) and exported
-  as a histogram — the number the boss fight judges. *(Proof: `live_glass_to_glass_ms` in `/metrics`.)*
+  as a histogram — the number the boss fight judges. *(Proof: `live_glass_to_glass_seconds` in
+  `/metrics`.)*
 - [ ] Per-plane metrics at `/metrics`: streams live, **transcode queue depth + desired replicas**,
   edge hit ratio + origin fills, chat connections + slow drops. *(Proof: `/metrics` render test.)*
 
@@ -220,6 +230,38 @@ Each item is **done when its criterion is observably true** — same rule as the
   on the workers so a drain doesn't evict everything at once.
 - [ ] Reproducible: `docs/16-design.md` documents the deploy (local `kind`/`minikube` is fine).
 
+### Python (the day-job axis)
+- [ ] **pyright strict passes clean** — every `# type: ignore` / `# pyright: ignore` carries a
+  comment saying what claim it makes. *(Proof: `make types` is green; each ignore reads as a
+  decision.)*
+- [ ] **No blocking call on the event loop** — the server runs clean under `PYTHONASYNCIODEBUG=1`,
+  which logs any callback holding the loop past 100 ms. This matters more here than in a
+  request/response service: every held-open playlist reload, every chat socket, every origin fill
+  and the ingest webhook share **one** thread, so a fan-out loop that holds the loop for 200 ms
+  delays every playlist in the process by 200 ms. *(Proof: a boss-fight run under the debug flag
+  with no slow-callback warnings, or each one explained.)*
+- [ ] **Pools sized on purpose, together** — `DB_MAX_CONNECTIONS` × uvicorn workers × API pod
+  replicas stays under Postgres `max_connections` *at the HPA's maximum*, not just at rest; the
+  origin HTTP client's connection limit is chosen against the fill concurrency single-flight
+  leaves. Autoscaling moves one term of that product at runtime, which is exactly when a bound
+  nobody picked turns into "too many clients already". *(Proof: `docs/16-design.md` names each
+  number and the arithmetic behind it.)*
+- [ ] **Bounded structures are bounded in fact, not in intention** — a chat outbox holds its cap
+  under a firehose, the edge's in-flight map returns to empty after a failed fill (not just a
+  successful one), and a channel with no subscribers is removed rather than kept. Python makes
+  each of these easy to get wrong quietly, because nothing destroys an object you forgot to
+  remove. *(Proof: a test per structure that floods or fails it and asserts `len(...)` holds or
+  returns to zero, plus flat RSS in the boss fight.)*
+- [ ] **The container boots under uvloop** — `docker build` produces a runnable image, `/healthz`
+  answers inside it, and `docker stop` reaches `shutdown complete` inside the grace period. The
+  only check that exercises uvloop and PID-1 signal handling; `make verify` sees neither.
+  *(Proof: the build and the stop, noted in `docs/16-design.md`.)*
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in
+  `docs/16-benchmarks.md`, naming the top bottleneck. The candidates worth looking for by name:
+  per-subscriber serialization inside the fan-out loop, future/task churn per coalesced request,
+  and GC pauses under 100k outboxes' worth of allocation. *(Proof: the flamegraph, and one
+  sentence on what it changed.)*
+
 ---
 
 ## Definition of done
@@ -231,8 +273,13 @@ The project is **done when ALL true:**
    rule** (V1), the **transcode lease + autoscale signal** (V2), the **single-flight + blocking-
    reload strategy** (V3), the **chat overflow policy + cross-node bus** (V4), and the **playback
    auth** call.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p live-platform` are green; no
-   `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` → `ruff check` → `pyright` (strict) →
+   `pytest` — and no `raise NotImplementedError` remains on a checked path.
+5. The **profile** is committed alongside the numbers: a `py-spy` flamegraph and a `memray` run in
+   `docs/16-benchmarks.md`, naming the top bottleneck. Numbers alone do not close this — you have
+   to know *why* they are what they are. Where CPython cannot reach a boss-fight target, **the gap
+   and its cause are the finding** (GIL contention? GC pauses? per-subscriber allocation? a
+   blocking call on the loop?), recorded rather than designed around.
 
 ## 🐉 Boss fight — The Viral Spike
 
@@ -243,10 +290,11 @@ The project is **done when ALL true:**
 > once. Glass-to-glass must stay low, the origin must not fall over, and chat must not melt — all
 > while pods are being added under you. Beat the spike without dropping the stream.
 
-**Arena:** `bench/` load test (`k6` / `oha` for HTTP playback + a WS load tool for chat) against a
-**release build** deployed to a local k8s (`kind`/`minikube`) with Postgres + Redis + NATS up and
-the HPA active. Drive a viewer ramp (200 → 100k over 30s) on one hot stream while transcode load
-scales, plus a cold-partial stampede scenario and a chat-firehose scenario.
+**Arena:** `bench/` load test (`k6` / `oha` for HTTP playback + a WS load tool for chat) against the
+**production container** (uvicorn on uvloop, `make verify`-clean) deployed to a local k8s
+(`kind`/`minikube`) with Postgres + Redis + NATS up and the HPA active. Drive a viewer ramp
+(200 → 100k over 30s) on one hot stream while transcode load scales, plus a cold-partial stampede
+scenario and a chat-firehose scenario.
 
 **The boss falls when ALL true:**
 - [ ] **Glass-to-glass p95 ≤ 3s** on LL-HLS playback sustained through the ramp (and the stream
@@ -274,10 +322,12 @@ the queue-depth/replica timeline captured, commands reproducible via `bench/`).
 5. **V4** — bring chat over from project 03, shard per channel, add the bus + presence.
 6. **Ship it** — k8s manifests, HPA, probes, PDB. Then benchmark the Viral Spike, document, tune.
 
-## Run the dependencies
+## Run it
 ```bash
-docker compose up -d        # postgres + redis + nats
-cp .env.example .env        # then fill in values
-sqlx migrate run            # apply migrations (install: cargo install sqlx-cli)
-cargo run -p live-platform
+make setup                  # copy .env.example → .env
+make sync                   # uv: install the workspace venv from uv.lock
+make dev                    # postgres + redis + nats up → migrate → seed 'demo' → run
+make ingest                 # POST /ingest/start for 'demo' — 501 names the V1 todo
+make play                   # GET the master playlist — 501 names the V3 todo
+make verify                 # fmt-check → lint → types → test (what CI runs)
 ```
