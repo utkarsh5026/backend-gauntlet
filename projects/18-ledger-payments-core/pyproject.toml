@@ -1,0 +1,85 @@
+[project]
+name = "ledger-payments-core"
+version = "0.1.0"
+description = "Stripe-lite payments core: an append-only double-entry ledger, transfers that stay correct under concurrency, idempotency keys, and signed webhooks through a transactional outbox (project 18)."
+requires-python = ">=3.13"
+dependencies = [
+    "common-config",
+    "common-telemetry",
+    # The HTTP API. uvicorn[standard] brings uvloop, the production loop.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    # Postgres is the transactional source of truth: accounts, immutable entries,
+    # the idempotency record, and the webhook outbox. Raw asyncpg with
+    # parameterized SQL rather than an ORM, deliberately: V2's lesson *is* the
+    # isolation level a transaction runs under and the statement that reads the
+    # balance inside it, V3's is a reservation insert that exactly one racer wins,
+    # V4's is a `FOR UPDATE SKIP LOCKED` claim. An ORM hides every one of them.
+    "asyncpg>=0.30",
+    # The idempotency response cache (V3). A cache, never the record: Postgres
+    # holds that, so Redis being down degrades to a Postgres read, never to a
+    # double charge.
+    "redis>=5.2",
+    # Outbound webhook delivery (V4): an async client with real timeouts, so a slow
+    # merchant endpoint costs one delivery, never the event loop.
+    "httpx>=0.28",
+    "prometheus-client>=0.21",
+    "structlog>=24.4",
+]
+# Deliberately absent: any ledger/accounting library, a webhook-signing package,
+# and a retry library (tenacity, backoff). The retry loops in V2 and V4 are graded
+# designs, not a decorator, and the standard library already has everything V4's
+# signature needs.
+
+[project.scripts]
+# Same name the Rust binary had, so the Makefile and Dockerfile read the same as
+# every other project in the gauntlet.
+ledger-payments-core = "ledger_payments_core.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    # V1's Proof is a property test over random balanced batches, and V4's backoff
+    # curve wants one too. hypothesis replaces the Rust side's `proptest`.
+    "hypothesis>=6.115",
+    "asyncpg-stubs>=0.30",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    # The profiling gate in the Definition of done: numbers alone do not close it.
+    "py-spy>=0.4",
+    "memray>=1.14",
+]
+
+[tool.uv.sources]
+common-config = { workspace = true }
+common-telemetry = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ledger_payments_core"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
