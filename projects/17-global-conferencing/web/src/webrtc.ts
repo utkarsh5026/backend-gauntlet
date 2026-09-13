@@ -1,7 +1,7 @@
 // The browser side of the conference. Camera + the simulcast announcement are
 // wired; the media path reuses the project-15 SFU, so — as in 15 — establishing
 // it is your work. Project 17 adds the *federation* on top (which region anchors
-// the room, when a cascade leg is needed), and that lives in the Rust backend.
+// the room, when a cascade leg is needed), and that lives in the Python backend.
 
 import type { SimulcastLayer } from '@/api'
 

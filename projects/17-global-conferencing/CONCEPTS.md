@@ -17,7 +17,7 @@
 
 ---
 
-## 🧠 Card 1 — Room placement is a consensus problem *(V1 · `src/placement.rs`)*
+## 🧠 Card 1 — Room placement is a consensus problem *(V1 · `src/global_conferencing/placement.py`)*
 
 **The problem.** Two people create room `standup-42` at the same instant — one via Tokyo, one via Frankfurt. If each SFU independently declares itself home, you get two disjoint conferences under one name: a **split room**, conferencing's split-brain — participants in the "same" meeting who can never see each other, with no principled merge. A cache, a "first-writer-wins" race, or a gossip rumor can all silently produce it.
 
@@ -40,7 +40,7 @@
 
 ---
 
-## 🧠 Card 2 — The relay mesh: forward once, loop never *(V2 · `src/cascade.rs`)*
+## 🧠 Card 2 — The relay mesh: forward once, loop never *(V2 · `src/global_conferencing/cascade.py`)*
 
 **The problem.** A Frankfurt subscriber wants a Tokyo publisher's stream. Naively the Tokyo SFU sends one copy per Frankfurt viewer across the ocean — the exact per-subscriber egress the cascade exists to kill. And once SFUs forward to each other, a new correctness hazard appears that single-SFU systems never face: **loops**. A relayed packet forwarded onward (or back) circulates a 3-region mesh forever, amplifying itself into a backbone-melting storm.
 
@@ -63,7 +63,7 @@
 
 ---
 
-## 🧠 Card 3 — Cross-region layer routing: the union of demand *(V3 · `src/routing.rs`)*
+## 🧠 Card 3 — Cross-region layer routing: the union of demand *(V3 · `src/global_conferencing/routing.py`)*
 
 **The problem.** Frankfurt has a fibre viewer (wants high) and a mobile viewer (wants low). What does the Tokyo→Frankfurt leg carry? One layer starves somebody; all three wastes an ocean crossing on the mid layer nobody there watches. Project 15 answered "which layer per *subscriber*"; the cascade asks the same question one tier up — per *internal edge of the tree* — and the answer is different.
 
@@ -86,7 +86,7 @@
 
 ---
 
-## 🧠 Card 4 — Recording: a durable subscriber, not a side-channel *(V4 · `src/recording.rs`)*
+## 🧠 Card 4 — Recording: a durable subscriber, not a side-channel *(V4 · `src/global_conferencing/recording.py`)*
 
 **The problem.** "Record the meeting" tempts you toward a special tap inside the SFU — a second media path with its own bugs, its own scaling, its own blind spots. And recording has a genuinely new sub-problem: each publisher's RTP timestamps sit on their *own* clock with arbitrary origin, so laying N tracks on one playback timeline is impossible from RTP timestamps alone.
 

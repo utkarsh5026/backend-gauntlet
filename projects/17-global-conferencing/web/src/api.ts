@@ -3,7 +3,7 @@
 // whole cluster's view. publish/subscribe work as fetch calls; the media flow is
 // the reused project-15 SFU work (see webrtc.ts).
 
-/** Mirrors `placement::RoomPlacement`. `active_regions` is a set → JSON array. */
+/** Mirrors `placement.RoomPlacement`. `active_regions` is a set → sorted JSON array. */
 export type RoomPlacement = {
   room_id: string
   home_region: string
@@ -11,7 +11,7 @@ export type RoomPlacement = {
   epoch: number
 }
 
-/** Mirrors `cascade::RelayLink` — one inter-SFU backbone leg. */
+/** Mirrors `cascade.RelayLeg` — one inter-SFU backbone leg. */
 export type RelayLink = {
   region: string
   remote_addr: string

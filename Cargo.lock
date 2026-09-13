@@ -632,32 +632,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "global-conferencing"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "chrono",
- "common-config",
- "common-telemetry",
- "metrics",
- "metrics-exporter-prometheus",
- "proptest",
- "rand 0.9.4",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tower-http",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3040,10 +3014,8 @@ dependencies = [
  "futures-sink",
  "futures-task",
  "futures-util",
- "getrandom 0.2.17",
  "hyper",
  "hyper-util",
- "indexmap",
  "libc",
  "log",
  "memchr",
@@ -3062,7 +3034,6 @@ dependencies = [
  "syn",
  "sync_wrapper",
  "tokio",
- "tokio-util",
  "tower",
  "tower-http",
  "tracing",
