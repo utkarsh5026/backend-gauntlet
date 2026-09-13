@@ -4,7 +4,6 @@ members = [
     "crates/common-telemetry",
     "crates/common-config",
     "crates/workspace-hack",
-    "projects/12-transcode-pipeline",
     "projects/13-live-ingest",
     "projects/18-ledger-payments-core",
 ]

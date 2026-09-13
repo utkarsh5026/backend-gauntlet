@@ -7,9 +7,9 @@
 > to a checklist item in [SPEC.md](../SPEC.md) and to real code in this
 > scaffold. No prior knowledge assumed.
 >
-> Anchored to: [src/routes.rs](../src/routes.rs), [src/job.rs](../src/job.rs),
-> [src/ffmpeg.rs](../src/ffmpeg.rs), [src/worker.rs](../src/worker.rs),
-> [src/main.rs](../src/main.rs).
+> Anchored to: [routes.py](../src/transcode_pipeline/routes.py), [store.py](../src/transcode_pipeline/store.py),
+> [workdir.py](../src/transcode_pipeline/workdir.py), [ffmpeg.py](../src/transcode_pipeline/ffmpeg.py),
+> [worker.py](../src/transcode_pipeline/worker.py), [main.py](../src/transcode_pipeline/main.py).
 
 ---
 
@@ -27,9 +27,9 @@ GET  /jobs/{unknown}  ─▶ 404                           clean, not a 500
 `202` means exactly one thing: *accepted for processing, not done* — the
 opposite of `201 Created` (the resource exists now). What makes `202` honest is
 the **pollable resource** that comes with it: the job id plus
-`GET /jobs/{id}`'s per-status task counts ([`TaskCounts`](../src/job.rs)) let a
+`GET /jobs/{id}`'s per-status task counts ([`TaskCounts`](../src/transcode_pipeline/models.py)) let a
 dashboard literally watch the DAG drain. The wired handler in
-[`routes.rs`](../src/routes.rs) already returns `StatusCode::ACCEPTED`; what
+[`routes.py`](../src/transcode_pipeline/routes.py) already declares `status_code=202`; what
 makes it *true* is your V2 `submit` recording the job durably before the 202
 leaves the building.
 
@@ -54,8 +54,8 @@ argv vector:     execve("ffmpeg", ["-i", "bbb.mp4; rm -rf \"$WORK_DIR\"", …])
 
 A shell *interprets* metacharacters (`;`, `|`, `$()`, quotes); an argv vector is
 handed to the kernel as inert strings. The scaffold already funnels every
-invocation through [`ffmpeg::run(bin, &[String])`](../src/ffmpeg.rs) —
-`tokio::process::Command` with `.args(...)`, no shell anywhere. Your job in V3/V4
+invocation through [`ffmpeg.run(bin, args)`](../src/transcode_pipeline/ffmpeg.py) —
+`asyncio.create_subprocess_exec(bin, *args)`, no shell anywhere. Your job in V3/V4
 is to keep it that way: *build vectors, never format command strings*. The
 checklist's second half — validate and bound the inputs (ladder height/bitrate
 ranges, name shapes) — is defense in depth on top.
@@ -65,17 +65,17 @@ ranges, name shapes) — is defense in depth on top.
 `POST /jobs` takes a `source` path and workers open it. Unchecked, that's a
 read-anything primitive:
 
-| Client sends | Naive `work_dir.join(source)` resolves to |
+| Client sends | Naive `work_dir / source` resolves to |
 | --- | --- |
 | `bbb.mp4` | `WORK_DIR/bbb.mp4` ✓ |
-| `../../etc/passwd` | `/etc/passwd` — `join` happily walks up |
+| `../../etc/passwd` | `/etc/passwd` — `/` happily walks up |
 | `/etc/shadow` | `/etc/shadow` — joining an *absolute* path **replaces** the base |
 | `link.mp4 → /etc/passwd` | a symlink laundering the same escape past a string check |
 
-Two non-obvious rules there: `PathBuf::join` with an absolute path *discards*
+Two non-obvious rules there: `Path`'s `/` with an absolute path *discards*
 the base entirely, and string inspection can't see symlinks — only resolving
 the real path can. The guard lives in
-[`PipelineConfig::resolve_source`](../src/job.rs) (a `todo!()` stub, so the
+[`WorkDir.resolve_source`](../src/transcode_pipeline/workdir.py) (a stub that raises, so the
 wiring type-checks): resolve the candidate to its canonical real path and reject
 anything not under `work_dir`. Failure mode matters too — a bad path is a clean
 `400`/`404`, never a 500 and never an error message that echoes what the probe
@@ -109,10 +109,11 @@ counters, not vibes. Work backwards from the questions to the instruments:
 | "Are workers starving or drowning?" | **Gauges**: ready vs running queue depth, worker utilization |
 | "Did the dead worker's task get rescued?" | **Counter**: leases reclaimed — the reaper's scoreboard |
 | "Did recovery redo finished work?" | **Counters**: task attempts + chunk cache hits — "no re-transcode waste" is *these two numbers* |
-| "What happened to chunk 17, rendition 720p?" | **Span per task** carrying `job_id`, `task_id`, `kind` — one chunk's whole journey, greppable |
+| "What happened to chunk 17, rendition 720p?" | **Log context per task** carrying `job_id`, `task_id`, `kind` — one chunk's whole journey, greppable |
 
-The span plumbing comes from `common-telemetry` (see
-[`main.rs`](../src/main.rs)); the discipline is *cardinality and hygiene*: label
+The logging plumbing comes from `common_telemetry` — structlog, with `job_id`
+and `task_id` bound onto each task's logger (see
+[`main.py`](../src/transcode_pipeline/main.py)); the discipline is *cardinality and hygiene*: label
 by kind and outcome, never by unbounded values, and — per the checklist — never
 log source paths at info level or ffmpeg's full stderr except on error (stderr
 can embed the full command line, paths included).
@@ -121,8 +122,8 @@ can embed the full command line, paths included).
 
 SIGTERM arrives (a deploy, a scale-down). The wrong response is `exit(0)` with
 eight encodes in flight. The right sequence is already shaped by the scaffold's
-`watch::Receiver<bool>` shutdown channel threaded through
-[`Worker::run`](../src/worker.rs) and [`schedule_loop`](../src/dag.rs):
+`asyncio.Event` shutdown flag threaded through
+[`Worker.run`](../src/transcode_pipeline/worker.py) and [`schedule_loop`](../src/transcode_pipeline/dag.py):
 
 ```
 SIGTERM
@@ -145,17 +146,17 @@ settle).
 | Fundamental | The one-liner |
 | --- | --- |
 | `202` + pollable resource | Record durably, answer immediately, let callers watch the DAG drain |
-| Argv, never shell | The kernel doesn't parse `;` — only a shell does; keep every invocation inside `ffmpeg::run` |
-| Traversal guard | `join` betrays you on `..` and absolute paths; canonicalize, then require the `WORK_DIR` prefix |
+| Argv, never shell | The kernel doesn't parse `;` — only a shell does; keep every invocation inside `ffmpeg.run` |
+| Traversal guard | `/` betrays you on `..` and absolute paths; canonicalize, then require the `WORK_DIR` prefix |
 | Auth on submit | An open transcode endpoint is free compute + a DoS multiplier; bound the ladder too |
-| Straggler observability | Histogram (tail), gauges (depth/utilization), counters (reclaims, attempts, cache hits), a span per task |
+| Straggler observability | Histogram (tail), gauges (depth/utilization), counters (reclaims, attempts, cache hits), a log context per task |
 | Graceful shutdown | Stop claiming → drain → let leases cover whatever's left; grace is an optimization over crash-safety |
 
 ## 8. Where these land
 
 No single module — that's the point of "woven through": the auth + validation
-TODO sits on [`submit`](../src/routes.rs), the traversal `todo!()` in
-[`resolve_source`](../src/job.rs), argv discipline inside your V3/V4 ffmpeg
+TODO sits on [`submit`](../src/transcode_pipeline/routes.py), the traversal stub in
+[`resolve_source`](../src/transcode_pipeline/workdir.py), argv discipline inside your V3/V4 ffmpeg
 calls, metrics beside each store transition, and shutdown ordering in
-[`main.rs`](../src/main.rs)'s wiring. Each checklist box flips only when its
+[`main.py`](../src/transcode_pipeline/main.py)'s wiring. Each checklist box flips only when its
 criterion is *observably* true — same rule as the verticals.

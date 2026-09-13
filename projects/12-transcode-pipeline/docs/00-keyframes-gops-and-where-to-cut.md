@@ -7,10 +7,10 @@
 >
 > This prepares you for **V1 (keyframe-aligned chunking)** in
 > [SPEC.md](../SPEC.md). The function you'll write is
-> [`plan_chunks`](../src/chunk.rs) in [src/chunk.rs](../src/chunk.rs) — currently a
-> `todo!()`. Its inputs come from the already-wired
-> [`ffmpeg::probe_keyframes`](../src/ffmpeg.rs) and
-> [`ffmpeg::probe_duration`](../src/ffmpeg.rs). This doc teaches the concept and
+> [`plan_chunks`](../src/transcode_pipeline/chunk.py) in [src/transcode_pipeline/chunk.py](../src/transcode_pipeline/chunk.py) — currently
+> unbuilt. Its inputs come from the already-wired
+> [`ffmpeg.probe_keyframes`](../src/transcode_pipeline/ffmpeg.py) and
+> [`ffmpeg.probe_duration`](../src/transcode_pipeline/ffmpeg.py). This doc teaches the concept and
 > the invariants; it does **not** write the policy for you — that's the vertical.
 
 ---
@@ -87,7 +87,7 @@ A plain (non-IDR) I-frame permits later frames to reach back across it — that'
 **open GOP**, and cutting at such an I-frame still leaves dangling references. A
 **closed GOP** is one no frame reaches across. When this doc (and the code) says
 "keyframe", it means an IDR — the wired
-[`probe_keyframes`](../src/ffmpeg.rs) asks ffprobe for exactly the frames a
+[`probe_keyframes`](../src/transcode_pipeline/ffmpeg.py) asks ffprobe for exactly the frames a
 decoder may start at (`-skip_frame nokey`).
 
 ---
@@ -119,10 +119,10 @@ Here is the design win the concept card asks you to internalize:
 **deciding where to cut requires no media I/O at all.** The probe (wired for you)
 reduces the entire 4 GB source to two small values:
 
-- `keyframes: Vec<f64>` — ascending timestamps of every safe entry point
-- `duration: f64` — total length in seconds
+- `keyframes: list[float]` — ascending timestamps of every safe entry point
+- `duration: float` — total length in seconds
 
-From there, [`plan_chunks(keyframes, duration, target_secs)`](../src/chunk.rs) is
+From there, [`plan_chunks(keyframes, duration, target_secs)`](../src/transcode_pipeline/chunk.py) is
 a **pure function** — no clock, no filesystem, no ffmpeg. That purity buys you:
 
 1. **Exhaustive testing.** Property tests can throw thousands of random keyframe
@@ -172,14 +172,14 @@ The SPEC calls these out because they're where naive loops panic or emit garbage
 | `target_secs` > duration | One chunk `[0.0, duration)` |
 | Keyframes listed *past* the duration | Never a boundary beyond `duration`, still gapless and total |
 
-The rule of thumb: any input collapses to *at least one valid chunk*, never a
-panic, never an empty plan for a non-empty source.
+The rule of thumb: any input collapses to *at least one valid chunk*, never an
+exception, never an empty plan for a non-empty source.
 
 ---
 
 ## 5. The design space (yours to decide)
 
-The scaffold's doc comment on [`plan_chunks`](../src/chunk.rs) sketches the shape
+The scaffold's docstring on [`plan_chunks`](../src/transcode_pipeline/chunk.py) sketches the shape
 of a greedy walk, but several decisions are genuinely yours, and
 `docs/12-design.md` must record the policy you pick:
 
@@ -193,13 +193,13 @@ of a greedy walk, but several decisions are genuinely yours, and
   parallelism and smaller straggler cost (V3's boss fight), but more per-task
   overhead (process spawn, DB rows, claim round-trips) and more seams for V4 to
   get right. Where's the knee? The default lives in
-  [`PipelineConfig::target_chunk_secs`](../src/job.rs).
+  [`Settings.target_chunk_secs`](../src/transcode_pipeline/config.py).
 - **The last sliver.** A source ending 0.3 s after its final keyframe produces a
   tiny tail chunk. Merge it into its neighbor or keep it? Either is valid if the
   invariants hold — but decide on purpose.
 
-When you can articulate why you chose each of these, you're ready to write the
-`todo!()`. If you get stuck, `/hint` gives graduated nudges and `/quest` runs the
+When you can articulate why you chose each of these, you're ready to write
+`plan_chunks`. If you get stuck, `/hint` gives graduated nudges and `/quest` runs the
 guided build — this doc deliberately stops at the door.
 
 ---
@@ -218,14 +218,14 @@ guided build — this doc deliberately stops at the door.
 
 ## 7. Where you'll build this
 
-- **Module:** [src/chunk.rs](../src/chunk.rs) — the `todo!()` in
-  [`plan_chunks`](../src/chunk.rs), plus the property tests sketched in its
-  `#[cfg(test)]` block (`prop_chunks_are_keyframe_aligned`,
-  `prop_chunks_cover_source`).
+- **Module:** [src/transcode_pipeline/chunk.py](../src/transcode_pipeline/chunk.py) — the unbuilt
+  [`plan_chunks`](../src/transcode_pipeline/chunk.py), plus the hypothesis property tests sketched in its
+  module docstring (`test_chunks_are_keyframe_aligned`,
+  `test_chunks_cover_source`).
 - **Unlocks (V1 "Done when ALL true"):** boundaries-are-keyframes ·
   gapless-and-total coverage · lengths cluster around `target_secs` with GOP
   overshoot allowed · ascending `0..n` indices · degenerate inputs yield one
-  valid chunk, never a panic.
-- **Feeds:** V2's `dag::expand` consumes the plan's chunk count; V3 transcodes
+  valid chunk, never an exception.
+- **Feeds:** V2's `dag.expand` consumes the plan's chunk count; V3 transcodes
   each `[start, end)` span; V4's seamless remux is only *possible* because these
   boundaries are keyframes.

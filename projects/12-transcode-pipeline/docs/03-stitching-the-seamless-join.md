@@ -6,11 +6,11 @@
 > knowledge assumed.
 >
 > This prepares you for **V4 (stitch + remux)** in [SPEC.md](../SPEC.md). You'll
-> write [`stitch`](../src/stitch.rs) in [src/stitch.rs](../src/stitch.rs) — the
+> write [`stitch`](../src/transcode_pipeline/stitch.py) in [src/transcode_pipeline/stitch.py](../src/transcode_pipeline/stitch.py) — the
 > "reduce" that joins V3's fan-out, invoked by the wired `Stitch` arm of
-> [`Worker::execute`](../src/worker.rs) over the files in
-> [`chunk_dir`](../src/job.rs), landing at
-> [`rendition_output`](../src/job.rs). This doc teaches why seams exist and what
+> [`Worker.execute`](../src/transcode_pipeline/worker.py) over the files in
+> [`chunk_dir`](../src/transcode_pipeline/workdir.py), landing at
+> [`rendition_output`](../src/transcode_pipeline/workdir.py). This doc teaches why seams exist and what
 > "seamless" means observably; the concat method is yours to choose.
 
 ---
@@ -158,7 +158,7 @@ streams, not just `v:0`.
 The card's trap: a half-second seam at minute 37 of the 480p rendition will
 never be caught by watching. "No seam" must be *machine-checkable*, and it is —
 every property above is observable with ffprobe (the same tool
-[`probe_keyframes`](../src/ffmpeg.rs) already wraps: frame-level
+[`probe_keyframes`](../src/transcode_pipeline/ffmpeg.py) already wraps: frame-level
 `pts_time` dumps and `format=duration` are all you need). The SPEC's tests:
 
 | Test | Asserts |
@@ -171,7 +171,7 @@ every property above is observable with ffprobe (the same tool
 That last row: the stitch is a task like any other, run under V3's at-least-once
 regime — a lease can expire mid-stitch and a second stitch can run. Same
 discipline as doc 02: write to a temp path, `rename` into
-[`rendition_output`](../src/job.rs), deterministic output. A crashed stitch must
+[`rendition_output`](../src/transcode_pipeline/workdir.py), deterministic output. A crashed stitch must
 never publish a partial `out.mp4` — that file is the *product*, the thing
 project 11 packages.
 
@@ -190,10 +190,10 @@ project 11 packages.
 
 ## 8. Where you'll build this
 
-- **Module:** [src/stitch.rs](../src/stitch.rs) — the `todo!()` in
-  [`stitch`](../src/stitch.rs) (order numerically → concat/remux with continuous
-  PTS → temp→rename), with [`ffmpeg::run`](../src/ffmpeg.rs) as the hammer and
-  the test sketch in its `#[cfg(test)]` block.
+- **Module:** [src/transcode_pipeline/stitch.py](../src/transcode_pipeline/stitch.py) — the unbuilt
+  [`stitch`](../src/transcode_pipeline/stitch.py) (order numerically → concat/remux with continuous
+  PTS → temp→rename), with [`ffmpeg.run`](../src/transcode_pipeline/ffmpeg.py) as the hammer and
+  the test sketch in its module docstring.
 - **Unlocks (V4 "Done when ALL true"):** numeric join order · monotonic, gapless
   PTS across every boundary · total duration within one frame · A/V sync held ·
   remux-not-re-encode, idempotent + atomic.

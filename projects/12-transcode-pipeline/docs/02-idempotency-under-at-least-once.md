@@ -8,11 +8,11 @@
 >
 > This prepares you for **V3 (parallel transcode workers)** in
 > [SPEC.md](../SPEC.md). You'll write
-> [`Worker::transcode_chunk`](../src/worker.rs) in
-> [src/worker.rs](../src/worker.rs) and the V3 store methods in
-> [src/job.rs](../src/job.rs) ([`claim_ready`](../src/job.rs),
-> [`complete`](../src/job.rs), [`fail`](../src/job.rs),
-> [`reclaim_expired`](../src/job.rs)). This doc teaches why the safety rules
+> [`Worker.transcode_chunk`](../src/transcode_pipeline/worker.py) in
+> [src/transcode_pipeline/worker.py](../src/transcode_pipeline/worker.py) and the V3 store methods in
+> [src/transcode_pipeline/store.py](../src/transcode_pipeline/store.py) ([`claim_ready`](../src/transcode_pipeline/store.py),
+> [`complete`](../src/transcode_pipeline/store.py), [`fail`](../src/transcode_pipeline/store.py),
+> [`reclaim_expired`](../src/transcode_pipeline/store.py)). This doc teaches why the safety rules
 > exist; the ffmpeg invocation and the SQL are yours.
 
 ---
@@ -30,10 +30,10 @@ half covers the failure the other can't.**
 
 The lease machinery you built in project 04 comes back verbatim (the SPEC says
 so): a worker claims a `Ready` task with `FOR UPDATE SKIP LOCKED`, stamping
-`lease_until = now() + lease` ([`claim_ready`](../src/job.rs)); a reaper flips
+`lease_until = now() + lease` ([`claim_ready`](../src/transcode_pipeline/store.py)); a reaper flips
 expired `Running` tasks back to `Ready`
-([`reclaim_expired`](../src/job.rs), called by the wired
-[`schedule_loop`](../src/dag.rs)).
+([`reclaim_expired`](../src/transcode_pipeline/store.py), called by the wired
+[`schedule_loop`](../src/transcode_pipeline/dag.py)).
 
 That machinery *guarantees* recovery: a dead worker's chunk is re-claimable, the
 fan-in stitch isn't stranded, the boss's straggler is survivable. But read the
@@ -98,7 +98,7 @@ What breaks determinism in practice (the card's "what would break" list):
 - **Anything random** — seeds, unordered maps feeding option strings, temp names
   leaking into metadata.
 
-The `todo!()`'s comment says it plainly: fixed encoder settings, no
+The `transcode_chunk` docstring says it plainly: fixed encoder settings, no
 wall-clock/random metadata. Which ffmpeg flags achieve that is part of the
 vertical — the *test* is already specified (`transcode_is_deterministic`:
 transcode a chunk twice, compare bytes).
@@ -131,7 +131,7 @@ Once "exists at final path" is a sound marker, the horizontal checklist's cache
 item costs one `if`: a task whose output already exists skips the encode
 entirely. This is what makes at-least-once *cheap*, not just safe:
 
-- Worker died *after* rename but *before* [`store.complete`](../src/job.rs)
+- Worker died *after* rename but *before* [`store.complete`](../src/transcode_pipeline/store.py)
   acked? The retry hits the marker and completes in milliseconds.
 - The boss fight's "no re-transcode waste" criterion — recovery re-runs **only**
   the dead worker's in-flight chunk — is proven by exactly this plus the
@@ -160,7 +160,7 @@ and a 16-core box is running 300 encoders:
 The fix is structural, and you already have it: **workers only claim one task at
 a time**. N workers ⇒ at most N concurrent encodes, no matter how deep the ready
 queue gets. The pool size *is* the backpressure valve — sized to the box, not to
-the backlog. The wired loop in [`Worker::run`](../src/worker.rs) already
+the backlog. The wired loop in [`Worker.run`](../src/transcode_pipeline/worker.py) already
 enforces claim-run-settle-repeat; your job is to not defeat it (e.g. by spawning
 unawaited encodes).
 
@@ -174,14 +174,14 @@ bandwidth shared by every worker.
 
 Not every failure is a crash. A corrupt source region fails the encode
 *deterministically* — retrying forever burns the pool on a chunk that will never
-succeed. So [`fail`](../src/job.rs) settles a failed attempt by policy:
+succeed. So [`fail`](../src/transcode_pipeline/store.py) settles a failed attempt by policy:
 
 ```
 attempts < max_attempts  →  back to Ready (with backoff — don't hammer)
 attempts ≥ max_attempts  →  Failed        (dead-letter; the job fails cleanly)
 ```
 
-`max_attempts` lives in [`PipelineConfig`](../src/job.rs); `attempts` is bumped
+`max_attempts` lives in [`Settings`](../src/transcode_pipeline/config.py); `attempts` is bumped
 at claim time. The design decisions left to you: where backoff lives (the lease?
 a delay column? the scheduler?), and what "cleanly" means for the failed job's
 sibling tasks — your V2 status projection already constrains the answer.
@@ -201,11 +201,11 @@ sibling tasks — your V2 status projection already constrains the answer.
 
 ## 8. Where you'll build this
 
-- **Module:** [src/worker.rs](../src/worker.rs) — the `todo!()` in
-  [`transcode_chunk`](../src/worker.rs) (cut one chunk's `[start, end)`, encode
+- **Module:** [src/transcode_pipeline/worker.py](../src/transcode_pipeline/worker.py) — the unbuilt
+  [`transcode_chunk`](../src/transcode_pipeline/worker.py) (cut one chunk's `[start, end)`, encode
   one rung, deterministically, temp→rename into
-  [`chunk_dir`](../src/job.rs)`/<index>.mp4`), plus
-  [src/job.rs](../src/job.rs)'s `claim_ready` / `complete` / `fail` /
+  [`chunk_dir`](../src/transcode_pipeline/workdir.py)`/<index>.mp4`), plus
+  [src/transcode_pipeline/store.py](../src/transcode_pipeline/store.py)'s `claim_ready` / `complete` / `fail` /
   `reclaim_expired`.
 - **Unlocks (V3 "Done when ALL true"):** exactly one chunk per task · ~N-way
   parallelism measured at N workers · byte-identical re-runs, atomic commit · a

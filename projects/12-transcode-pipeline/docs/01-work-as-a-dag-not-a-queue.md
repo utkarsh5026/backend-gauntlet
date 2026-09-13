@@ -7,10 +7,10 @@
 > what the queue *couldn't* do.
 >
 > This prepares you for **V2 (the job DAG + scheduler)** in [SPEC.md](../SPEC.md).
-> You'll write [`dag::expand`](../src/dag.rs) and [`dag::newly_ready`](../src/dag.rs)
-> in [src/dag.rs](../src/dag.rs), and the durable twins in
-> [src/job.rs](../src/job.rs) ([`JobStore::submit`](../src/job.rs),
-> [`add_tasks`](../src/job.rs), [`promote_ready`](../src/job.rs), …) against the
+> You'll write [`dag.expand`](../src/transcode_pipeline/dag.py) and [`dag.newly_ready`](../src/transcode_pipeline/dag.py)
+> in [src/transcode_pipeline/dag.py](../src/transcode_pipeline/dag.py), and the durable twins in
+> [src/transcode_pipeline/store.py](../src/transcode_pipeline/store.py) ([`JobStore.submit`](../src/transcode_pipeline/store.py),
+> [`add_tasks`](../src/transcode_pipeline/store.py), [`promote_ready`](../src/transcode_pipeline/store.py), …) against the
 > schema in [migrations/0001_init.sql](../migrations/0001_init.sql). This doc
 > teaches the model; the queries and the graph construction are yours.
 
@@ -79,7 +79,7 @@ tasks       the DAG nodes: kind, status, attempts, lease_until
 task_deps   the DAG edges: (task_id, depends_on) — task_id waits on depends_on
 ```
 
-A task's lifecycle is the [`Status`](../src/job.rs) enum, and each transition has
+A task's lifecycle is the [`TaskStatus`](../src/transcode_pipeline/models.py) enum, and each transition has
 exactly one owner:
 
 ```
@@ -112,18 +112,18 @@ The entire scheduler reduces to:
 
 You'll implement it twice, on purpose:
 
-- [`dag::newly_ready(tasks)`](../src/dag.rs) — pure, in-memory, no I/O. Given a
-  slice of tasks, return the ids that just became runnable. Because it's pure,
+- [`dag.newly_ready(tasks)`](../src/transcode_pipeline/dag.py) — pure, in-memory, no I/O. Given a
+  collection of tasks, return the ids that just became runnable. Because it's pure,
   you can property-test it exhaustively (the SPEC's
   `stitch_waits_for_all_chunks` test lives here).
-- [`JobStore::promote_ready`](../src/job.rs) — the SQL twin, run by the wired
-  [`schedule_loop`](../src/dag.rs) every tick, flipping rows `Pending → Ready`.
+- [`JobStore.promote_ready`](../src/transcode_pipeline/store.py) — the SQL twin, run by the wired
+  [`schedule_loop`](../src/transcode_pipeline/dag.py) every tick, flipping rows `Pending → Ready`.
 
 Trace the fan-in through it. Job with 3 chunks, one rendition:
 
 | Event | split | t0 | t1 | t2 | stitch | Why |
 | --- | --- | --- | --- | --- | --- | --- |
-| submit | Ready | — | — | — | — | Seed task, no deps ([`submit`](../src/job.rs)) |
+| submit | Ready | — | — | — | — | Seed task, no deps ([`submit`](../src/transcode_pipeline/store.py)) |
 | split done, expand | Done | Pending | Pending | Pending | Pending | New tasks land `Pending` |
 | scheduler pass | Done | Ready | Ready | Ready | Pending | t*'s only dep (split) is Done; stitch waits on t0,t1,t2 |
 | t0, t2 finish | Done | Done | Running | Done | Pending | **Still pending** — t1 outstanding: the fan-in holds |
@@ -146,22 +146,22 @@ depends on the chunk count, and the chunk count is only known after the `Split`
 task probes the source — on a *worker*, at run time.
 
 So the graph grows in two steps (see the wired `Split` arm in
-[`Worker::execute`](../src/worker.rs)):
+[`Worker.execute`](../src/transcode_pipeline/worker.py)):
 
 ```
 submit:                     split runs (on a worker):
   jobs row                    probe → plan_chunks (V1)
-  + 1 Split task (Ready)      → dag::expand(job, split_id, chunks, ladder)   ← you write
+  + 1 Split task (Ready)      → dag.expand(job, split_id, chunks, ladder)   ← you write
                               → store.add_tasks(tasks)                        ← you write
 ```
 
-[`dag::expand`](../src/dag.rs) defines the DAG's *shape*: one
-`Transcode { chunk, rendition }` per (chunk × rendition), each depending on the
-split; one `Stitch { rendition }` per rung, depending on **every** transcode of
+[`dag.expand`](../src/transcode_pipeline/dag.py) defines the DAG's *shape*: one
+`Transcode(chunk, rendition)` per (chunk × rendition), each depending on the
+split; one `Stitch(rendition)` per rung, depending on **every** transcode of
 that rendition and no others (the SPEC's `expand_wires_fan_in` test pins this).
 
 The design question the concept card flags: **what atomicity does
-[`add_tasks`](../src/job.rs) need?** If the coordinator dies after inserting 150
+[`add_tasks`](../src/transcode_pipeline/store.py) need?** If the coordinator dies after inserting 150
 of 300 transcode rows and no stitch rows, what does the recovered job look like —
 and can the scheduler tell it apart from a healthy one? Sit with that before you
 write the insert; the answer decides whether it's one statement, one transaction,
@@ -170,7 +170,7 @@ or something cleverer. (That's the decision — this doc won't make it for you.)
 ## 6. Job status is a projection, not a column
 
 `GET /jobs/{id}` reports the job's status and per-status counts
-([`JobView`](../src/job.rs)). The tempting design is a `status` column on `jobs`
+([`JobView`](../src/transcode_pipeline/models.py)). The tempting design is a `status` column on `jobs`
 that task handlers update. The concept card calls this a **second truth**: the
 moment task states and the job column can disagree (a crash between "mark task
 done" and "update job"), one of them is lying and nothing detects it.
@@ -217,7 +217,7 @@ derivation already implies an answer — check whether it's the one you want.
 | Concept | The one-liner |
 | --- | --- |
 | DAG vs queue | A queue orders starts; a DAG gates starts on *completions* — fan-in is the thing a queue can't say |
-| Node / edge / state | `tasks` rows / `task_deps` rows / a `Status` column — all durable, restart survives free |
+| Node / edge / state | `tasks` rows / `task_deps` rows / a `TaskStatus` column — all durable, restart survives free |
 | Readiness rule | Pending + all deps Done → Ready; pure in `newly_ready`, SQL in `promote_ready` |
 | Dynamic expansion | The split's completion *builds* the rest of the graph; expansion must not be observable half-done |
 | Status as projection | Derive job status from task states — one truth, no drift |
@@ -225,11 +225,11 @@ derivation already implies an answer — check whether it's the one you want.
 
 ## 9. Where you'll build this
 
-- **Pure half:** [src/dag.rs](../src/dag.rs) — `expand` (the shape) and
-  `newly_ready` (the rule); [`deps_all_done`](../src/dag.rs) is wired as the
-  spec of "runnable". [`schedule_loop`](../src/dag.rs) is wired and just calls
+- **Pure half:** [src/transcode_pipeline/dag.py](../src/transcode_pipeline/dag.py) — `expand` (the shape) and
+  `newly_ready` (the rule); [`deps_all_done`](../src/transcode_pipeline/dag.py) is wired as the
+  spec of "runnable". [`schedule_loop`](../src/transcode_pipeline/dag.py) is wired and just calls
   your store methods.
-- **Durable half:** [src/job.rs](../src/job.rs) — `submit`, `get_job`,
+- **Durable half:** [src/transcode_pipeline/store.py](../src/transcode_pipeline/store.py) — `submit`, `get_job`,
   `job_context`, `add_tasks`, `promote_ready` (V2's rows), against
   [migrations/0001_init.sql](../migrations/0001_init.sql).
 - **Unlocks (V2 "Done when ALL true"):** correct fan-out/fan-in shape ·

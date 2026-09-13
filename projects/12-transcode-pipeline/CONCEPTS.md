@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — Keyframe-aligned chunking: deciding where to cut *(V1 · `src/chunk.rs`)*
+## 🧠 Card 1 — Keyframe-aligned chunking: deciding where to cut *(V1 · `src/transcode_pipeline/chunk.py`)*
 
 **The problem.** Transcoding a two-hour movie serially takes longer than the movie. The only way out is parallelism: cut the source into chunks, encode them on many workers at once. But video isn't a byte stream you can slice anywhere — most frames are *deltas* that reference earlier frames. Cut mid-GOP and the chunk's first frames point at data the chunk doesn't contain: it can't decode standalone, and the re-encode produces garbage that only shows up as visual corruption after hours of compute.
 
@@ -17,7 +17,7 @@
 - [ ] The corruption mechanism if a cut misses a keyframe (dangling references → decoder garbage), and why it's silent until you look at pixels.
 - [ ] The plan invariants: boundaries-are-keyframes, gapless-and-total, ascending index order — and why each one is load-bearing for the stitch (V4).
 - [ ] Open vs closed GOPs — why an open GOP (frames referencing *across* a keyframe) complicates "the keyframe boundary is safe".
-- [ ] Why degenerate inputs (one keyframe, target > duration) must collapse to one valid chunk rather than panic.
+- [ ] Why degenerate inputs (one keyframe, target > duration) must collapse to one valid chunk rather than raise.
 
 **Depth probes:**
 - Why is chunking pure arithmetic a *design win* — what does keeping media I/O out of the planner buy for testing and for the scheduler?
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — Work as a DAG, not a queue *(V2 · `src/dag.rs`, `src/job.rs`)*
+## 🧠 Card 2 — Work as a DAG, not a queue *(V2 · `src/transcode_pipeline/dag.py`, `src/transcode_pipeline/store.py`)*
 
 **The problem.** This workload has *shape*: one Split fans out into (chunks × renditions) Transcodes, which fan back into one Stitch per rendition — and a stitch must not start until its *last* chunk finishes. A flat queue can't express "not until all of these are done"; hand-rolled flags and counters can, badly, until a restart wipes them and the job is stranded half-finished with no record of what ran.
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🧠 Card 3 — Idempotent execution under at-least-once *(V3 · `src/worker.rs`)*
+## 🧠 Card 3 — Idempotent execution under at-least-once *(V3 · `src/transcode_pipeline/worker.py`)*
 
 **The problem.** Leases (project 04's pattern, reused here) guarantee a dead worker's task gets re-run — which means every task *will sometimes run twice*: the killed worker's half-finished output is on disk when the retry starts, or a slow worker's lease expires and two workers run the same chunk *simultaneously*. If a re-run appends, doubles, or observes the half-written file as finished, recovery corrupts the very output it was saving.
 
@@ -73,7 +73,7 @@
 
 ---
 
-## 🧠 Card 4 — Stitching: the seamless join *(V4 · `src/stitch.rs`)*
+## 🧠 Card 4 — Stitching: the seamless join *(V4 · `src/transcode_pipeline/stitch.py`)*
 
 **The problem.** Each chunk was encoded by its own ffmpeg process with its own timeline starting at zero. Concatenate them naively and every boundary has a *seam*: presentation timestamps jump backwards to 0, players stutter or resync, audio pops. And a sort bug you'd never catch in a 9-chunk test — lexicographic ordering putting `10.mp4` before `2.mp4` — scrambles the movie at 10+ chunks.
 
