@@ -77,12 +77,19 @@ blocked-on: ~            # free text, or ~ for none
 > UDP, and recordings are written to local disk. You run the mesh by launching **several
 > instances** with different `REGION`/`NODE_ID`/`PEERS`, and simulate the backbone with `tc netem`.
 
+> **Python.** This project runs on CPython: FastAPI under uvicorn on uvloop, both UDP planes on
+> `asyncio` datagram endpoints, `httpx` for the node-to-node `/cluster/*` RPCs, pytest + httpx
+> `ASGITransport` (several SFUs — a whole mesh — fit in one test process), pyright strict + ruff.
+> `make verify` is the gate CI runs. The boss-fight numbers are the same ones the Rust scaffold was
+> set; where CPython cannot reach one, the gap and its cause are the finding (see the Definition of
+> done).
+
 ---
 
 ## Vertical challenges (build these yourself — this is the learning)
 
 ### V1. Global room placement via consensus — *decide the home region, once, for everyone*
-In `src/placement.rs`, build the **replicated room-placement map** — the control plane that every
+In `src/global_conferencing/placement.py`, build the **replicated room-placement map** — the control plane that every
 SFU in the mesh agrees on. When a room is first created, *some* region has to be chosen as its
 **home** (the anchor where a publisher's origin media lives and where the cascade tree roots), and
 that decision has to be **the same on every node** — otherwise two people creating `standup-42`
@@ -120,9 +127,12 @@ right: at most one home region per room, cluster-wide, forever.
 - [ ] **`max_rooms` is enforced through the log**, not per-node, so the cluster-wide cap holds even
   when placements are proposed at different nodes.
 
-**Proof:** consensus tests — a concurrent-placement race asserting a single home region
-(`concurrent_placement_has_one_home`), an idempotent-replacement test, a leader-loss election test,
-and a partition test asserting a minority refuses to place (`minority_cannot_place`); `docs/17-design.md`
+**Proof:** consensus tests over an in-process mesh — a concurrent-placement race asserting a single
+home region (`test_concurrent_placement_has_one_home`, including two concurrent `publish`es on the
+*same* node, where every `await` is an interleaving point), an idempotent-replacement test, a
+leader-loss election test, a partition test asserting a minority refuses to place
+(`test_minority_cannot_place`), and a hypothesis property test that no interleaving of proposals
+yields two homes for one room; `docs/17-design.md`
 records what's reused from project 09 vs. new here, the replicated state-machine shape (placement +
 membership entries), and the quorum/partition rule.
 
@@ -131,7 +141,7 @@ replicated log gives you a single cluster-wide decision, and why "at most one ho
 is a *safety* property a cache or a race-y "first writer wins" can silently violate.
 
 ### V2. Inter-SFU cascade transport — *forward once between regions, fan out locally*
-In `src/cascade.rs`, build the **relay mesh** — the transport that makes an SFU a peer of another
+In `src/global_conferencing/cascade.py`, build the **relay mesh** — the transport that makes an SFU a peer of another
 SFU. This is the heart of "cascaded". A publisher's origin media lives in its home region (V1). A
 subscriber in a *different* region must receive it — but the origin SFU must **not** send one copy
 per remote subscriber across the ocean. Instead it opens **one relay leg per remote region that has
@@ -169,9 +179,10 @@ peer regions, one leg each, torn down when the last remote subscriber in that re
   invisible downstream (this is project 15's rewriter composed on the far side of the leg).
 
 **Proof:** a fan-out test asserting the origin relay-egress counter reads **1 per remote region**
-regardless of that region's subscriber count (`one_copy_per_region`), a loop-prevention test on a
-3-region mesh (`relay_never_loops`), and a leg-lifecycle test (leg opens on first remote sub, closes
-on last); `docs/17-design.md` records the relay provenance/loop-prevention scheme and the leg
+regardless of that region's subscriber count (`test_one_copy_per_region`), a loop-prevention test
+on a 3-region mesh (`test_relay_never_loops`), a leg-lifecycle test (leg opens on first remote sub,
+closes on last), and a hypothesis test that the relay-framing parser never raises anything but a
+`MediaError` on arbitrary bytes; `docs/17-design.md` records the relay provenance/loop-prevention scheme and the leg
 lifecycle + bounds.
 
 *Concept to internalize:* the **relay/fan-out tree** as the answer to global fan-out — why one copy
@@ -180,7 +191,7 @@ every SFU per stream), and why loop prevention is a *correctness* property once 
 other.
 
 ### V3. Cross-region simulcast routing — *carry the union of demand, no more*
-In `src/routing.rs`, build the **per-backbone-leg layer router** that decides *which simulcast
+In `src/global_conferencing/routing.py`, build the **per-backbone-leg layer router** that decides *which simulcast
 layers* each relay leg (V2) actually carries. Inside one region, layer selection is **per
 subscriber** (project 15's `LayerSelector`). Across the cascade it's a different question, one tier
 up: Frankfurt has a fibre viewer who wants the **high** layer and a mobile viewer who wants the
@@ -215,8 +226,8 @@ have **hysteresis** so a viewer flapping between layers doesn't thrash the backb
 - [ ] **Composes with V2 continuity:** adding/removing a layer on a leg is invisible to every
   downstream subscriber's stream continuity (V2 rewriter on the far side absorbs it).
 
-**Proof:** unit tests `leg_carries_union_of_demand`, `aggregates_local_demand`,
-`new_demand_requests_one_keyframe`, `dropped_demand_shrinks_leg`, and a hysteresis test; `docs/17-design.md`
+**Proof:** unit tests `test_leg_carries_union_of_demand`, `test_aggregates_local_demand`,
+`test_new_demand_requests_one_keyframe`, `test_dropped_demand_shrinks_leg`, and a hysteresis test; `docs/17-design.md`
 records the demand-aggregation policy (max? union set? hysteresis margin) and the upstream
 keyframe-request mechanism reused from project 15.
 
@@ -226,7 +237,7 @@ not everything; and how per-subscriber selection (p15) and per-region routing (h
 one measure→estimate→select→route loop.
 
 ### V4. Server-side recording — *the recorder is just another subscriber*
-In `src/recording.rs`, build the **conference recorder**. A recorded meeting is not a magic
+In `src/global_conferencing/recording.py`, build the **conference recorder**. A recorded meeting is not a magic
 side-channel bolted onto the SFU — the clean design is that the recorder is **another subscriber**:
 it joins the room like any viewer, receives each publisher's forwarded RTP, and writes it to disk
 instead of a screen. That framing is the learning — it means recording rides the exact same cascade
@@ -259,8 +270,8 @@ flushes cleanly and resumes correctly on restart.
   (double-start doesn't fork a recording, double-stop is harmless).
 
 **Proof:** a test asserting a started recording registers as a subscriber (and demand) on every
-publisher (`recorder_subscribes_all`), a wall-clock-alignment test on two synthetic tracks with
-skewed RTP clocks (`tracks_align_on_wallclock`), a segment-durability test (kill mid-segment →
+publisher (`test_recorder_subscribes_all`), a wall-clock-alignment test on two synthetic tracks with
+skewed RTP clocks (`test_tracks_align_on_wallclock`), a segment-durability test (kill mid-segment →
 prior segments intact + indexed), and a finalize/idempotency test; `docs/17-design.md` records the
 recording model (subscriber, not side-channel), the SR-based alignment, and the segment/index format.
 
@@ -284,9 +295,11 @@ Each item is **done when its criterion is observably true** — same rule as the
   replicate) work across separate processes/hosts, the same node-to-node-over-HTTP transport as
   project 09 — a placement committed on one node is visible on the others.
 - [ ] **Graceful shutdown:** on SIGTERM the SFU stops admitting new participants, drains in-flight
-  signaling/admin HTTP, **relinquishes leadership** if it holds it (so the mesh re-elects
-  quickly), tears down relay legs cleanly, and **finalizes open recordings** — no split room, no
-  half-open relay leg, no truncated recording index.
+  signaling/admin HTTP (uvicorn's graceful shutdown), then — in the FastAPI lifespan —
+  **relinquishes leadership** if it holds it (so the mesh re-elects quickly), tears down relay legs
+  cleanly, and **finalizes open recordings** — no split room, no half-open relay leg, no truncated
+  recording index. *(Proof: a `docker stop` of the leader that reaches `shutdown complete` with no
+  "not built yet" / "overran its budget" step warnings, and a new leader within one heartbeat.)*
 
 ### Caching / delivery
 - [ ] **One copy per region-pair (V2)** is the delivery invariant — the backbone carries the union
@@ -311,8 +324,9 @@ Each item is **done when its criterion is observably true** — same rule as the
   peer degrades itself, never the process.
 
 ### Observability
-- [ ] A `tracing` span/context per participant (region + room + peer) and per relay leg, with
-  structured logs for lifecycle events (room placed, leader elected, relay leg opened/closed,
+- [ ] Structured log context per participant (region + room + peer) and per relay leg — bound
+  through `structlog.contextvars` on top of `common_telemetry`'s request id — with structured
+  logs for lifecycle events (room placed, leader elected, relay leg opened/closed,
   layer added to a leg, recording started/finalized) — never log media payload bytes.
 - [ ] Counters at `/metrics`: **relay copies out (per region-pair)** — the fan-out amplification
   that proves one-copy-per-region — **relay copies in, backbone bytes, placement commits,
@@ -320,6 +334,37 @@ Each item is **done when its criterion is observably true** — same rule as the
 - [ ] Gauges: **rooms placed, active regions per room, relay legs (by peer region), layers carried
   per leg, leader/term, recordings active** — enough to watch a room's cascade tree form and a
   leader election settle in real time.
+
+### Python (the day-job axis)
+- [ ] **pyright strict passes clean** — every `# type: ignore` / `# pyright: ignore` carries a
+  comment saying what claim it makes. *(Proof: `make types` is green; each ignore reads as a
+  decision.)*
+- [ ] **No blocking call on the event loop** — each SFU runs clean under `PYTHONASYNCIODEBUG=1`,
+  which logs any callback holding the loop past 100 ms. It matters more here than in most
+  services: the backbone pump, the media fan-out, signaling, the `/cluster/*` handlers and the
+  election loop share **one** thread per SFU, so a recording's synchronous `write()` or a slow
+  apply does not delay one room — it delays heartbeats, and a delayed heartbeat is a spurious
+  election. *(Proof: a boss-fight run under the debug flag with no slow-callback warnings, or each
+  one explained.)*
+- [ ] **Queues and pools sized on purpose, together** — `CASCADE_INBOX` against the relay rate of
+  every remote region at once, `CLUSTER_RPC_TIMEOUT_MS` against `HEARTBEAT_MS` (a timeout longer
+  than a heartbeat lets one hung peer stall a whole round), and the `httpx` connection pool against
+  the peer count. A bound nobody picked is a bound nobody sized. *(Proof: `docs/17-design.md`
+  names each number and the arithmetic behind it; `conf_datagrams_dropped_total{reason="inbox_full"}`
+  read as a CPython finding, not a network one.)*
+- [ ] **Interleavings are designed, not discovered** — every check-then-act across an `await` in
+  placement, leg lifecycle and recording start/stop is either serialized on purpose or shown safe.
+  One event loop removes data races, not logical ones. *(Proof: a test that runs the racing calls
+  concurrently with `asyncio.gather` and asserts the invariant — one home, one leg, one recording.)*
+- [ ] **The container boots under uvloop** — `docker build` produces a runnable image, `/healthz`
+  answers inside it, a relay datagram reaches the backbone pump, and `docker stop` reaches
+  `shutdown complete`. The only check that exercises uvloop and PID-1 signal handling; `make
+  verify` sees neither. *(Proof: the build and the stop, noted in `docs/17-design.md`.)*
+- [ ] **Profile committed** — a `py-spy` flamegraph and a `memray` run in `docs/17-benchmarks.md`,
+  naming the top bottleneck. Candidates worth looking for by name: relay framing and `sendto` per
+  leg per packet in the origin SFU, per-subscriber copies in the far side's fan-out, JSON encode /
+  decode of heartbeats, and GC pauses during the join storm. *(Proof: the flamegraph, and one
+  sentence on what it changed.)*
 
 ---
 
@@ -348,8 +393,14 @@ The project is **done when ALL true:**
    what's reused from p09** (V1), the **relay provenance + loop-prevention + leg lifecycle** (V2),
    the **cross-region demand-aggregation + keyframe policy** (V3), the **recording model + SR-based
    alignment + segment format** (V4), and the **cascade-auth / SRTP scope** call.
-4. `cargo clippy --workspace -- -D warnings` and `cargo test -p global-conferencing` are green; no
-   `todo!()` remains on a checked path.
+4. `make verify` is green — `ruff format --check` → `ruff check` → `pyright` (strict) →
+   `pytest` — and no `raise NotImplementedError` remains on a checked path.
+5. The **profile** is committed alongside the numbers: a `py-spy` flamegraph and a `memray` run in
+   `docs/17-benchmarks.md`, naming the top bottleneck. Numbers alone do not close this — you have
+   to know *why* they are what they are. Where CPython cannot reach a boss-fight target, **the gap
+   and its cause are the finding** (GIL contention in the origin SFU? GC pauses during the join
+   storm? per-subscriber allocation in the fan-out? a blocking write on the loop delaying
+   heartbeats?), recorded rather than designed around.
 
 ## 🐉 Boss fight — The Hairpin
 
@@ -363,8 +414,9 @@ The project is **done when ALL true:**
 > and a region briefly can't reach the leader. Beat the hairpin: forward once, fan out locally, and
 > never split the room.
 
-**Arena:** `bench/` runs **≥ 3 regional SFU instances** (release builds, `cargo run --release`,
-different `REGION`/`NODE_ID`/`PEERS`) with the inter-region backbone shaped by `tc netem` (add
+**Arena:** `bench/` runs **≥ 3 regional SFU instances** (the production container — uvicorn on
+uvloop, `make verify`-clean — one process per region, different `REGION`/`NODE_ID`/`PEERS`, and the
+load harness in separate processes so it never shares an SFU's GIL) with the inter-region backbone shaped by `tc netem` (add
 realistic one-way delay + a "sagging" profile that drops one region's backbone to a fraction of its
 capacity for 60 s and recovers). One publisher in the home region publishes **3 simulcast layers**;
 a load harness spins up **≥ 50 subscribers per region** on a spread of downlink profiles. The run
@@ -417,10 +469,11 @@ subscriber-harness commands reproducible via `bench/`).
 
 ## Run it
 ```bash
+uv sync                       # or: make sync
 cp .env.example .env          # set REGION / NODE_ID / PEERS / MEDIA_PORT / CASCADE_PORT / HTTP_PORT
 
-# One region (this is essentially project 15 — signaling + admin work immediately):
-cargo run -p global-conferencing
+# One region (signaling + admin work immediately):
+make run                      # or: uv run global-conferencing
 #   curl localhost:8080/healthz
 #   curl localhost:8080/rooms                 # global topology (empty until a room is placed)
 #   curl -XPOST localhost:8080/rooms/all-hands/publish \
@@ -428,14 +481,18 @@ cargo run -p global-conferencing
 #        -d '{"layers":[{"rid":"q","ssrc":111,"bitrate_bps":150000},
 #                        {"rid":"h","ssrc":222,"bitrate_bps":500000},
 #                        {"rid":"f","ssrc":333,"bitrate_bps":2000000}]}'
-#   The first publish tries to PLACE the room — that hits the V1 Placement::place_room todo!().
-#   That panic is your worklist.
+#   The first publish tries to PLACE the room — it answers 501 naming V1's Placement.place_room.
+#   A datagram on the backbone port reaches V2's on_relayed, ends the pump, and turns /readyz 503.
+#   Those messages are your worklist.
 
-# A 3-region mesh on one host (three terminals, distinct ports + peer lists), e.g.:
-#   REGION=eu-west  NODE_ID=n1 HTTP_PORT=8080 MEDIA_PORT=7000 CASCADE_PORT=7100 \
-#     PEERS='us-east=http://127.0.0.1:8081|127.0.0.1:7101,ap-south=http://127.0.0.1:8082|127.0.0.1:7102' \
-#     RUN_BACKGROUND=true cargo run -p global-conferencing
-#   (…and the symmetric commands for us-east:8081/7001/7101 and ap-south:8082/7002/7102)
+# A 3-region mesh on one host — one mprocs pane per region, each PEERS naming the other two:
+make mesh                     # eu-west :8080/7000/7100 · us-east :8081/7001/7101 · ap-south :8082/7002/7102
+HTTP_PORT=8081 make rooms     # every region must report the same placements
+RUN_BACKGROUND=true make mesh # once V1 exists: real elections
+
+make planes                   # HTTP, media UDP and backbone UDP at a glance
+make vote && make relay       # poke V1's RPC and V2's backbone the way a peer would
+make verify                   # fmt-check → lint → types → test, the same gate CI runs
 
 # Shape the backbone for the boss fight (Linux):
 sudo tc qdisc add dev lo root netem delay 120ms 20ms      # ~inter-region RTT
