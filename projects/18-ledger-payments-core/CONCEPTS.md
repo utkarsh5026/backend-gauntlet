@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — Double-entry: the balance is a derivation *(V1 · `src/ledger.rs`)*
+## 🧠 Card 1 — Double-entry: the balance is a derivation *(V1 · `src/ledger_payments_core/ledger.py`)*
 
 **The problem.** Model money as `UPDATE balances SET amount = amount - 10` and you've built a system that can't answer "why is this balance what it is?", can't detect when a bug silently created money, and has already lost the history an auditor (or your own 3 a.m. debugging) needs. A mutated number has no memory.
 
@@ -16,7 +16,7 @@
 - [ ] Why balance-as-derivation beats balance-as-mutable-cell on three axes: auditability, lost-history, and the concurrency story it sets up (V2).
 - [ ] The zero-sum invariant as an executable audit: what a nonzero ledger sum proves, instantly, that no amount of logging proves.
 - [ ] Why entries are immutable and corrections reverse — what an `UPDATE` on a posted entry would destroy.
-- [ ] Rule zero, with the arithmetic: which exact values `f64` cannot represent, and how rounding errors compound into unreconcilable books.
+- [ ] Rule zero, with the arithmetic: which exact values a binary float (Python's `float`, Rust's `f64`) cannot represent, and how rounding errors compound into unreconcilable books.
 - [ ] Atomic posting: why "all entries or none" is non-negotiable — a half-posted transaction *is* created/destroyed money.
 - [ ] One currency per account, and what a cross-currency transfer actually requires (two transactions through an FX intermediary account — worth being able to sketch).
 
@@ -28,7 +28,7 @@
 
 ---
 
-## 🧠 Card 2 — Isolation levels: where the money bug lives *(V2 · `src/isolation.rs`)*
+## 🧠 Card 2 — Isolation levels: where the money bug lives *(V2 · `src/ledger_payments_core/isolation.py`)*
 
 **The problem.** Two requests debit the same account simultaneously. Both `SELECT` the balance: 100. Both check `100 >= 60`: pass. Both post. Balance: −20, on an account you promised can't overdraft — and *nothing errored*. Under `READ COMMITTED` (Postgres's default) this is legal, invisible, and it costs real money. Both transactions were individually correct; the interleaving was the bug.
 
@@ -51,7 +51,7 @@
 
 ---
 
-## 🧠 Card 3 — Idempotency keys: exactly-once effects on a retrying network *(V3 · `src/idempotency.rs`)*
+## 🧠 Card 3 — Idempotency keys: exactly-once effects on a retrying network *(V3 · `src/ledger_payments_core/idempotency.py`)*
 
 **The problem.** A client POSTs a transfer; the connection times out. Did the money move? *The client cannot know* — the timeout might have hit before or after commit. Its only rational move is to retry — and an unprotected retry is a double charge. The network's at-least-once nature meets money, and money loses.
 
@@ -74,7 +74,7 @@
 
 ---
 
-## 🧠 Card 4 — The transactional outbox & signed webhooks *(V4 · `src/webhooks.rs`)*
+## 🧠 Card 4 — The transactional outbox & signed webhooks *(V4 · `src/ledger_payments_core/webhooks.py`)*
 
 **The problem.** A transfer settles; the merchant's system must hear about it. The naive version — commit the DB transaction, then fire the HTTP call — has a crash window between the two: money moved, notification lost, forever. Flip the order and you notify about money that never moved. This is the **dual-write problem**: two systems, no shared transaction, and every ordering loses. On top: the receiver must be able to *verify* the event is from you (anyone can POST JSON), and their endpoint will be down exactly when it matters.
 
@@ -101,7 +101,7 @@
 
 - [ ] The status-code contract: `201` fresh post, `200` idempotent replay, `409`/`422` key conflict — the ledger's semantics visible in HTTP.
 - [ ] Why balances are served from Postgres, never a cache — staleness on the invariant path is the one place cache-aside is wrong (contrast with project 01).
-- [ ] Amount validation as money hygiene: non-positive, over-ceiling, currency-mismatch — each rejected with a test, no `f64` anywhere on the path (grep-provable).
+- [ ] Amount validation as money hygiene: non-positive, over-ceiling, currency-mismatch — each rejected with a test, no `float` anywhere on the path (grep-provable).
 - [ ] Graceful shutdown: drain in-flight transfers, let the dispatcher finish its batch — no half-delivered state.
 - [ ] The metrics that watch money health: serialization-retry count (contention), idempotency hit ratio (client retry behavior), outbox lag (delivery health), DLQ depth.
 - [ ] Secret hygiene: signing keys never logged; API keys rejected before the handler runs.

@@ -32,6 +32,7 @@ members = [
     "projects/15-webrtc-sfu",
     "projects/16-live-platform",
     "projects/17-global-conferencing",
+    "projects/18-ledger-payments-core",
     "projects/19-bittorrent",
     "projects/20-full-text-search",
     "projects/21-workflow-engine",

@@ -28,7 +28,6 @@ from pathlib import Path
 # in ci.yml instead.
 PROJECTS: list[tuple[str, str]] = [
     ("live-ingest", "projects/13-live-ingest"),
-    ("ledger-payments-core", "projects/18-ledger-payments-core"),
 ]
 
 # Frontend dirs (must contain package.json to be built).
@@ -196,19 +195,20 @@ def main() -> int:
 
 
 def self_test() -> int:
-    # Scoped: two crates by their src, plus a frontend that must NOT pull its
-    # own crate in. Uses only projects still in the Cargo workspace — a
-    # /pythonize conversion has to update this alongside PROJECTS.
+    # Scoped: a crate by its src, a converted project's Python beside it, plus a
+    # frontend that must NOT pull its own crate in. Uses only projects still in
+    # the Cargo workspace — a /pythonize conversion has to update this alongside
+    # PROJECTS.
     rust_all, pkgs, fes = resolve(
         [
-            "projects/18-ledger-payments-core/src/ledger.rs",
+            "projects/18-ledger-payments-core/src/ledger_payments_core/ledger.py",
             "projects/06-object-store/web/src/App.tsx",
             "projects/13-live-ingest/src/rtmp.rs",
         ],
         force_all=False,
     )
     assert rust_all is False
-    assert pkgs == ["live-ingest", "ledger-payments-core"], pkgs
+    assert pkgs == ["live-ingest"], pkgs
     assert fes == ["projects/06-object-store/web"], fes
 
     # Frontend-only → no rust package for that project.

@@ -16,76 +16,23 @@ publish = false
 
 ### BEGIN HAKARI SECTION
 [dependencies]
-base64 = { version = "0.22" }
-chrono = { version = "0.4", features = ["serde"] }
-crossbeam-utils = { version = "0.8" }
-crypto-common = { version = "0.1", default-features = false, features = ["std"] }
-digest = { version = "0.10", features = ["mac", "std"] }
-either = { version = "1", features = ["serde", "use_std"] }
-fastrand = { version = "2" }
-form_urlencoded = { version = "1" }
-futures-channel = { version = "0.3", features = ["sink"] }
-futures-core = { version = "0.3" }
-futures-sink = { version = "0.3" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
-futures-util = { version = "0.3", default-features = false, features = ["async-await-macro", "channel", "io", "sink"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
-num-traits = { version = "0.2", default-features = false, features = ["i128", "std"] }
+num-traits = { version = "0.2", default-features = false, features = ["std"] }
 regex-syntax = { version = "0.8" }
-serde = { version = "1", features = ["alloc", "derive", "rc"] }
-serde_core = { version = "1", features = ["alloc", "rc"] }
+serde = { version = "1", features = ["derive"] }
+serde_core = { version = "1", features = ["alloc"] }
 serde_json = { version = "1", features = ["raw_value"] }
-sha2 = { version = "0.10" }
-slab = { version = "0.4", default-features = false, features = ["std"] }
-smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
-sqlx-core = { version = "0.8", features = ["_rt-tokio", "any", "chrono", "json", "migrate", "offline", "uuid"] }
-sqlx-postgres = { version = "0.8", default-features = false, features = ["any", "chrono", "json", "migrate", "offline", "uuid"] }
-sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
-tokio = { version = "1", features = ["full"] }
+smallvec = { version = "1", default-features = false, features = ["const_new"] }
 tracing = { version = "0.1", features = ["log", "release_max_level_info"] }
 tracing-core = { version = "0.1" }
-uuid = { version = "1", features = ["serde", "v4"] }
 
 [build-dependencies]
-base64 = { version = "0.22" }
-chrono = { version = "0.4", features = ["serde"] }
-crossbeam-utils = { version = "0.8" }
-crypto-common = { version = "0.1", default-features = false, features = ["std"] }
-digest = { version = "0.10", features = ["mac", "std"] }
-either = { version = "1", features = ["serde", "use_std"] }
-form_urlencoded = { version = "1" }
-futures-channel = { version = "0.3", features = ["sink"] }
-futures-core = { version = "0.3" }
-futures-sink = { version = "0.3" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
-futures-util = { version = "0.3", default-features = false, features = ["async-await-macro", "channel", "io", "sink"] }
-log = { version = "0.4", default-features = false, features = ["std"] }
-memchr = { version = "2" }
-num-traits = { version = "0.2", default-features = false, features = ["i128", "std"] }
-serde = { version = "1", features = ["alloc", "derive", "rc"] }
-serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["raw_value"] }
-sha2 = { version = "0.10" }
-slab = { version = "0.4", default-features = false, features = ["std"] }
-smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
-sqlx-core = { version = "0.8", features = ["_rt-tokio", "any", "chrono", "json", "migrate", "offline", "uuid"] }
-sqlx-postgres = { version = "0.8", default-features = false, features = ["any", "chrono", "json", "migrate", "offline", "uuid"] }
-syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
-tokio = { version = "1", features = ["full"] }
-tracing = { version = "0.1", features = ["log", "release_max_level_info"] }
-tracing-core = { version = "0.1" }
-uuid = { version = "1", features = ["serde", "v4"] }
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
+syn = { version = "2", features = ["extra-traits", "full", "visit-mut"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
-bitflags = { version = "2", default-features = false, features = ["std"] }
-hyper = { version = "1", features = ["client", "http1", "server"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "http1", "server", "service"] }
-libc = { version = "0.2" }
-tower = { version = "0.5", default-features = false, features = ["log", "make", "retry", "timeout"] }
-tower-http = { version = "0.6", features = ["cors", "follow-redirect", "trace"] }
-
-[target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 libc = { version = "0.2" }
 
