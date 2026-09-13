@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Card 1 — The control plane: state machines + reconciliation *(V1 · `src/control.rs`)*
+## 🧠 Card 1 — The control plane: state machines + reconciliation *(V1 · `src/live_platform/control.py`)*
 
 **The problem.** Somebody must know "stream abc123 is live, ingesting on node-2, transcoding a 3-rung ladder, playable at /live/abc123" — and keep that true while ingests start, stop, crash, and *deliver their webhooks twice* (webhooks always deliver twice eventually). Hold this state in memory and a control-plane deploy forgets every live stream on the platform. Update it non-idempotently and a duplicated webhook double-enqueues an entire transcode ladder.
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 🧠 Card 2 — Autoscaling on a custom signal + leases under churn *(V2 · `src/workers.rs`)*
+## 🧠 Card 2 — Autoscaling on a custom signal + leases under churn *(V2 · `src/live_platform/workers.py`)*
 
 **The problem.** Transcode is the CPU-hungry, bursty plane: one big streamer going live 10×es the work in seconds. Static provisioning either wastes a fleet or falls behind live content (which, being live, cannot wait). But autoscaling *causes* the failure it must survive: scale-down and node preemption kill workers mid-job, so the scaling mechanism itself guarantees worker deaths.
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🧠 Card 3 — The edge: single-flight + blocking reload *(V3 · `src/edge.rs`)*
+## 🧠 Card 3 — The edge: single-flight + blocking reload *(V3 · `src/live_platform/edge.py`)*
 
 **The problem.** The instant a live playlist references a new partial, *every* viewer wants that exact resource — a synchronized stampede by protocol design. 100k viewers, one just-produced 200 ms partial the edge doesn't have yet: without protection that's 100k simultaneous origin fills of the same bytes, i.e. project 01's thundering herd, rebuilt at video scale every 200 ms, forever.
 
@@ -73,7 +73,7 @@
 
 ---
 
-## 🧠 Card 4 — Chat at 100k: isolation, shedding, cross-pod fan-out *(V4 · `src/chat.rs`)*
+## 🧠 Card 4 — Chat at 100k: isolation, shedding, cross-pod fan-out *(V4 · `src/live_platform/chat.py`)*
 
 **The problem.** Project 03's hub, pushed to hostile scale: one raided channel becomes a firehose while thousands of small channels stay quiet — and the firehose must not add a millisecond to the quiet rooms. Meanwhile 100k viewers in one room means some *thousands* of them are on bad networks at any instant, and chat runs across many pods, so a message posted on pod A must reach subscribers on pods B..Z exactly once each.
 
