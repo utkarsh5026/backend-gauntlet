@@ -11,7 +11,7 @@
 #
 # Both stages share a base image so the venv built in `build` has valid
 # interpreter paths in `runtime` — a venv is not relocatable across Pythons.
-FROM python:3.13-slim-bookworm AS build
+FROM python:3.14-slim-bookworm AS build
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -26,7 +26,7 @@ RUN uv sync --package global-conferencing --frozen --no-dev --no-install-project
 COPY projects/17-global-conferencing/ projects/17-global-conferencing/
 RUN uv sync --package global-conferencing --frozen --no-dev
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 # curl is only here for a healthcheck / `docker exec` probe against /healthz.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
