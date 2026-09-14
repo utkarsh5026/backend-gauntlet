@@ -160,7 +160,7 @@ def profile() -> None:
 
 
 # Auto-detects compose + server + web/ → mprocs (also registers frontend / web-install).
-register_dev_stack(runner, use_cargo_watch=False)
+register_dev_stack(runner)
 
 register_md(runner)
 register_help(runner)

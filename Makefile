@@ -86,20 +86,20 @@ portainer-down: ## Stop and remove Portainer
 	@docker compose -f tools/portainer/docker-compose.yml -p portainer down
 
 .PHONY: hooks
-hooks: ## Point this clone at .githooks (pre-commit: fmt, pre-push: fmt+hakari)
+hooks: ## Point this clone at .githooks (pre-commit: ruff format, pre-push: + ruff check)
 	@git config core.hooksPath .githooks
 	@chmod +x .githooks/pre-commit .githooks/pre-push tools/preflight.sh
 	@echo "git hooks installed → core.hooksPath=.githooks"
-	@echo "  pre-commit: make preflight (fmt)"
-	@echo "  pre-push:   make preflight-lint (fmt + hakari)"
+	@echo "  pre-commit: make preflight (ruff format --check)"
+	@echo "  pre-push:   make preflight-lint (ruff format --check + ruff check)"
 	@echo "  bypass:     SKIP_GIT_HOOKS=1 git commit|push ..."
 
 .PHONY: preflight
-preflight: ## Fast CI gate: cargo fmt --check (same check that fails most often)
+preflight: ## Fast CI gate: ruff format --check on the CI-gated paths
 	@./tools/preflight.sh
 
 .PHONY: preflight-lint
-preflight-lint: ## Broader CI lint gate: fmt --check + hakari (if installed)
+preflight-lint: ## Broader CI lint gate: ruff format --check + ruff check
 	@./tools/preflight.sh --lint
 
 .PHONY: help

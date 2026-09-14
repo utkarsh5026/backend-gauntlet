@@ -1,5 +1,3 @@
-/target
-**/*.rs.bk
 .env
 *.log
 .DS_Store
@@ -12,7 +10,7 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .hypothesis/
-# uv.lock IS committed — it is the Python side's Cargo.lock.
+# uv.lock IS committed — the single lockfile for the whole uv workspace.
 
 # Project 08's broker state: the filesystem IS the log, so `make run` lays
 # down segment files under DATA_DIR. Never commit them.

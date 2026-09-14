@@ -58,7 +58,7 @@ export function Layout() {
             <span className="text-accent-dim">[gauntlet]</span> built to learn — one primitive at a
             time
           </span>
-          <span>rust · tokio · axum</span>
+          <span>python · asyncio · fastapi</span>
         </div>
       </footer>
     </div>

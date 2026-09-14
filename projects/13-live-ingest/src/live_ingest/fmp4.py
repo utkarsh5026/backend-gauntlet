@@ -35,9 +35,9 @@ Collect the pieces in a list and join once.
 header on `init.mp4` depends on it. No `time.time()` in `mvhd`, no dict
 iteration over something unordered, nothing that is not a function of the config.
 
-**Integers do not overflow — which is the trap.** Rust would have caught a
-`tfdt` that exceeded 32 bits at the type level. Python's `int` just keeps
-growing, and `struct.pack(">I", 2**32)` raises only when you finally write it.
+**Integers do not overflow — which is the trap.** Python's `int` just keeps
+growing, so a `tfdt` that has outgrown 32 bits is caught nowhere until
+`struct.pack(">I", 2**32)` raises when you finally write it.
 `baseMediaDecodeTime` in version-1 `tfdt` is 64-bit; use it. And unwrapping
 RTMP's 32-bit millisecond wrap is arithmetic you do yourself (`& 0xFFFFFFFF`
 and a jump check), because nothing here will wrap for you.

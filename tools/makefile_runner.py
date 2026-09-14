@@ -134,9 +134,6 @@ class ProjectRunner:
             sys.exit(proc.returncode)
         return proc.returncode
 
-    def cargo(self, *args: str, **kwargs: Any) -> int:
-        return self.run(["cargo", *args], cwd=self.workspace, **kwargs)
-
     def uv(self, *args: str, **kwargs: Any) -> int:
         # Runs from the project dir, not the workspace root: uv resolves the
         # member from there and uses the root `uv.lock` for versions.
@@ -295,60 +292,11 @@ def register_setup(runner: ProjectRunner) -> Callable[[], None]:
     return setup
 
 
-def register_cargo_checks(runner: ProjectRunner) -> dict[str, Callable[[], None]]:
-    crate = runner.crate
-
-    @runner.task("check", "🔎", "Checks", "cargo check this crate")
-    def check() -> None:
-        runner.cargo("check", "-p", crate)
-
-    @runner.task("clippy", "📎", "Checks", "cargo clippy with warnings denied")
-    def clippy() -> None:
-        runner.cargo("clippy", "-p", crate, "--", "-D", "warnings")
-
-    @runner.task("fmt", "🎨", "Checks", "Format workspace Rust code")
-    def fmt() -> None:
-        runner.cargo("fmt", "--all")
-        runner.ok("formatted")
-
-    @runner.task("fmt-check", "🎨", "Checks", "Fail if code is not formatted")
-    def fmt_check() -> None:
-        runner.cargo("fmt", "--all", "--", "--check")
-
-    @runner.task("test", "🧪", "Checks", "Run crate tests")
-    def test() -> None:
-        runner.cargo("test", "-p", crate)
-
-    @runner.task("verify", "✔️", "Checks", "Run all static checks + tests")
-    def verify() -> None:
-        runner.step("✔️", "running fmt-check → clippy → check → test")
-        fmt_check()
-        clippy()
-        check()
-        test()
-        runner.ok("verify: OK")
-
-    @runner.task("clean", "🧹", "Checks", "cargo clean for this crate")
-    def clean() -> None:
-        runner.cargo("clean", "-p", crate)
-        runner.ok("cleaned")
-
-    return {
-        "check": check,
-        "clippy": clippy,
-        "fmt": fmt,
-        "fmt_check": fmt_check,
-        "test": test,
-        "verify": verify,
-        "clean": clean,
-    }
-
-
 def register_python_checks(runner: ProjectRunner) -> dict[str, Callable[[], None]]:
-    """Python sibling of `register_cargo_checks` — same task names, same groups.
+    """The check bundle every project registers.
 
-    A project should feel identical whatever it's written in: `make verify` still
-    means "everything CI would fail on", here fmt-check -> lint -> types -> test.
+    `make verify` means "everything CI would fail on": fmt-check -> lint -> types
+    -> test, the same gate the `python` CI job runs per project.
     """
     package = runner.crate.replace("-", "_")
 
@@ -424,119 +372,6 @@ def register_compose_lifecycle(runner: ProjectRunner) -> dict[str, Callable[[], 
     return {"down": down, "ps": ps, "logs": logs}
 
 
-def register_postgres(
-    runner: ProjectRunner,
-    *,
-    user: str,
-    include_install_tools: bool = True,
-    include_prepare: bool = True,
-) -> dict[str, Callable[[], None]]:
-    def _setup() -> None:
-        entry = runner.tasks.get("setup")
-        if entry is not None:
-            entry[0]()
-
-    if include_install_tools:
-
-        @runner.task(
-            "install-tools", "📦", "Setup", "Install sqlx-cli for migrations (Postgres)"
-        )
-        def install_tools() -> None:
-            runner.step("📦", "installing sqlx-cli (rustls + postgres)…")
-            runner.run(
-                [
-                    "cargo",
-                    "install",
-                    "sqlx-cli",
-                    "--no-default-features",
-                    "--features",
-                    "rustls,postgres",
-                ]
-            )
-            runner.ok("sqlx-cli installed")
-
-    else:
-        install_tools = lambda: None  # type: ignore[assignment,return-value]
-
-    @runner.task(
-        "wait-db", "⏳", "Services", "Block until Postgres accepts connections"
-    )
-    def wait_db() -> None:
-        runner.step("⏳", "waiting for Postgres…")
-        for _ in range(30):
-            probe = subprocess.run(
-                [
-                    *runner.compose,
-                    "exec",
-                    "-T",
-                    "postgres",
-                    "pg_isready",
-                    "-U",
-                    user,
-                ],
-                cwd=str(runner.project_dir),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if probe.returncode == 0:
-                runner.ok("Postgres is ready")
-                return
-            time.sleep(1)
-        runner.fail("Postgres did not become ready in time")
-        sys.exit(1)
-
-    @runner.task("migrate", "🗃️", "Services", "Apply SQL migrations (needs sqlx-cli)")
-    def migrate() -> None:
-        _setup()
-        runner.require("sqlx", "Run: make install-tools")
-        runner.step("🗃️", "applying migrations…")
-        runner.run(
-            ["sqlx", "migrate", "run"],
-            cwd=runner.project_dir,
-            env=runner.load_dotenv(),
-        )
-        runner.ok("migrations applied")
-
-    if include_prepare:
-
-        @runner.task(
-            "prepare",
-            "🧬",
-            "Services",
-            "Regenerate sqlx offline query cache (needs Postgres + migrations)",
-        )
-        def prepare() -> None:
-            runner.require("sqlx", "Run: make install-tools")
-            migrate()
-            runner.step("🧬", "preparing sqlx query cache…")
-            runner.run(
-                ["cargo", "sqlx", "prepare", "--", "--all-targets"],
-                cwd=runner.project_dir,
-                env=runner.load_dotenv(),
-            )
-            runner.ok("sqlx cache updated — commit .sqlx/")
-
-    else:
-        prepare = lambda: None  # type: ignore[assignment,return-value]
-
-    @runner.task(
-        "reset-db", "💥", "Services", "Drop volumes and recreate DB (destructive)"
-    )
-    def reset_db() -> None:
-        runner.warn("dropping volumes — this wipes the database")
-        runner.run([*runner.compose, "down", "-v"], cwd=runner.project_dir)
-        runner.run([*runner.compose, "up", "-d"], cwd=runner.project_dir)
-        wait_db()
-        migrate()
-
-    return {
-        "wait_db": wait_db,
-        "migrate": migrate,
-        "prepare": prepare,
-        "reset_db": reset_db,
-    }
-
-
 def register_redis(
     runner: ProjectRunner,
     *,
@@ -599,21 +434,8 @@ def register_redis(
     return result
 
 
-def register_run(runner: ProjectRunner) -> Callable[[], None]:
-    setup = runner.tasks.get("setup")
-    setup_fn = setup[0] if setup else lambda: None
-
-    @runner.task("run", "🚀", "Run", "Run the server (loads .env)")
-    def run_server() -> None:
-        setup_fn()
-        runner.step("🚀", f"starting {runner.crate}…")
-        runner.cargo("run", "-p", runner.crate, env=runner.load_dotenv())
-
-    return run_server
-
-
 def register_python_run(runner: ProjectRunner) -> Callable[[], None]:
-    """Python sibling of `register_run` — runs the project's console script."""
+    """`make run` — the project's console script, with `.env` loaded."""
     setup = runner.tasks.get("setup")
     setup_fn = setup[0] if setup else lambda: None
 
@@ -662,21 +484,15 @@ def find_frontends(proj: Path) -> list[Path]:
     return [proj / d for d in FRONTEND_DIRS if (proj / d / "package.json").exists()]
 
 
-def _server_command(proj: Path, *, use_cargo_watch: bool = True) -> str | None:
+def _server_command(proj: Path) -> str | None:
     """How to start this project's server, or None if it has no entrypoint.
 
-    Rust and Python projects sit side by side in this repo (``/pythonize``
-    converts them one at a time), so the pane has to be discovered from what is
-    actually on disk rather than assumed.
+    The console script is named after the package dir, hyphenated — the
+    convention every project follows.
     """
-    if (proj / "src" / "main.rs").exists():
-        return "exec cargo watch -q -x run" if use_cargo_watch else "exec cargo run"
-
     pyproject = proj / "pyproject.toml"
     if pyproject.is_file():
         for main_py in sorted((proj / "src").glob("*/main.py")):
-            # The console script is named after the package dir, hyphenated —
-            # the convention every converted project follows.
             return f"exec uv run {main_py.parent.name.replace('_', '-')}"
     return None
 
@@ -685,14 +501,12 @@ def discover_dev_panes(
     proj: Path,
     *,
     prefix: str = "",
-    use_cargo_watch: bool = True,
 ) -> dict[str, dict[str, str]]:
     """Pane name → mprocs proc entry, derived from what the project has on disk.
 
     Same rules as ``tools/dev.py``:
 
     * compose file → ``deps`` pane (``docker compose up``)
-    * ``src/main.rs`` → ``server`` (compose up -d --wait, optional migrate, cargo)
     * ``pyproject.toml`` + ``src/<pkg>/main.py`` → ``server`` (uv run <console script>)
     * ``web|dashboard|ui|frontend/package.json`` → Bun Vite pane per dir
     """
@@ -702,14 +516,11 @@ def discover_dev_panes(
     if compose is not None:
         out[f"{prefix}deps"] = {"shell": "docker compose up", "cwd": str(proj)}
 
-    server_cmd = _server_command(proj, use_cargo_watch=use_cargo_watch)
+    server_cmd = _server_command(proj)
     if server_cmd is not None:
         steps: list[str] = []
         if compose is not None:
             steps.append("docker compose up -d --wait")
-        if (proj / "src" / "main.rs").exists() and (proj / "migrations").is_dir():
-            # sqlx only; a Python project applies its schema from the app.
-            steps.append("[ -f .env ] && sqlx migrate run")
         steps.append(server_cmd)
         out[f"{prefix}server"] = {"shell": "; ".join(steps), "cwd": str(proj)}
 
@@ -725,7 +536,7 @@ def launch_mprocs(procs: dict[str, dict[str, str]]) -> None:
     """Write a temp mprocs config and exec into mprocs (does not return)."""
     if shutil.which("mprocs") is None:
         print(
-            f"{C.RED}❌ `mprocs` not found — install with: cargo install mprocs{C.RESET}",
+            f"{C.RED}❌ `mprocs` not found — see https://github.com/pvolok/mprocs#installation{C.RESET}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -738,12 +549,11 @@ def launch_mprocs(procs: dict[str, dict[str, str]]) -> None:
 def register_dev_stack(
     runner: ProjectRunner,
     *,
-    use_cargo_watch: bool = True,
     vite_port: str = "5173",
 ) -> dict[str, Callable[[], None]]:
     """Register ``dev`` (+ ``frontend`` / ``web-install`` when a UI exists).
 
-    Discovers Docker Compose, the Rust server, and Bun frontends under the
+    Discovers Docker Compose, the Python server, and Bun frontends under the
     project dir — same auto-detection as root ``make dev NN=…`` — so a
     per-project ``make dev`` launches the full local stack in one mprocs session.
     """
@@ -751,7 +561,7 @@ def register_dev_stack(
     fes = find_frontends(proj)
 
     def _panes() -> dict[str, dict[str, str]]:
-        return discover_dev_panes(proj, use_cargo_watch=use_cargo_watch)
+        return discover_dev_panes(proj)
 
     @runner.task(
         "dev",
@@ -763,15 +573,10 @@ def register_dev_stack(
         panes = _panes()
         if not panes:
             runner.fail(
-                "nothing to run (no compose file, src/main.rs, or frontend found)"
+                "nothing to run (no compose file, src/<pkg>/main.py, or frontend found)"
             )
             sys.exit(1)
 
-        if use_cargo_watch and "server" in panes:
-            runner.require(
-                "cargo-watch",
-                "Install with: cargo install cargo-watch",
-            )
         if any(name in FRONTEND_DIRS for name in panes):
             runner.require(
                 "bun",
@@ -789,7 +594,7 @@ def register_dev_stack(
         if "server" in panes:
             print(
                 f"   {C.DIM}backend http://localhost:{port} "
-                f"(cargo {'watch' if use_cargo_watch else 'run'}){C.RESET}"
+                f"(uv run){C.RESET}"
             )
         print(f"   {C.DIM}Ctrl-C inside mprocs stops the stack.{C.RESET}")
         launch_mprocs(panes)

@@ -24,8 +24,8 @@ dependencies = [
 # for the live window, and `os.urandom` for the handshake's random block.
 
 [project.scripts]
-# Same name the Rust binary had, so the Makefile, Dockerfile and web/ README
-# read the same as every other project in the gauntlet.
+# Named after the project, like every other project's console script, so the
+# Makefile, Dockerfile and web/ README read the same across the gauntlet.
 live-ingest = "live_ingest.main:main"
 
 [dependency-groups]

@@ -1,12 +1,11 @@
-# Root of the Python side of the repo.
+# Root of the repo's Python tooling.
 #
 # Two jobs:
 #  1. Tooling config for the stdlib-only scripts (tools/status.py,
 #     projects/*/makefile.py). No pip dependencies — Ruff is editor/CI lint only.
-#  2. The **uv workspace** — the direct analogue of the Cargo workspace above it.
-#     Members declare their own deps; the single root `uv.lock` pins every
-#     version, so two projects can never drift onto different lines of a library.
-#     Add a member here when `/pythonize` converts a project.
+#  2. The **uv workspace**. Members declare their own deps; the single root
+#     `uv.lock` pins every version, so two projects can never drift onto
+#     different lines of a library. Add a member here when scaffolding a project.
 #
 # This root is a *virtual* workspace root: no `[project]` table, because the repo
 # root is not itself an installable package.

@@ -1,4 +1,4 @@
-"""Structured logging + metrics — the Python sibling of `crates/common-telemetry`.
+"""Structured logging + metrics, reused by every project.
 
 Fully implemented on purpose (CLAUDE.md's `common-*` exception). Every project
 gets the same three things so observability is never re-invented per project:

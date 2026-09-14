@@ -13,7 +13,7 @@ a manifest (`assets.json`) that the site reads. This command is **incremental**:
 on re-runs it only touches diagrams whose underlying code actually changed, and
 adds new ones only for genuinely new major features.
 
-This command writes SVGs and JSON only. It **reads** Rust code but never
+This command writes SVGs and JSON only. It **reads** the project's code but never
 modifies it — the learning-repo rule is untouched.
 
 ## 1. Resolve the project
@@ -50,7 +50,7 @@ Accuracy is the only trigger; beauty problems get fixed when accuracy forces a r
 
 Then scan for **new** diagram-worthy material (step 4's bar): a vertical that
 has since been implemented, a new service in `docker-compose.yml`, a new module
-wired into `main.rs`. Minor additions (a helper, a config knob, an extra
+wired into `main.py`. Minor additions (a helper, a config knob, an extra
 endpoint on an existing router) do **not** earn a diagram.
 
 ## 3. Read the project before drawing anything
@@ -59,8 +59,8 @@ Same discipline as `/readme` — absorb, then draw:
 
 - **`SPEC.md`** — verticals, tick states, the boss fight. Tick states are the
   ground truth for what exists.
-- **`src/`** — `main.rs` wiring, one pass over each module. A module that is
-  still a `todo!()` shell **does not exist** for diagram purposes.
+- **`src/`** — `main.py` wiring, one pass over each module. A module that is
+  still a `NotImplementedError` shell **does not exist** for diagram purposes.
 - **`docker-compose.yml`** — real infra topology (postgres/redis/nats + ports).
 - **`docs/`, `CONCEPTS.md`** — the *why* behind the design; mine these for the
   plain-language descriptions.
@@ -98,7 +98,7 @@ whiteboard, not the asset.
 
 ## 5. Plain-language rules (the point of all this)
 
-The audience is a curious person on the frontend of the site, not a Rust
+The audience is a curious person on the frontend of the site, not a backend
 reviewer. For every diagram:
 
 - It must answer **one question**, and its `title` *is* that question or its
@@ -116,7 +116,7 @@ reviewer. For every diagram:
   the stakes legible to a curious **non-backend reader**: **name the problem
   this piece faces, then how the design solves it** — the trap first, the fix
   second. One idea per bullet, everyday words, short sentences; read it back and
-  cut anything that sounds like a Rust reviewer wrote it. The `summary` stays
+  cut anything that sounds like a code reviewer wrote it. The `summary` stays
   one card-sized line (a plain string, not bullets).
 - If a term can't be avoided (WAL, quorum), define it in the same bullet in
   plain words the first time it appears.
@@ -188,13 +188,13 @@ keep them in lockstep if you change it):
       "file": "system-overview.svg",
       "kind": "architecture",
       "title": "What answers a click, and what it leans on",
-      "summary": "The three moving parts: the axum server, Redis in front, Postgres behind.",
+      "summary": "The three moving parts: the FastAPI server, Redis in front, Postgres behind.",
       "description": [
         "Every redirect is a read, so a handful of popular links get looked up thousands of times a second.",
         "Redis sits in front as a cache, so those repeat lookups are answered from memory and never touch the database.",
         "Postgres stays the source of truth — wipe the cache and it refills from Postgres, so a cache crash loses speed, never links."
       ],
-      "depicts": ["src/main.rs", "src/routes.rs", "docker-compose.yml"],
+      "depicts": ["src/url_shortener/main.py", "src/url_shortener/routes.py", "docker-compose.yml"],
       "spec": ["V1", "V2"],
       "sourceCommit": "8c64a52",
       "updatedAt": "2026-07-19"

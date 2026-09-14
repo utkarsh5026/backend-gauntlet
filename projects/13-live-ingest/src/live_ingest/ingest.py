@@ -35,8 +35,8 @@ closes *that* socket and nothing else:
   from the server's point of view; it is logged as a warning.
 * `NotImplementedError` — **you** are not done yet. Logged as an error naming
   the function, and recorded on `last_failure` so `/status` shows your worklist
-  without a trip to the log. This is the Python analogue of the Rust
-  scaffold's `todo!()` panic, deliberately not swallowed as a protocol error.
+  without a trip to the log. Deliberately not swallowed as a protocol error:
+  an unwritten vertical should be loud.
 * anything else — a bug. Logged with its traceback.
 
 Each connection's task runs in its own copy of the context, so the

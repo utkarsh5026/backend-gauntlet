@@ -1,12 +1,8 @@
 {
   // Keep this list minimal on purpose. Every extra Python extension spawns
-  // another language server against the same 26 projects; every extra Rust one
-  // re-walks a 1.4 GB target/. See `unwantedRecommendations` for the traps.
+  // another language server against the same 26 projects. See
+  // `unwantedRecommendations` for the traps.
   "recommendations": [
-    // Rust
-    "rust-lang.rust-analyzer",
-    "vadimcn.vscode-lldb",
-    "fill-labs.dependi",
     // Python — Pylance is the ONLY type checker; ruff is the ONLY linter+formatter
     "ms-python.python",
     "ms-python.vscode-pylance",
@@ -19,10 +15,6 @@
     "ms-azuretools.vscode-containers"
   ],
   "unwantedRecommendations": [
-    // Legacy Rust extension — superseded by rust-analyzer.
-    "rust-lang.rust",
-    // Duplicate crates.io version lens; dependi already covers Cargo.toml.
-    "serayuzgur.crates",
     // Three Python type checkers on one workspace is three full analyses.
     // Pylance is the one we keep; these two are the same engine or a rival one.
     "ms-pyright.pyright",

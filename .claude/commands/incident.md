@@ -14,7 +14,7 @@ The whole game is that they diagnose it **themselves, from their own telemetry**
 1. Identify the target project under `projects/NN-*/`. If `$ARGUMENTS` doesn't name
    one, pick the most advanced *active* project (`python3 tools/status.py`).
 2. Verify the arena is up: its `docker compose ps` services healthy, and the app
-   builds/runs (`cargo run -p <crate>`, release if a load component is involved).
+   runs (`make run`, or the project's container if a load component is involved).
    Help the user get it running first if needed — the drill needs a live victim.
 3. Confirm they're ready: "Paging starts when you say go." Nothing is broken yet.
 

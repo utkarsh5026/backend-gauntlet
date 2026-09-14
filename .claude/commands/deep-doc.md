@@ -7,7 +7,7 @@ Write a deep, first-principles teaching document about: **$ARGUMENTS**
 
 This is a LEARNING repo (see CLAUDE.md). A teaching doc is the sanctioned
 "explain/teach" mode — but it must **teach the concept and how the *existing* code
-works**, never spell out the solution to an unsolved `todo!()` / SPEC challenge. If
+works**, never spell out the solution to an unsolved `NotImplementedError` / SPEC challenge. If
 the topic can't be explained without handing over unwritten solution code, stop and
 offer a `/hint` instead.
 
@@ -22,9 +22,9 @@ offer a `/hint` instead.
 ## 2. Ground everything in this project's real code
 
 - **Read the actual source** in that project that the topic touches before writing a
-  word — the relevant `src/*.rs`, `SPEC.md`, routes, tests. Every structural claim in
+  word — the relevant `src/<package>/*.py`, `SPEC.md`, routes, tests. Every structural claim in
   the doc must be anchored to real code that exists, cited with a **relative markdown
-  link** (e.g. `[encode_key](../src/index.rs)`), not invented or generic.
+  link** (e.g. `[encode_key](../src/object_store/index.py)`), not invented or generic.
 - Prefer this project's concrete types, function names, and on-disk layout over
   textbook abstractions. The reader should be able to jump from any claim to the line
   that backs it.
@@ -32,7 +32,7 @@ offer a `/hint` instead.
 ## 3. Verify every factual / computed claim
 
 - Anything you can check, **check with a real tool before asserting it** — hashes
-  (`sha256sum`), encodings, command output, byte values, test results (`cargo test`).
+  (`sha256sum`), encodings, command output, byte values, test results (`make test`).
   Do not hand-write a digest or a "this test passes" claim from memory. If a test
   actually fails or the code diverges from the ideal, say so honestly in the doc.
 

@@ -15,7 +15,7 @@ and hands them out.
 A part is muxed once, on the publisher's session, and stored here. Two hundred
 viewers fetching it get two hundred references to **the same `bytes` object**:
 Python's `bytes` is immutable, so sharing one is a refcount increment, never a
-copy — the direct equivalent of cloning a refcounted `Bytes` in Rust. Starlette
+copy. Starlette
 writes a `Response(content=...)` body straight from that object. Keep it that
 way: a `bytearray` here, or a `bytes(view)` per request, quietly turns fan-out
 into per-viewer memcpy, and the boss fight's "each part muxed once" counter will
@@ -31,8 +31,8 @@ same few megabytes as a ten-minute one.
 
 ## Why there are no locks
 
-The Rust version put the window behind a `Mutex` because sessions and handlers
-ran on a multi-threaded runtime. Here everything runs on **one event loop
+A multi-threaded server would need a lock around the window, because sessions
+and handlers would run in parallel. Here everything runs on **one event loop
 thread**, and none of these methods `await` — so each runs to completion before
 any other coroutine gets the thread, which makes each one atomic with respect to
 every session and every handler. That guarantee holds exactly as long as nobody

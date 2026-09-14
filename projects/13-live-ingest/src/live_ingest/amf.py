@@ -25,8 +25,8 @@ real `connect` by hand.
 
 ## AMF0 maps onto Python's own types — which is both the gift and the trap
 
-Rust needed an `enum Amf0 { Number, Boolean, String, Object, Null }`. Python
-already *has* those five types, so a decoded value is just `float`, `bool`,
+There is no need for a tagged union of AMF0 values: Python already *has*
+those five types, so a decoded value is just `float`, `bool`,
 `str`, `dict` or `None`, and a reply is written as ordinary literals:
 
     encode("_result", 1.0, {"code": "NetConnection.Connect.Success"}, None)
@@ -51,7 +51,7 @@ property test generating doubles must either exclude NaN or compare bits.
 
 **A `dict` preserves insertion order.** AMF0 objects are ordered on the wire;
 Python dicts keep that order, so a decode→encode round-trip can be byte-exact.
-(Rust's `BTreeMap` sorted the keys and could not.)
+(A sorted map would reorder the keys and could not.)
 
 **Recursion is an attack surface.** An object value that is an object that is
 an object… decoded recursively reaches Python's recursion limit (~1,000 frames)

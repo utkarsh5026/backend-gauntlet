@@ -6,13 +6,13 @@ argument-hint: <project NN or name> [only Vn | only "<concept>"], e.g. "06", "02
 Generate the set of concept teaching docs for a project: **$ARGUMENTS**
 
 One doc per core concept the project uses, so the reader can walk into the scaffold
-already understanding the *ideas* — then build the `todo!()`s themselves. Think of
+already understanding the *ideas* — then build the `NotImplementedError`s themselves. Think of
 this as running the `/deep-doc` teaching approach across every concept in one
 project's SPEC at once.
 
 This is a LEARNING repo (see CLAUDE.md). These docs are the sanctioned "explain/teach"
 mode, but they **teach the concept, never the solution**. A concept doc prepares you
-to write the vertical; it must not hand over the `todo!()` body or the SPEC challenge's
+to write the vertical; it must not hand over the `NotImplementedError` body or the SPEC challenge's
 answer. If a concept can't be explained without writing solution code, teach the
 general idea and stop at the door — point to `/hint` and `/quest` for the build.
 
@@ -38,12 +38,12 @@ Read the project's `SPEC.md` in full, plus `CONCEPTS.md` if it exists at the pro
 root. Build the concept list from these sources, in priority order:
 
 1. **If `CONCEPTS.md` exists** — use its cards as the authoritative list. Each 🧠 card
-   (mapped to its vertical + `src/<module>.rs`) becomes **one** concept doc; the card's
+   (mapped to its vertical + `src/<package>/<module>.py`) becomes **one** concept doc; the card's
    "you own it when you can explain" bullets are the doc's target outcomes.
 2. **Otherwise, derive from the SPEC:**
    - Each `### Vn. <title>` vertical → one concept doc. Its `*Concept to internalize:*`
      line is the doc's thesis; its **Done when ALL true** criteria are the outcomes the
-     doc must make achievable; its named `src/<module>.rs` is where the reader will
+     doc must make achievable; its named `src/<package>/<module>.py` is where the reader will
      apply it.
    - The **horizontal checklist** fundamentals that aren't already covered by a vertical
      → fold the closely-related ones into a single "backend fundamentals woven through
@@ -58,14 +58,14 @@ If the user narrowed scope in step 1, honor it.
 - Anchor to **this project's** concrete surface: the vertical's module name, the types
   and signatures the scaffold already exposes, the SPEC's Done-when criteria, the
   project's on-disk layout and Docker deps. Cite real files with **relative markdown
-  links** (e.g. `[id_gen.rs](../src/id_gen.rs)`) — including the `todo!()` the reader
+  links** (e.g. `[id_gen.py](../src/url_shortener/id_gen.py)`) — including the `NotImplementedError` the reader
   will fill, pointed at as *the thing you're about to build*, never filled in.
 - Teach the **general concept** first-principles (why it exists, the naive approach and
   how it breaks, the tradeoffs named in the SPEC — e.g. cache-aside vs write-through, or
   Snowflake vs UUIDv4 vs DB sequences). Use the SPEC's own "concept to internalize" and
   the `in the wild` framing where present.
 - **Hard stop at the solution.** Do not write the algorithm, the data-structure choice
-  that *is* the answer, or code that would drop into the `todo!()`. When you reach that
+  that *is* the answer, or code that would drop into the `NotImplementedError` body. When you reach that
   line, name what the reader must decide and why it's the interesting part, then defer to
   `/hint` (graduated nudges) and `/quest` (guided build).
 
@@ -92,7 +92,7 @@ assumed background). Use the existing docs as the quality bar
 - **The design space, not the answer** — lay out the tradeoffs the SPEC asks the reader
   to weigh; make the decision *visible* without making it *for* them.
 - **A mental-model summary table** and a **"where you'll build this"** pointer to the
-  vertical's module + `todo!()`, plus the Done-when criteria this doc unlocks.
+  vertical's module + `NotImplementedError`, plus the Done-when criteria this doc unlocks.
 
 ## 6. Filenames, index & finish
 

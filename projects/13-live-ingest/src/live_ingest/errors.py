@@ -11,19 +11,18 @@
   failure is a `ProtocolError`, and the session loop in `ingest.py` has exactly
   one `except ProtocolError` around a connection's life.
 
-## Why exceptions rather than a result type
+## Why exceptions rather than returned error values
 
-Rust returned `Result<Message, AppError>` from the chunk reader because it had
-no other choice. Reading one chunk is basic header → csid escape → fmt-sized
-message header → extended timestamp → payload, and every step can run out of
-bytes or declare something absurd. Threading an error value back up that walk
-turns each bounds check into control flow. In Python, `raise` is how that walk
+Reading one chunk is basic header → csid escape → fmt-sized message header →
+extended timestamp → payload, and every step can run out of bytes or declare
+something absurd. Returning an error value from each step and checking it at
+every caller turns each bounds check into control flow. `raise` is how that walk
 unwinds, and the one `except` at the session boundary is where a hostile
 publisher is *supposed* to be handled.
 
 So the vertical modules raise; they do not return errors.
 
-## The Python failure mode that is worse than a Rust panic
+## The quiet failure mode: slices that do not raise
 
 `payload[4:8]` on a three-byte buffer does not raise. It returns three bytes,
 `int.from_bytes` turns them into a number, and the bug surfaces as a message
@@ -144,7 +143,7 @@ class ProtocolError(AppError):
     Note what is deliberately **not** a subclass: `NotImplementedError`. A
     vertical you have not written yet is not the publisher's fault, so it is not
     swallowed as one — it ends that connection loudly, with its own log line,
-    exactly like the Rust scaffold's `todo!()` panic did.
+    so the worklist is impossible to miss.
     """
 
     status_code = 400

@@ -73,7 +73,7 @@ register_setup(runner)
 register_python_checks(runner)
 register_python_run(runner)
 # web/ exists → full-stack `dev` (server + Vite on :5113) plus `web-install` / `frontend`.
-register_dev_stack(runner, use_cargo_watch=False, vite_port="5113")
+register_dev_stack(runner, vite_port="5113")
 
 
 @runner.task("sync", "📦", "Setup", "Install/refresh the virtualenv from uv.lock")

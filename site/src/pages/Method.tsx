@@ -1,11 +1,11 @@
 const pillars = [
   {
     title: "Two-axis SPECs",
-    body: "Every project grades on verticals (build the hard core from scratch — the parts you'd normally cargo add) and horizontals (protocols, caching, security, observability woven into the same ticket).",
+    body: "Every project grades on verticals (build the hard core from scratch — the parts you'd normally uv add) and horizontals (protocols, caching, security, observability woven into the same ticket).",
   },
   {
-    title: "todo!() is the worklist",
-    body: "Scaffolds compile; interesting logic panics at runtime on purpose. The gap between a clean cargo check and a defeated boss fight is where the learning lives.",
+    title: "NotImplementedError is the worklist",
+    body: "Scaffolds boot and type-check; interesting logic raises NotImplementedError on purpose. The gap between a green make verify and a defeated boss fight is where the learning lives.",
   },
   {
     title: 'Observable "done"',
@@ -29,7 +29,7 @@ export function Method() {
         </h1>
         <p className="m-0 text-fg-muted">
           Not a tutorial walkthrough, not a product demo. A progression of infrastructure primitives
-          in Rust, designed so the owner writes the interesting code themselves.
+          in Python, designed so the owner writes the interesting code themselves.
         </p>
       </header>
 
@@ -63,7 +63,7 @@ export function Method() {
           </li>
           <li>
             <span className="mr-2 text-err">✕</span>treat a green{" "}
-            <code className="text-fg">cargo check</code> as mastery
+            <code className="text-fg">make verify</code> as mastery
           </li>
         </ul>
       </section>

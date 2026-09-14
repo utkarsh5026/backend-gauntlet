@@ -8,7 +8,7 @@ real world: the transferable skills, the production systems it demystifies, and 
 concrete directions to pursue next.
 
 This is a LEARNING repo (see CLAUDE.md). The user reimplements from scratch the
-primitives they'd normally `cargo add` or rent as a managed service. The recurring,
+primitives they'd normally `uv add` or rent as a managed service. The recurring,
 legitimate doubt is: *"I'll never run my version in prod — so what was the point?"*
 This command answers that, honestly and specifically, grounded in the code they
 actually wrote. It is a **retrospective + forward map**, not a solution or a review.
@@ -25,7 +25,7 @@ actually wrote. It is a **retrospective + forward map**, not a solution or a rev
 - Read the project's `SPEC.md`: the verticals (`### Vn`), each vertical's "concept to
   internalize", the horizontal checklist, and the boss fight.
 - Read the real `src/` modules the verticals map to. **Distinguish built from
-  unbuilt**: a `todo!()` body, an unchecked `- [ ]`, or a `[~]` from-the-field item is
+  unbuilt**: a `NotImplementedError` body, an unchecked `- [ ]`, or a `[~]` from-the-field item is
   *not* an earned skill — don't credit the user for code they haven't written. Only
   map primitives that genuinely exist. Quickly confirm with a glance at the module
   (real logic, not a stub), and if useful `git log --oneline` for what's landed.
@@ -35,7 +35,7 @@ actually wrote. It is a **retrospective + forward map**, not a solution or a rev
 ## 3. Build the mapping — the core of the output
 
 For each **built** primitive/vertical, produce a tight entry with these four beats
-(cite the real module with a relative markdown link, e.g. `[cdc.rs](src/cdc.rs)`):
+(cite the real module with a relative markdown link, e.g. `[cdc.py](src/object_store/cdc.py)`):
 
 - **Real-world mirror** — the production system(s) / managed service this *is* a
   from-scratch version of (name concrete ones: AWS/GCS/Azure services, Redis, Kafka,

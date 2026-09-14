@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Resolve which Cargo packages / frontends CI should build from changed files.
+"""Resolve which frontends CI should build from changed files.
 
 Reads:
   CHANGED_FILES_JSON — JSON array of repo-relative paths (from dorny/paths-filter)
-  CI_FORCE_ALL       — "true" to force full workspace + all frontends
+  CI_FORCE_ALL       — "true" to force every frontend
 
 Writes GitHub Actions outputs:
-  rust_all      — run the full workspace
-  rust_any      — any Rust work to do
-  packages      — space-separated `cargo -p` list (empty when rust_all)
   frontend_any  — whether to run bun frontends
   frontend_dirs — newline-separated frontend dirs to bun-build
+
+Python scope is not decided here: the `python` paths-filter in ci.yml gates that
+job, and it runs every project's `make verify` gate.
 """
 
 from __future__ import annotations
@@ -19,18 +19,6 @@ import json
 import os
 import sys
 from pathlib import Path
-
-# (cargo package name, project dir relative to repo root)
-# Rust projects only. A project converted by `/pythonize` must be removed from
-# this list when it leaves the Cargo workspace — otherwise a change to its
-# `src/` still resolves here and CI runs `cargo clippy -p <name>` for a package
-# that no longer exists. The Python side is scoped by the `python` paths-filter
-# in ci.yml instead.
-#
-# Empty since project 13 converted: every project is Python now, and the Cargo
-# workspace holds only the shared `crates/`. Those still resolve through
-# `_WORKSPACE_PREFIXES` below, so Rust CI keeps running when they change.
-PROJECTS: list[tuple[str, str]] = []
 
 # Frontend dirs (must contain package.json to be built).
 FRONTENDS: list[str] = [
@@ -46,89 +34,16 @@ FRONTENDS: list[str] = [
     "projects/20-full-text-search/web",
 ]
 
-# Paths that affect every crate → full workspace clippy/nextest.
-_WORKSPACE_PREFIXES = (
-    "crates/",
-    ".cargo/",
-)
-_WORKSPACE_FILES = frozenset(
-    {
-        "Cargo.toml",
-        "Cargo.lock",
-        "deny.toml",
-        ".config/hakari.toml",
-    }
-)
-
 
 def parse_changed_files(raw: str | None = None) -> list[str]:
     raw = raw if raw is not None else os.environ.get("CHANGED_FILES_JSON", "")
     raw = raw.strip()
     if not raw:
         return []
-    data = json.loads(raw)
+    data: object = json.loads(raw)
     if not isinstance(data, list):
         raise SystemExit(f"CHANGED_FILES_JSON must be a JSON array, got {type(data).__name__}")
-    return [str(p).replace("\\", "/") for p in data]
-
-
-def touches_workspace_shared(files: list[str]) -> bool:
-    for path in files:
-        if path in _WORKSPACE_FILES:
-            return True
-        if any(path.startswith(prefix) for prefix in _WORKSPACE_PREFIXES):
-            return True
-    return False
-
-
-def _frontend_root_for(project_dir: str) -> str | None:
-    for fe in FRONTENDS:
-        if fe.startswith(project_dir + "/"):
-            return fe
-    return None
-
-
-def is_rust_relevant(path: str, project_dir: str) -> bool:
-    """True when `path` under `project_dir` should pull that crate into CI."""
-    if path != project_dir and not path.startswith(project_dir + "/"):
-        return False
-
-    rel = path[len(project_dir) :].lstrip("/")
-    if not rel:
-        # touched the directory entry itself — treat as relevant
-        return True
-
-    fe = _frontend_root_for(project_dir)
-    if fe is not None:
-        fe_rel = fe[len(project_dir) :].lstrip("/")
-        if rel == fe_rel or rel.startswith(fe_rel + "/"):
-            return False
-
-    # Docs / make / compose-only edits shouldn't compile the crate.
-    if rel.startswith("docs/") or rel.endswith(".md"):
-        return False
-    if rel in ("Makefile", "makefile.py", "docker-compose.yml", ".env.example"):
-        return False
-
-    return (
-        rel.startswith("src/")
-        or rel.startswith("tests/")
-        or rel.startswith("benches/")
-        or rel.startswith("bench/")
-        or rel.startswith("migrations/")
-        or rel.startswith(".sqlx/")
-        or rel.startswith("proto/")
-        or rel in ("Cargo.toml", "build.rs")
-        or rel.endswith(".rs")
-    )
-
-
-def packages_for(files: list[str]) -> list[str]:
-    out: list[str] = []
-    for pkg, project_dir in PROJECTS:
-        if any(is_rust_relevant(f, project_dir) for f in files):
-            out.append(pkg)
-    return out
+    return [str(p).replace("\\", "/") for p in data]  # pyright: ignore[reportUnknownVariableType]
 
 
 def frontends_for(files: list[str]) -> list[str]:
@@ -139,6 +54,12 @@ def frontends_for(files: list[str]) -> list[str]:
         if any(f == fe or f.startswith(fe + "/") for f in files):
             out.append(fe)
     return out
+
+
+def resolve(files: list[str], force_all: bool) -> list[str]:
+    if force_all:
+        return [d for d in FRONTENDS if Path(d, "package.json").is_file()]
+    return frontends_for(files)
 
 
 def write_output(key: str, value: str) -> None:
@@ -153,107 +74,48 @@ def write_output(key: str, value: str) -> None:
     print(f"{key}={summary}")
 
 
-def resolve(files: list[str], force_all: bool) -> tuple[bool, list[str], list[str]]:
-    if force_all:
-        all_fe = [d for d in FRONTENDS if Path(d, "package.json").is_file()]
-        return True, [], all_fe
-
-    if touches_workspace_shared(files):
-        # Shared crates / lockfile → full rust; frontends only if their files changed.
-        return True, [], frontends_for(files)
-
-    return False, packages_for(files), frontends_for(files)
-
-
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
         return self_test()
 
     force_all = os.environ.get("CI_FORCE_ALL", "").lower() in ("1", "true", "yes")
     files = parse_changed_files()
-    rust_all, packages, frontend_dirs = resolve(files, force_all)
-    rust_any = rust_all or bool(packages)
+    frontend_dirs = resolve(files, force_all)
 
-    write_output("rust_all", "true" if rust_all else "false")
-    write_output("rust_any", "true" if rust_any else "false")
-    write_output("packages", " ".join(packages))
     write_output("frontend_any", "true" if frontend_dirs else "false")
     write_output("frontend_dirs", "\n".join(frontend_dirs))
-
-    if rust_all:
-        print("::notice::Rust scope: full workspace", file=sys.stderr)
-    elif packages:
-        print(f"::notice::Rust scope: {' '.join(packages)}", file=sys.stderr)
-    else:
-        print("::notice::Rust scope: none", file=sys.stderr)
 
     if frontend_dirs:
         print(f"::notice::Frontends: {', '.join(frontend_dirs)}", file=sys.stderr)
     else:
         print("::notice::Frontends: none", file=sys.stderr)
-
-    print(f"::notice::Changed files ({len(files)}): {', '.join(files[:20])}{'…' if len(files) > 20 else ''}", file=sys.stderr)
+    shown = ", ".join(files[:20]) + ("…" if len(files) > 20 else "")
+    print(f"::notice::Changed files ({len(files)}): {shown}", file=sys.stderr)
     return 0
 
 
 def self_test() -> int:
-    # Converted projects' Python beside a frontend: no crate, just the frontend.
-    # No project is left in the Cargo workspace, so nothing here may resolve to
-    # a package — a stale PROJECTS entry would fail this.
-    rust_all, pkgs, fes = resolve(
+    # A frontend change builds that frontend; Python beside it does not add one.
+    fes = resolve(
         [
-            "projects/18-ledger-payments-core/src/ledger_payments_core/ledger.py",
-            "projects/06-object-store/web/src/App.tsx",
             "projects/13-live-ingest/src/live_ingest/rtmp.py",
+            "projects/06-object-store/web/src/App.tsx",
         ],
         force_all=False,
     )
-    assert rust_all is False
-    assert pkgs == [], pkgs
     assert fes == ["projects/06-object-store/web"], fes
 
-    # Frontend-only → no rust package for that project.
-    rust_all, pkgs, fes = resolve(
-        ["projects/06-object-store/web/src/main.tsx"],
-        force_all=False,
-    )
-    assert rust_all is False
-    assert pkgs == []
-    assert fes == ["projects/06-object-store/web"]
+    # Python-only and docs-only changes build no frontend.
+    assert resolve(["projects/06-object-store/src/object_store/index.py"], False) == []
+    assert resolve(["projects/06-object-store/SPEC.md", "docs/foo.md"], False) == []
 
-    # Docs-only → skip rust.
-    rust_all, pkgs, _ = resolve(
-        ["projects/06-object-store/SPEC.md", "projects/06-object-store/docs/foo.md"],
-        force_all=False,
-    )
-    assert rust_all is False
-    assert pkgs == []
+    # A path that merely shares a prefix is not inside the frontend dir.
+    assert resolve(["projects/06-object-store/webhooks.py"], False) == []
 
-    # The relevance rules still hold for a Rust project added back later: its
-    # src and sqlx cache count as rust, its frontend and docs do not. Checked on
-    # the rule directly, since PROJECTS is empty.
-    assert is_rust_relevant("projects/99-new/src/main.rs", "projects/99-new")
-    assert is_rust_relevant("projects/99-new/.sqlx/query-abc.json", "projects/99-new")
-    assert not is_rust_relevant("projects/99-new/docs/design.md", "projects/99-new")
-
-    # A converted project's Python sources must resolve to *no* Rust package —
-    # the guard against leaving a stale entry in PROJECTS after /pythonize.
-    rust_all, pkgs, _ = resolve(
-        ["projects/06-object-store/src/object_store/store/__init__.py"],
-        force_all=False,
-    )
-    assert rust_all is False
-    assert pkgs == [], pkgs
-
-    # Shared crate → full workspace.
-    rust_all, pkgs, _ = resolve(["crates/common-config/src/lib.rs"], force_all=False)
-    assert rust_all is True
-    assert pkgs == []
-
-    # CI workflow alone → no rust (scoped PRs stay fast).
-    rust_all, pkgs, _ = resolve([".github/workflows/ci.yml"], force_all=False)
-    assert rust_all is False
-    assert pkgs == []
+    # Forcing builds every frontend that actually has a package.json.
+    assert resolve([], force_all=True) == [
+        d for d in FRONTENDS if Path(d, "package.json").is_file()
+    ]
 
     print("self-test ok")
     return 0

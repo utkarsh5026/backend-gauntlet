@@ -1,19 +1,19 @@
 <div align="center">
 
-# 🦀 backend-gauntlet
+# ⚔️ backend-gauntlet
 
-### Build the infrastructure primitives that power the modern web — in Rust.
+### Build the infrastructure primitives that power the modern web — from scratch, in Python.
 
 Queues, caches, brokers, consensus, gateways, media pipelines.
-Scaffolded SPECs, interesting logic left as `todo!()`. No todo apps.
+Scaffolded SPECs, interesting logic left as `raise NotImplementedError`. No todo apps.
 
 <br>
 
 [![CI](https://github.com/utkarsh5026/backend-gauntlet/actions/workflows/ci.yml/badge.svg)](https://github.com/utkarsh5026/backend-gauntlet/actions/workflows/ci.yml)
 [![Site](https://img.shields.io/badge/site-GitHub%20Pages-d4783a)](https://utkarsh5026.github.io/backend-gauntlet/)
-![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)
-![Tokio](https://img.shields.io/badge/runtime-Tokio-1a1a2e)
-![Axum](https://img.shields.io/badge/web-Axum-0a7e8c)
+![Python](https://img.shields.io/badge/Python-3.13-3776ab?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/web-FastAPI-009688)
+![uv](https://img.shields.io/badge/toolchain-uv-de5fe9)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
@@ -148,7 +148,7 @@ declarative infra with plan/diff/drift (CloudFormation).</sub>
 
 ## 🚀 Start
 
-Fresh clone? One command sets up the whole Python side — installs `uv` if it's
+Fresh clone? One command sets up everything — installs `uv` if it's
 missing, fetches the pinned Python, builds the workspace `.venv`, and seeds every
 project's `.env`. Works on Linux, macOS and Windows, and is safe to re-run:
 
@@ -161,11 +161,11 @@ Then pick a project:
 
 ```bash
 cd projects/23-dynamodb-core
-make run                       # 17 projects are Python; see the Roadmap above
+make run                       # every project is Python; see the Roadmap above
 make verify                    # fmt-check → lint → types → test (the CI gate)
 ```
 
-Project 01 is Python too:
+A project with service dependencies, e.g. 01:
 
 ```bash
 cd projects/01-url-shortener
@@ -175,21 +175,10 @@ make migrate
 make run             # or `make demo` for the browser dashboard
 ```
 
-The Rust half is separate — for a Rust project:
-
 ```bash
-cd projects/04-job-queue
-docker compose up -d
-cp .env.example .env
-sqlx migrate run
-cargo run -p job-queue
-```
-
-```bash
-cargo check --workspace
 make status          # progress dashboard
-make hooks           # once: block commit/push if rustfmt (CI) would fail
-make preflight       # optional manual: cargo fmt --check
+make hooks           # once: block commit/push if ruff (CI) would fail
+make preflight       # optional manual: ruff format --check
 ```
 
 **→** [`projects/01-url-shortener/SPEC.md`](projects/01-url-shortener/SPEC.md)
@@ -197,5 +186,5 @@ make preflight       # optional manual: cargo fmt --check
 ---
 
 <div align="center">
-<sub>Built to learn. One primitive at a time. 🦀</sub>
+<sub>Built to learn. One primitive at a time. ⚔️</sub>
 </div>

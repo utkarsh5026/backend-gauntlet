@@ -1,12 +1,12 @@
-"""Shared configuration helpers — the Python sibling of `crates/common-config`.
+"""Shared configuration helpers, reused by every project.
 
 Fully implemented on purpose: CLAUDE.md marks the `common-*` helpers as the one
 exception to "the owner writes the interesting code". No project should have to
 re-derive dotenv loading or settings plumbing — subclass `BaseConfig`, declare
 typed fields, and let pydantic do the parsing and validation.
 
-Why a settings *class* rather than the Rust helpers' `parse_or(key, default)`
-free functions: in Python the type annotation is the parser. Declaring
+Why a settings *class* rather than `parse_or(key, default)`-style free
+functions: in Python the type annotation is the parser. Declaring
 `port: int = 8070` gets you the env lookup, the string->int coercion, the
 default, and a startup error naming the bad variable, all in one line.
 """

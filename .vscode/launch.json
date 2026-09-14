@@ -2,28 +2,14 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "type": "lldb",
+      "type": "debugpy",
       "request": "launch",
-      "name": "Debug api-gateway",
-      "cargo": {
-        "args": ["build", "--bin=api-gateway", "--package=api-gateway"],
-        "filter": { "name": "api-gateway", "kind": "bin" }
-      },
-      "args": [],
-      "cwd": "${workspaceFolder}/projects/10-api-gateway",
-      "envFile": "${workspaceFolder}/projects/10-api-gateway/.env"
-    },
-    {
-      "type": "lldb",
-      "request": "launch",
-      "name": "Debug url-shortener",
-      "cargo": {
-        "args": ["build", "--bin=url-shortener", "--package=url-shortener"],
-        "filter": { "name": "url-shortener", "kind": "bin" }
-      },
-      "args": [],
-      "cwd": "${workspaceFolder}/projects/01-url-shortener",
-      "envFile": "${workspaceFolder}/projects/01-url-shortener/.env"
+      "name": "Debug live-ingest",
+      "module": "live_ingest.main",
+      "cwd": "${workspaceFolder}/projects/13-live-ingest",
+      "envFile": "${workspaceFolder}/projects/13-live-ingest/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
     },
     {
       "type": "debugpy",

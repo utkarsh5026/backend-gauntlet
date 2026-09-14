@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Blocks commits that would fail CI's rustfmt step.
+# Blocks commits that would fail CI's `ruff format --check`.
 # Install once: make hooks
 # Bypass (rare): SKIP_GIT_HOOKS=1 git commit ...
 set -euo pipefail

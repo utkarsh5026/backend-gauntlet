@@ -1,17 +1,13 @@
 name: Nightly
 
-# Full workspace + every frontend. Catches drift that path-filtered PR CI misses.
+# Every Python project + every frontend. Catches drift that path-filtered PR CI
+# misses (a dependency bump in uv.lock, a flaky test, a frontend nobody touched).
 
 on:
   schedule:
     # 06:17 UTC — avoid the top-of-hour stampede on GitHub-hosted runners.
     - cron: "17 6 * * *"
   workflow_dispatch:
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  SQLX_OFFLINE: "true"
 
 concurrency:
   group: nightly
@@ -22,67 +18,52 @@ permissions:
   pull-requests: read
 
 jobs:
-  rust:
-    name: full workspace
+  python:
+    name: every project's verify gate
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: shortener
-          POSTGRES_PASSWORD: shortener
-          POSTGRES_DB: shortener
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U shortener"
-          --health-interval 5s --health-timeout 3s --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 3s --health-retries 5
-    env:
-      DATABASE_URL: postgres://shortener:shortener@localhost:5432/shortener
-      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v7
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gauntlet-nightly
-          cache-all-crates: true
-      - name: rustfmt
-        run: cargo fmt --all -- --check
-      - name: clippy
-        run: cargo clippy --workspace --all-targets
-      - name: install tools
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-hakari,nextest
-      - name: workspace-hack up to date
+          enable-cache: true
+      - name: sync the uv workspace
+        run: uv sync --all-packages --frozen
+      - name: shared packages
         run: |
-          cargo hakari generate --diff --quiet
-          cargo hakari manage-deps --dry-run --quiet
-      - name: nextest
-        run: cargo nextest run --workspace --all-targets
-      - name: doc tests
-        # nextest skips doctests; run them on the weekly full suite.
-        run: cargo test --workspace --doc
-
-  supply-chain:
-    name: cargo deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
-          arguments: --all-features
+          set -euo pipefail
+          uv run ruff format --check packages
+          uv run ruff check packages
+          for pkg in packages/*/pyproject.toml; do
+            dir=$(dirname "$pkg")
+            echo "::group::$dir"
+            (
+              cd "$dir"
+              uv run pyright
+              if [ -d tests ]; then uv run pytest -q; fi
+            )
+            echo "::endgroup::"
+          done
+      - name: bootstrap script
+        run: |
+          uv run ruff format --check bootstrap.py tools/tests
+          uv run ruff check bootstrap.py tools/tests
+          uv run pyright bootstrap.py
+          uv run pytest -q tools/tests
+      - name: per-project verify
+        run: |
+          set -euo pipefail
+          for proj in projects/*/pyproject.toml; do
+            dir=$(dirname "$proj")
+            echo "::group::$dir"
+            (
+              cd "$dir"
+              uv run ruff format --check .
+              uv run ruff check .
+              uv run pyright
+              uv run pytest -q
+            )
+            echo "::endgroup::"
+          done
 
   frontend:
     name: all bun frontends

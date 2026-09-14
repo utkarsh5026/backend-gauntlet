@@ -372,7 +372,7 @@ timecode/QR (publisher clock vs. what a player renders).
   hold-time targets above still hold, and each built part is muxed **once** (prove it
   with the packaging counter, not per-request).
 
-These numbers were set for the Rust build and are **not scaled down** for Python. One
+These numbers are ambitious on purpose and are **not scaled down** for CPython. One
 event loop serves the ingest and every held reload on a single core, so the p99 hold
 time is where CPython will show first. Where a target is missed, the gap *is* the
 finding: `docs/13-benchmarks.md` records where it topped out and why (the per-part wake
