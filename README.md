@@ -24,7 +24,7 @@ Scaffolded SPECs, interesting logic left as `raise NotImplementedError`. No todo
 
 <!-- status-dashboard:start -->
 <p align="center">
-  <img src="assets/status-dashboard.svg?h=7270555e96ed" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
+  <img src="assets/status-dashboard.svg?h=fc68eeea2627" alt="backend-gauntlet progress dashboard (make status)" width="100%" />
 </p>
 <!-- status-dashboard:end -->
 
