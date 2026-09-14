@@ -40,7 +40,7 @@ dev = [
     # direct replacement for the Rust side's `proptest`.
     "hypothesis>=6.115",
     "asyncpg-stubs>=0.30",
-    "ruff>=0.8",
+    "ruff>=0.16.7",
     "pyright>=1.1.390",
     # The profiling gate in the Definition of done: numbers alone do not close it.
     "py-spy>=0.4",
