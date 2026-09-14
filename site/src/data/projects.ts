@@ -53,7 +53,7 @@ export const projectDetails: ProjectDetail[] = [
     horizontals: [
       "Protocols: deliberate 301/302, Cache-Control / ETag, graceful shutdown",
       "Caching: jittered TTLs, negative cache, documented stampede strategy",
-      "Security: API keys, URL/SSRF validation, sqlx-checked queries",
+      "Security: API keys, URL/SSRF validation, parameterized queries",
       "Observability: request spans, structured redirect logs, /metrics",
     ],
     boss: {
@@ -288,7 +288,7 @@ export const projectDetails: ProjectDetail[] = [
       {
         id: "V1",
         title: "A bounded local cache with O(1) eviction",
-        concept: "Bounded local cache with O(1) LRU/LFU eviction — no cargo-add.",
+        concept: "Bounded local cache with O(1) LRU/LFU eviction — no uv add.",
       },
       {
         id: "V2",

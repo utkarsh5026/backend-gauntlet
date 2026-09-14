@@ -7,11 +7,11 @@
 > but isn't required.
 >
 > This prepares you for **V4** in [SPEC.md](../SPEC.md) — "Low-Latency HLS
-> playlist + blocking delivery" — anchored to [llhls.rs](../src/llhls.rs) (the
-> `render_media_playlist` `todo!()`, the wired `media_playlist` wait-policy shell,
-> `ReloadParams`, `MAX_BLOCK`), the wired park/signal mechanism in
-> [live.rs](../src/live.rs) (`LiveEdge`, `await_edge`), and the HTTP surface in
-> [routes.rs](../src/routes.rs). The tag vocabulary is Apple's published spec
+> playlist + blocking delivery" — anchored to [llhls.py](../src/live_ingest/llhls.py) (the
+> `render_media_playlist` `NotImplementedError`, the wired `media_playlist` wait-policy shell,
+> `ReloadParams`, `MAX_BLOCK_SECONDS`), the wired park/signal mechanism in
+> [live.py](../src/live_ingest/live.py) (`LiveEdge`, `await_edge`), and the HTTP surface in
+> [routes.py](../src/live_ingest/routes.py). The tag vocabulary is Apple's published spec
 > and is taught in full; the renderer and the request→edge mapping are yours.
 
 ---
@@ -93,7 +93,7 @@ current playlist early to an `_HLS_msn` you haven't reached is not a friendly
 fallback — it defeats the entire mechanism.** The player asked to be *woken*,
 not answered. Answer early with a stale playlist and the player just re-asks
 instantly — congratulations, you've rebuilt busy-polling with extra steps. The
-SPEC's `blocking_reload_unblocks_on_part` proof is "unblocks *exactly when* the
+SPEC's `test_blocking_reload_unblocks_on_part` proof is "unblocks *exactly when* the
 part is pushed — never stale, never 404."
 
 New latency arithmetic: the player runs at a hold-back of a few parts instead
@@ -114,7 +114,7 @@ against what the scaffold gives you:
 #EXT-X-VERSION:9                          ← parts need protocol v9+
 #EXT-X-TARGETDURATION:2                   ← ceil(max segment secs)
 #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.0,CAN-SKIP-UNTIL=12.0
-#EXT-X-PART-INF:PART-TARGET=0.3           ← your IngestConfig.target_part_secs
+#EXT-X-PART-INF:PART-TARGET=0.3           ← your Settings.target_part_secs
 #EXT-X-MEDIA-SEQUENCE:11                  ← oldest segment still in the window
 #EXT-X-MAP:URI="init.mp4"                 ← V3's init segment
 #EXT-X-PROGRAM-DATE-TIME:2026-07-14T09:15:07.123Z
@@ -129,8 +129,8 @@ seg/11.m4s
 #EXT-X-PRELOAD-HINT:TYPE=PART,URI="part/12/2.m4s"   ← the part that doesn't exist
 ```
 
-The renderer walks exactly what [`LiveStream::snapshot()`](../src/live.rs)
-returns — the `Vec<Segment>` window (each with `msn`, `parts` carrying
+The renderer walks exactly what [`LiveStream.snapshot()`](../src/live_ingest/live.py)
+returns — the `tuple[Segment, ...]` window (each with `msn`, `parts` carrying
 `duration`/`independent`, `complete`, `duration`, `program_date_time`) and the
 `ended` flag, which when true appends `#EXT-X-ENDLIST` (see
 [04-fundamentals-woven-through.md](04-fundamentals-woven-through.md) on
@@ -138,14 +138,14 @@ stream-end semantics). Tag-by-tag anchors:
 
 | tag | fed by | the rule that matters |
 | --- | --- | --- |
-| `#EXT-X-MEDIA-SEQUENCE` | front of the window (`segments[0].msn`) | counts *forward only* as the window slides — a repeat or a backwards step desyncs every player (`media_sequence_advances`) |
-| `#EXT-X-PART` | each `Part` in each `Segment` | `INDEPENDENT=YES` from `Part::independent`; URIs must match the wired routes (`part/{msn}/{part}`) |
-| `#EXTINF` + segment URI | only `Segment::complete` | listing a forming segment's URI 404s every player that trusts you |
+| `#EXT-X-MEDIA-SEQUENCE` | front of the window (`segments[0].msn`) | counts *forward only* as the window slides — a repeat or a backwards step desyncs every player (`test_media_sequence_advances`) |
+| `#EXT-X-PART` | each `Part` in each `Segment` | `INDEPENDENT=YES` from `Part.independent`; URIs must match the wired routes (`part/{msn}/{part}`) |
+| `#EXTINF` + segment URI | only `Segment.complete` | listing a forming segment's URI 404s every player that trusts you |
 | `#EXT-X-PRELOAD-HINT` | live edge + 1 | the next part index *at the forming segment* — and after a keyframe cut it's `part/{msn+1}/0`; the hint moving correctly across a segment boundary is a classic bug site |
-| `#EXT-X-SERVER-CONTROL` | your config | `PART-HOLD-BACK` (how far back the player should sit) must be ≥ 2× — Apple recommends ~3× — `PART-TARGET`; `CAN-SKIP-UNTIL` advertises delta updates (`_HLS_skip`, stub in `ReloadParams::skip` — legal to leave unsupported at first, then don't advertise it) |
+| `#EXT-X-SERVER-CONTROL` | your config | `PART-HOLD-BACK` (how far back the player should sit) must be ≥ 2× — Apple recommends ~3× — `PART-TARGET`; `CAN-SKIP-UNTIL` advertises delta updates (`_HLS_skip`, stub in `ReloadParams.skip` — legal to leave unsupported at first, then don't advertise it) |
 
 Old segments falling off the front, parts appearing at the back, msn marching
-forward: the playlist is a **sliding window over `live.rs`'s ring**, re-rendered
+forward: the playlist is a **sliding window over `live.py`'s ring**, re-rendered
 per request, never cached (routes already send `Cache-Control: no-store`).
 
 ---
@@ -160,39 +160,40 @@ all wake at the *same instant* — the next `push_part`. Design space:
 | --- | --- | --- |
 | thread per held request | 200 OS threads × ~MB stack, context-storm on wake | the pattern LL-HLS punishes |
 | poll loop per request ("is it there yet?" every 10 ms) | 20,000 lock acquisitions/s of pure waste | busy-polling, again |
-| **park each request on a shared signal; publisher broadcasts once** | 200 dormant futures ≈ KBs; one `send` wakes all | the intended shape |
+| **park each request on a shared signal; publisher broadcasts once** | 200 suspended coroutines ≈ KBs; one `set()` wakes all | the intended shape |
 
 The scaffold wires the third design and it's worth reading as a reference
 pattern even though you don't have to build it:
-[`LiveStream`](../src/live.rs) keeps a `tokio::sync::watch` channel whose value
-is the [`LiveEdge`](../src/live.rs) — the newest `(msn, part)`, ordered
-msn-major so "has the stream reached my target?" is one `>=` compare.
-`push_part` bumps it (`edge_tx.send`); `await_edge(target)` subscribes and
-sleeps until `edge >= target`. An async fn awaiting a `watch` receiver is a
-parked future — no thread, no poll loop — and one send wakes every waiter. This
+[`LiveStream`](../src/live_ingest/live.py) holds its [`LiveEdge`](../src/live_ingest/live.py) — the
+newest `(msn, part)`, a `NamedTuple` so tuple ordering is already msn-major and
+"has the stream reached my target?" is one `>=` compare — plus an
+`asyncio.Event`. `push_part` sets the event (waking everyone parked on it) and
+installs a fresh one; `await_edge(target)` re-checks `edge >= target` after each
+wake and parks again if not. A coroutine awaiting an `Event` is a suspended
+frame — no thread, no poll loop — and one `set()` wakes every waiter. This
 is the same long-poll/park pattern you'll meet again at project 16's edge and
 project 21's task polling.
 
 What V4 *does* own is the **policy** wrapped around that mechanism, visible as
-the wired shell of [`media_playlist`](../src/llhls.rs):
+the wired shell of [`media_playlist`](../src/live_ingest/llhls.py):
 
 1. **Mapping** `ReloadParams` → the `LiveEdge` to wait for. Sounds trivial;
    isn't. `_HLS_msn=12` alone (no `_HLS_part`) means what, exactly — first part
    of 12, or all of 12? What does `_HLS_part=3` mean if msn 12 finished at part
-   2 and the stream moved to 13/0? The scaffold's `params.part.unwrap_or(0)` is
+   2 and the stream moved to 13/0? The scaffold's `params.part or 0` is
    a starting *stance*, not the final answer — pin your semantics down and
    document them in `docs/13-design.md`.
 2. **Bounding the wait.** A request for `_HLS_msn=999999` must not park
    forever — that's a free connection-exhaustion attack. The scaffold's
-   `MAX_BLOCK` (5 s) caps it; the SPEC requires a bounded timeout and a clean
+   `MAX_BLOCK_SECONDS` (5 s) caps it; the SPEC requires a bounded timeout and a clean
    response. (Apple's spec goes further: an `_HLS_msn` more than a couple ahead
    of the newest should be rejected immediately as a `400` rather than held —
    reject-vs-cap is your call to make and document.) Distinguish the *three*
    futures: slightly ahead ⇒ hold; absurdly ahead ⇒ reject/cap; behind but
    evicted ⇒ that's not a hold at all, it's a `404` (the media-fetch routes
    already behave this way — `part_bytes` returning `None` maps to
-   `AppError::NotFound`).
-3. **What a timeout returns.** Expiring `MAX_BLOCK` and returning the current
+   `NotFoundError`).
+3. **What a timeout returns.** Expiring `MAX_BLOCK_SECONDS` and returning the current
    playlist is legal (the part genuinely never came — encoder stalled); what's
    illegal is returning early *when the part was still on schedule* (§2's trap).
 
@@ -200,7 +201,7 @@ One more piece of the ecosystem worth knowing: LL-HLS strongly prefers
 **HTTP/2** — hundreds of held GETs (playlist + preload hints) multiplex over
 one TCP connection instead of hundreds of sockets fighting per-host connection
 limits. The SPEC's horizontal checklist asks you only to *note* HTTP/2 as the
-intended transport; axum behind an h2-terminating proxy is the usual shape.
+intended transport; uvicorn behind an h2-terminating proxy is the usual shape.
 
 ---
 
@@ -209,7 +210,7 @@ intended transport; axum behind an h2-terminating proxy is the usual shape.
 The proof loop for this vertical is pleasantly physical:
 
 ```bash
-cargo run -p live-ingest
+make run
 ffmpeg -re -i sample.mp4 -c copy -f flv rtmp://localhost:1935/live/testkey
 
 curl -s 'http://localhost:8080/live/testkey/index.m3u8'            # snapshot
@@ -235,13 +236,13 @@ the boss fight's arena.
 | Blocking reload | `?_HLS_msn=N&_HLS_part=M` parks until that part exists; **never answer early with stale** |
 | New arithmetic | hold-back ≈ 3 × part ≈ 1 s ⇒ ~2–3 s glass-to-glass |
 | Playlist | a per-request render of `snapshot()`: rolling msn, parts for forming segments, `EXTINF` only when complete, hint at the edge, `ENDLIST` when ended |
-| Concurrency | park N futures on one `watch`-ed `LiveEdge`; one `send` wakes all — no threads, no polling |
-| Bounds | slightly-ahead ⇒ hold · absurd ⇒ reject or cap (`MAX_BLOCK`) · evicted ⇒ 404 |
+| Concurrency | park N coroutines on one `asyncio.Event`; one `push_part` wakes all — no threads, no polling |
+| Bounds | slightly-ahead ⇒ hold · absurd ⇒ reject or cap (`MAX_BLOCK_SECONDS`) · evicted ⇒ 404 |
 | Transport | HTTP/2 so hundreds of held GETs share one connection |
 
 ## 7. Where you'll build this
 
-One `todo!()`, one policy shell, both in [llhls.rs](../src/llhls.rs):
+One `NotImplementedError`, one policy shell, both in [llhls.py](../src/live_ingest/llhls.py):
 
 - `render_media_playlist()` — §3, walking `snapshot()`; the scaffold's TODO
   lists the exact tag order.
@@ -249,14 +250,14 @@ One `todo!()`, one policy shell, both in [llhls.rs](../src/llhls.rs):
   to refine and defend.
 
 Everything it renders exists because your V3 pushed it into
-[`LiveStream`](../src/live.rs); everything it serves goes out through the wired
-[routes.rs](../src/routes.rs) with the cache headers already argued for in
+[`LiveStream`](../src/live_ingest/live.py); everything it serves goes out through the wired
+[routes.py](../src/live_ingest/routes.py) with the cache headers already argued for in
 [04-fundamentals-woven-through.md](04-fundamentals-woven-through.md).
 
 This doc unlocks V4's **Done when ALL true** ([SPEC.md](../SPEC.md)): a valid
 LL-HLS playlist · blocking reload that holds and never returns stale · the
 playlist advancing every part, monotonic · clean 404s outside the window +
 bounded holds · lifetime-appropriate cache headers. Proof:
-`playlist_has_llhls_tags`, `media_sequence_advances`,
-`blocking_reload_unblocks_on_part`, and a live Safari / hls.js session noted in
+`test_playlist_has_llhls_tags`, `test_media_sequence_advances`,
+`test_blocking_reload_unblocks_on_part`, and a live Safari / hls.js session noted in
 `docs/13-benchmarks.md`.

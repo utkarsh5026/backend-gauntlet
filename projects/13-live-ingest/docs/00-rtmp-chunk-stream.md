@@ -7,9 +7,9 @@
 > streaming assumed.
 >
 > This prepares you for **V1** in [SPEC.md](../SPEC.md) — "RTMP handshake +
-> chunk-stream reader" — anchored to [rtmp.rs](../src/rtmp.rs): the
-> `handshake()` `todo!()`, the `ChunkStreamReader::read_message()` `todo!()`, and
-> the `ChunkStreamCtx` / `Message` types the scaffold already gives you. It
+> chunk-stream reader" — anchored to [rtmp.py](../src/live_ingest/rtmp.py): the
+> `handshake()` and `ChunkStreamReader.read_message()` `NotImplementedError`s, and
+> the `ChunkStreamState` / `Message` types the scaffold already gives you. It
 > teaches the *wire format* (which is public protocol spec, not the solution);
 > the parsing code that walks it is yours to write.
 
@@ -23,7 +23,7 @@ headers *delta-compressed against earlier chunks*, so your parser must carry
 state per chunk stream to reassemble anything at all.**
 
 Two ideas in one sentence: *why chunks exist* (head-of-line blocking) and *why
-your reader holds a `HashMap` of contexts* (header compression). Everything in
+your reader holds a `dict` of contexts* (header compression). Everything in
 V1 is one of those two.
 
 ---
@@ -69,7 +69,7 @@ With the default chunk size of **128 bytes**, that 200 KB keyframe becomes
 microseconds, not 410 ms. The cost moved from the wire to *you*: something must
 now put those 1600 pieces back together, correctly, while other messages'
 chunks arrive interleaved between them. That something is
-[`ChunkStreamReader::read_message`](../src/rtmp.rs) — your V1.
+[`ChunkStreamReader.read_message`](../src/live_ingest/rtmp.py) — your V1.
 
 ---
 
@@ -163,8 +163,8 @@ the design buys.
 
 The price: **the wire is meaningless without memory.** A fmt-3 chunk is *pure
 payload* — its timestamp, length, type, everything comes from state you kept.
-That's exactly the [`ChunkStreamCtx`](../src/rtmp.rs) struct in the scaffold
-(one per csid, in the reader's `HashMap`), and it's why `read_message` can't be
+That's exactly the [`ChunkStreamState`](../src/live_ingest/rtmp.py) dataclass in the scaffold
+(one per csid, in the reader's `dict`), and it's why `read_message` can't be
 a pure function of the bytes.
 
 ### 3.3 fmt 3 does double duty — the subtle part
@@ -179,7 +179,7 @@ distinguish them:
    chunk starts a *new* message identical in every header field — including
    applying the timestamp delta again.
 
-The scaffold's `ChunkStreamCtx.partial` buffer is what tells them apart:
+The scaffold's `ChunkStreamState.partial` buffer is what tells them apart:
 non-empty ⇒ continuation, empty ⇒ new message.
 
 ### 3.4 Extended timestamps
@@ -197,7 +197,7 @@ trap. Note how you handle it in `docs/13-design.md`.)
 
 128 bytes is only the *starting* chunk size. Almost the first thing a real
 encoder sends is a **Set Chunk Size** control message (type id 1, see
-[`msg_type::SET_CHUNK_SIZE`](../src/rtmp.rs)) raising it to something like
+[`MessageType.SET_CHUNK_SIZE`](../src/live_ingest/rtmp.py)) raising it to something like
 4096 — at 128 bytes, chunk-header overhead on video is silly. From the moment
 you *finish reassembling* that message, every subsequent chunk's payload
 boundary is different. The scaffold's `set_chunk_size()` (with its clamp —
@@ -224,8 +224,8 @@ chunk 3: C4 | <44 payload bytes>   ← min(chunk_size, remaining) = 44
           └ fmt=3, csid=4 → continuation completes it  partial: 300/300 ✓
 ```
 
-Reassembly yields one `Message { type_id: 9, stream_id: 1, timestamp: 40,
-payload: [300 bytes] }` — and note chunk 3 reads only 44 bytes, not 128: the
+Reassembly yields one `Message(type_id=9, stream_id=1, timestamp=40,
+payload=<300 bytes>)` — and note chunk 3 reads only 44 bytes, not 128: the
 last chunk of a message is *short*. Reading a full `chunk_size` there would
 swallow the next chunk's basic header. This is the single most common V1 bug.
 
@@ -235,23 +235,23 @@ Now the next video frame arrives, same size, 33 ms later, as
 after that, if it's also 300 bytes: just `84 | 00 00 21 | ...` (fmt 2, delta
 only) — or even bare `C4` (fmt 3: same delta re-applied). Meanwhile audio
 chunks on csid 6 interleave freely between all of these, tracked by their *own*
-`ChunkStreamCtx`. That interleaving — two lanes' state advancing independently
-— is what `chunk_header_fmt_inheritance` and `reassembles_multichunk_message`
+`ChunkStreamState`. That interleaving — two lanes' state advancing independently
+— is what `test_chunk_header_fmt_inheritance` and `test_reassembles_multichunk_message`
 in your test list must prove.
 
 ---
 
 ## 5. Where the messages go
 
-`read_message` hands each completed [`Message`](../src/rtmp.rs) up to
-[`Session::handle`](../src/session.rs) (V2), routed by `type_id`:
+`read_message` hands each completed [`Message`](../src/live_ingest/rtmp.py) up to
+[`PublishSession.handle`](../src/live_ingest/session.py) (V2), routed by `type_id`:
 
 | type id | constant | what it is | who consumes it |
 | --- | --- | --- | --- |
 | 1 | `SET_CHUNK_SIZE` | control: new chunk size | the reader itself |
-| 3 / 5 / 6 | `ACK` / `WINDOW_ACK_SIZE` / `SET_PEER_BANDWIDTH` | flow-control bookkeeping | session (mostly ignorable for ingest) |
+| 3 / 5 / 6 | `ACKNOWLEDGEMENT` / `WINDOW_ACK_SIZE` / `SET_PEER_BANDWIDTH` | flow-control bookkeeping | session (mostly ignorable for ingest) |
 | 8 / 9 | `AUDIO` / `VIDEO` | FLV-tagged media | V2 → V3 packager |
-| 18 / 20 | `AMF0_DATA` / `AMF0_COMMAND` | metadata / RPC | V2 (`amf.rs` + `session.rs`) |
+| 18 / 20 | `AMF0_DATA` / `AMF0_COMMAND` | metadata / RPC | V2 (`amf.py` + `session.py`) |
 
 V1's contract is clean: *bytes in, whole typed messages out*. Nothing above V1
 ever sees a chunk boundary — the SPEC's second Done-when box says exactly that.
@@ -266,17 +266,17 @@ protocol is an attack surface:
 
 | field the wire declares | naive reader does | attacker sends | result |
 | --- | --- | --- | --- |
-| message length (24-bit) | `Vec::with_capacity(len)` | `0xFFFFFF` × 64 csids | ~1 GB allocated from one connection |
+| message length (24-bit) | `readexactly(len)` | `0xFFFFFF` × 64 csids | ~1 GB allocated from one connection |
 | chunk size | trusts it | `0x7FFFFFFF` | one "chunk" swallows the connection |
 | basic-header csid escapes | reads N more bytes | truncated stream | read past end / hang forever |
 
 The discipline: **range-check every declared length before allocating or
 slicing, and treat violation as a session-ending error** — a clean
-`Err(AppError)`, never a panic, never an unbounded allocation. The scaffold
+`ProtocolError`, never an unhandled exception, never an unbounded allocation. The scaffold
 already hands you the two guards: `max_message_size` on the reader (checked
 against the declared length *before* you extend `partial`) and the clamp inside
-`set_chunk_size`. The SPEC's last V1 box and the `malformed_chunks_never_panic`
-fuzz test are this row of the design, and the horizontal security checklist
+`set_chunk_size`. The SPEC's last V1 box and the `test_malformed_chunks_never_crash`
+property test are this row of the design, and the horizontal security checklist
 repeats it for a reason: this is the part of V1 that's production-shaped, not
 protocol-trivia-shaped.
 
@@ -299,7 +299,7 @@ making deliberately (and recording in `docs/13-design.md`):
   nothing to inherit. Error, or tolerate with zeroed context? Real encoders
   should never do it; fuzzed bytes will. Your error path is as load-bearing as
   your happy path.
-- **When contexts die.** A `HashMap<u32, ChunkStreamCtx>` that grows per csid
+- **When contexts die.** A `dict[int, ChunkStreamState]` that grows per csid
   is fine for the handful a real encoder uses — but a hostile peer can mint
   csids. Is the map bounded?
 
@@ -321,26 +321,26 @@ acceptance tests written up front.
 | fmt 3 | Continuation if a message is mid-assembly on that csid; full repeat (delta re-applied) otherwise |
 | Extended ts | Field value `0xFFFFFF` (≈4.66 h in ms) ⇒ real value in 4 extra bytes; applies to deltas too |
 | Set Chunk Size | Mid-stream boundary change; applies from the moment the message is reassembled |
-| Statefulness | `HashMap<csid, ChunkStreamCtx>` + current chunk size — the wire is undecodable without it |
+| Statefulness | `dict[csid, ChunkStreamState]` + current chunk size — the wire is undecodable without it |
 | Hostile input | Range-check every declared length before allocating; violations end the session, cleanly |
 
 ## 9. Where you'll build this
 
-Both `todo!()`s live in [rtmp.rs](../src/rtmp.rs):
+Both `NotImplementedError`s live in [rtmp.py](../src/live_ingest/rtmp.py):
 
 - `handshake()` — the C0/C1 ↔ S0/S1/S2 ↔ C2 exchange (§2).
-- `ChunkStreamReader::read_message()` — basic header → fmt-dispatched message
+- `ChunkStreamReader.read_message()` — basic header → fmt-dispatched message
   header → inheritance → payload accumulation → completed `Message` (§3–4),
   with the `max_message_size` guard (§6).
 
-They're called from the already-wired [`Session::run`](../src/session.rs), so
+They're called from the already-wired [`PublishSession.run`](../src/live_ingest/session.py), so
 the moment they work, a real `ffmpeg -f flv rtmp://localhost:1935/live/testkey`
-gets past the handshake and its `connect` command lands in `Session::handle` —
+gets past the handshake and its `connect` command lands in `PublishSession.handle` —
 V2's doorstep.
 
 This doc unlocks V1's **Done when ALL true** ([SPEC.md](../SPEC.md)): handshake
 completes with a real broadcaster · multi-chunk reassembly · fmt 0–3
 inheritance · extended timestamps + mid-stream Set Chunk Size · malformed input
-ends the session cleanly. Proof: `reassembles_multichunk_message`,
-`chunk_header_fmt_inheritance`, `malformed_chunks_never_panic`, and a live
+ends the session cleanly. Proof: `test_reassembles_multichunk_message`,
+`test_chunk_header_fmt_inheritance`, `test_malformed_chunks_never_crash`, and a live
 `ffmpeg` handshake noted in `docs/13-design.md`.

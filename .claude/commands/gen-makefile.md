@@ -6,30 +6,29 @@ allowed-tools: Bash(make *), Bash(python3 *), Bash(ls *), Bash(cat *), Read, Wri
 
 Generate a task runner for: **${ARGUMENTS:-the current project}**
 
-The canonical reference implementation lives at
-`projects/02-rate-limiter/makefile.py` (slim, shared-runner style) and
-`projects/01-url-shortener/makefile.py` (fuller example with bench tasks).
-Shared infrastructure lives in `tools/makefile_runner.py`; help tables in
-`tools/makefile_help.py`. Treat those as the **template** — register common
-bundles and add project-specific `@runner.task` handlers. Do NOT redesign the
-runner; keep it consistent across projects so every project feels the same.
+The canonical reference implementations are `projects/14-media-transport/makefile.py`
+(no compose, probe-heavy) and `projects/13-live-ingest/makefile.py` (with a `web/`
+frontend). Shared infrastructure lives in `tools/makefile_runner.py`; help tables in
+`tools/makefile_help.py`. Treat those as the **template** — register common bundles
+and add project-specific `@runner.task` handlers. Do NOT redesign the runner; keep it
+consistent across projects so every project feels the same.
 
 ## 1. Resolve & inspect the target project
 
 1. Resolve the argument to a project dir under `projects/NN-name/` (e.g. `02` →
    `projects/02-rate-limiter`). If omitted, use the current working directory.
-   Derive `CRATE` = the package name in that project's `Cargo.toml`.
+   Derive `CRATE` = the `[project] name` in that project's `pyproject.toml` (it is
+   also the console script `make run` invokes).
 2. Read the project to learn which tasks actually apply — **do not assume**:
    - `docker-compose.yml` → which services exist (postgres? redis? something
      else?), their user/port, and healthcheck commands. This drives `up`/`down`/
-     `ps`/`logs`/`wait-*`/`reset-db`.
-   - `.env.example` → the env vars (`PORT`, `DATABASE_URL`, etc.) and whether a
-     `setup` (copy `.env.example` → `.env`) task makes sense.
-   - `migrations/` + `sqlx` usage → include `migrate` / `install-tools` only if
-     the project uses a DB with sqlx.
-   - `benches/` (Criterion) → a `bench` task; `bench/` (Node/k6 harness) → the
-     `bench-*` tasks. Skip whichever doesn't exist.
-   - The crate type (bin vs lib) → include `run`/`dev`/`smoke` only for binaries.
+     `ps`/`logs`/`wait-*`/`reset-*`.
+   - `.env.example` → the env vars (`PORT`, `HTTP_PORT`, `DATABASE_URL`, etc.) and
+     whether a `setup` (copy `.env.example` → `.env`) task makes sense.
+   - `migrations/` → a `migrate` task that runs the project's own migration entry
+     point (the app applies its schema; there is no external migration CLI).
+   - `bench/` → the `bench-*` tasks; skip if it doesn't exist.
+   - `web/` / `dashboard/` → `register_dev_stack` for `dev` / `frontend` / `web-install`.
 
 ## 2. Generate `makefile.py`
 
@@ -40,23 +39,26 @@ project. Pattern:
 from makefile_runner import (
     make_runner,
     register_setup,
-    register_cargo_checks,
+    register_python_checks,
+    register_python_run,
     register_compose_lifecycle,
-    register_postgres,   # if sqlx + Postgres
     register_redis,      # if Redis
-    register_run,
     register_smoke_healthz,
+    register_dev_stack,  # if web/ or dashboard/
+    register_md,
     register_help,
 )
 
 runner = make_runner(crate=CRATE, help_title="…", project_dir=PROJECT_DIR, …)
 register_setup(runner)
-register_cargo_checks(runner)
+register_python_checks(runner)
+register_python_run(runner)
 # … register bundles that apply …
 
 @runner.task("up", "🐳", "Services", "…")
 def up(): …
 
+register_md(runner)
 register_help(runner)
 
 if __name__ == "__main__":
@@ -68,20 +70,20 @@ if __name__ == "__main__":
 | Helper | Tasks |
 |--------|-------|
 | `register_setup` | `setup` |
-| `register_cargo_checks` | `check`, `clippy`, `fmt`, `fmt-check`, `test`, `verify`, `clean` |
+| `register_python_checks` | `check`, `lint`, `fmt`, `fmt-check`, `types`, `test`, `verify`, `clean` |
+| `register_python_run` | `run` (`uv run <crate>` with `.env` loaded) |
 | `register_compose_lifecycle` | `down`, `ps`, `logs` |
-| `register_postgres(runner, user=…)` | `install-tools`, `wait-db`, `migrate`, `prepare`, `reset-db` |
 | `register_redis(runner, default_port=…)` | `wait-redis`, `ensure_redis` helper; optional `reset` |
-| `register_run` | `run` |
-| `register_smoke_healthz` | `smoke` (curl `/healthz`) |
+| `register_smoke_healthz` | `smoke` (curl `/healthz` on `PORT`) |
+| `register_dev_stack(runner, vite_port=…)` | `dev` (+ `web-install` / `frontend` when a UI exists) |
+| `register_md` | `md` (glow) |
 | `register_help` | `help` (Rich tables via `makefile_help.py`) |
 
 Adapt **constants** (`CRATE`, `default_port`, bundle params) and add **project-specific**
-`@runner.task` handlers for `up`/`deps`/`dev`, bench tasks, gRPC smoke, web console,
-etc. Reuse the same emojis and groups (`Setup` / `Services` / `Checks` / `Run` /
-`Bench` / `Meta`). Composite tasks (`verify`, `dev`, `reset-db`) call other task
-*functions* directly (via returned dict from bundles, e.g. `pg["migrate"]()`) so
-only the outer banner shows.
+`@runner.task` handlers for `up`/`deps`, probes, bench tasks, gRPC smoke, `profile`
+(py-spy), etc. Reuse the same emojis and groups (`Setup` / `Services` / `Checks` /
+`Run` / `Probe` / `Bench` / `Meta`). Composite tasks call other task *functions*
+directly (via the dict a bundle returns) so only the outer banner shows.
 
 ## 3. Generate the thin `Makefile`
 

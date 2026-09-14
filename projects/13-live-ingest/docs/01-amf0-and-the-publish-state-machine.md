@@ -9,10 +9,11 @@
 > that one ends, at a reassembled `Message` with `type_id = 20`.
 >
 > This prepares you for **V2** in [SPEC.md](../SPEC.md) — "AMF0 commands + the
-> publish state machine" — anchored to [amf.rs](../src/amf.rs) (the
-> `decode`/`encode` `todo!()`s and the `Amf0` enum) and
-> [session.rs](../src/session.rs) (the `State` enum, wired accept loop, and the
-> `Session::handle` `todo!()`). The wire format and the message sequence are
+> publish state machine" — anchored to [amf.py](../src/live_ingest/amf.py) (the
+> `decode`/`encode` `NotImplementedError`s and the `AmfValue` type) and
+> [session.py](../src/live_ingest/session.py) (the `SessionState` enum, the wired `run`
+> lifecycle, and the `PublishSession.handle` `NotImplementedError`), plus the FLV parsers in
+> [flv.py](../src/live_ingest/flv.py). The wire format and the message sequence are
 > public protocol facts and are taught in full; the decoder loop and the state
 > machine's code are yours to write.
 
@@ -25,8 +26,8 @@ session is a state machine that only lets a connection graduate to "sending
 media" after it has answered the right commands in the right order — with the
 stream-key check standing as the auth gate on that final transition.**
 
-Two halves: a *codec* (pure functions over bytes — `amf.rs`) and a *protocol
-brain* (stateful, per-connection — `session.rs`). The scaffold splits them so
+Two halves: a *codec* (pure functions over bytes — `amf.py`) and a *protocol
+brain* (stateful, per-connection — `session.py`). The scaffold splits them so
 the codec is exhaustively testable without a socket.
 
 ---
@@ -47,7 +48,7 @@ silently. The failure modes are all invisible without understanding the dance:
 | Accept media without checking the key | **stream hijacking** | works great, right up until it's an incident |
 
 That last row is the security half of V2. The others are the protocol half.
-Both live in [`Session::handle`](../src/session.rs).
+Both live in [`PublishSession.handle`](../src/live_ingest/session.py).
 
 ---
 
@@ -56,7 +57,7 @@ Both live in [`Session::handle`](../src/session.rs).
 AMF0 ("Action Message Format", from Flash) is how command payloads are encoded.
 It's a classic **TLV-ish typed serialization**: read one marker byte, and the
 marker tells you how to read what follows. Your
-[`marker` module](../src/amf.rs) lists the five types a publish flow uses:
+[`marker` module](../src/live_ingest/amf.py) lists the five types a publish flow uses:
 
 | marker | type | encoding of the value |
 | --- | --- | --- |
@@ -74,7 +75,7 @@ key (`00 00`) can't be real, so `00 00 09` ends the object.
 ### 2.1 A worked decode: a real `connect`, by hand
 
 Here is a minimal `connect` command body — 35 bytes, the kind V1 hands you in a
-`Message { type_id: 20, .. }` payload (byte values verified):
+`Message(type_id=20, …)` payload (byte values verified):
 
 ```
 02 00 07 63 6f 6e 6e 65 63 74   string(7) "connect"        ← command name
@@ -94,7 +95,7 @@ shape.)
 
 That's the whole format. A command message body is simply **several AMF0 values
 concatenated**: name, transaction id, command object (or null), then arguments
-— which is why [`amf::decode`](../src/amf.rs) returns `Vec<Amf0>`, not a single
+— which is why [`amf.decode`](../src/live_ingest/amf.py) returns `list[AmfValue]`, not a single
 value.
 
 ### 2.2 Why round-trip is the correctness bar
@@ -103,8 +104,8 @@ You need both directions: `decode` for the client's commands, `encode` for your
 `_result`/`onStatus` replies. The property `decode(encode(v)) == v` (for the
 five supported types) is the cheapest strong test that both are right — any
 length miscount, endianness slip, or terminator bug breaks identity on some
-input. That's exactly the SPEC's `amf0_roundtrips_publish_command` proof, and
-it's why the scaffold keeps `amf.rs` free of I/O: pure `&[u8]` → `Vec<Amf0>`
+input. That's exactly the SPEC's `test_roundtrip_publish_command` proof, and
+it's why the scaffold keeps `amf.py` free of I/O: pure `bytes` → `list[AmfValue]`
 functions are property-testable in a tight loop.
 
 And the same hostile-input rule as V1 applies — a declared string length must
@@ -150,13 +151,13 @@ ffmpeg / OBS                              your Session
 
 Three replies gate three client behaviors: `_result` to `connect` unblocks
 everything else; `_result` to `createStream` gives the client the **message
-stream id** it will stamp on its media messages (recall `Message::stream_id`
+stream id** it will stamp on its media messages (recall `Message.stream_id`
 from V1); `onStatus NetStream.Publish.Start` is the green light that actually
 starts media flowing.
 
 The middle rows — `releaseStream`, `FCPublish`, and whatever else a client you've
 never met sends — are the forward-compatibility lesson: **unknown commands are
-ignored, not fatal**. An ingest that panics on a command it doesn't know breaks
+ignored, not fatal**. An ingest that crashes on a command it doesn't know breaks
 the day OBS ships a new version.
 
 ---
@@ -173,14 +174,14 @@ what each missing piece of state permits:
 | `publish` only valid from `StreamCreated` | commands arriving out of order corrupt half-initialized state (which stream id? which key?) |
 | Duplicate `publish` handled deliberately | a re-sent `publish` mid-stream re-opens/clobbers the live window |
 
-So the scaffold's [`State`](../src/session.rs) enum is the design:
+So the scaffold's [`SessionState`](../src/live_ingest/session.py) enum is the design:
 `Connected → AppConnected → StreamCreated → Publishing`, transitions driven
 only by correctly-answered commands, media (type 8/9) rejected in any state but
-the last. The SPEC's `media_rejected_before_publish` test is this table's first
+the last. The SPEC's `test_media_rejected_before_publish` test is this table's first
 row made executable.
 
 The key check itself is wired for you:
-[`LiveRegistry::authorize`](../src/live.rs) (a static allow-list from
+[`LiveRegistry.authorize`](../src/live_ingest/live.py) (a static allow-list from
 `STREAM_KEYS`; the TODO there notes a real deployment would verify a signed
 token). What V2 owns is *where it's called and what refusal does*: refuse ⇒
 close the session — and per the horizontal checklist, **never log the raw key**
@@ -205,15 +206,15 @@ special. RTMP media payloads are **FLV tags**, and H.264/AAC each send a
 
 | FLV tag | first bytes say | carries | maps to scaffold |
 | --- | --- | --- | --- |
-| video, `AVCPacketType = 0` | "AVC sequence header" | the `AVCDecoderConfigurationRecord` — SPS/PPS, i.e. the **`avcC`** | `CodecConfig::avc_decoder_config` |
-| audio, `AACPacketType = 0` | "AAC sequence header" | the **AudioSpecificConfig** (~2 bytes: profile, sample rate, channels) | `CodecConfig::aac_audio_specific_config` |
-| video, `AVCPacketType = 1` | "NALUs" | actual coded frames | `fmp4::Sample` (V3) |
+| video, `AVCPacketType = 0` | "AVC sequence header" | the `AVCDecoderConfigurationRecord` — SPS/PPS, i.e. the **`avcC`** | `flv.AvcDecoderConfig.record` |
+| audio, `AACPacketType = 0` | "AAC sequence header" | the **AudioSpecificConfig** (~2 bytes: profile, sample rate, channels) | `flv.AudioSpecificConfig.record` |
+| video, `AVCPacketType = 1` | "NALUs" | actual coded frames | `fmp4.Sample` (V3) |
 
 Why does setup arrive once, first, instead of per frame? Because a decoder
 can't decode frame one without it (SPS/PPS describe resolution, profile, and
 entropy-coding parameters), and repeating it per-frame wastes bytes on
 something that never changes mid-encode. Your V2 dispatcher extracts these
-sequence headers into a [`CodecConfig`](../src/fmp4.rs) — the exact input V3's
+sequence headers into a [`CodecConfig`](../src/live_ingest/fmp4.py) — the exact input V3's
 `build_init` needs — and turns every *subsequent* tag into a `Sample`. That
 extraction is the fourth V2 Done-when box, and it's the seam where this
 vertical hands off to the next: [02-live-fmp4-remuxing.md](02-live-fmp4-remuxing.md).
@@ -225,7 +226,7 @@ vertical hands off to the next: [02-live-fmp4-remuxing.md](02-live-fmp4-remuxing
 The protocol is fixed; these choices are yours (record them in
 `docs/13-design.md`):
 
-- **Decoder shape.** A cursor you advance vs. slicing `&[u8]` recursively —
+- **Decoder shape.** A cursor you advance vs. slicing `bytes` recursively —
   either works; the invariant is that every length is bounds-checked before use
   and object decoding terminates (a buffer of endless key/value pairs must hit
   the end-of-input error, not spin).
@@ -249,7 +250,7 @@ build the vertical against acceptance tests.
 | --- | --- |
 | AMF0 | 1-byte marker then value; numbers are BE f64, strings u16-length-prefixed, objects end at `00 00 09` |
 | Object keys | length-prefixed but *unmarked* — only values carry type markers |
-| Command body | several AMF0 values concatenated: name, transaction id (f64), object/null, args ⇒ `decode` returns `Vec<Amf0>` |
+| Command body | several AMF0 values concatenated: name, transaction id (f64), object/null, args ⇒ `decode` returns `list[AmfValue]` |
 | Round-trip | `decode∘encode = identity` is the codec's correctness bar (and it's I/O-free so you can property-test it) |
 | The dance | `connect`→`_result` · `createStream`→`_result(stream_id)` · `publish(key)`→`onStatus Publish.Start` — each reply unblocks the next client step |
 | Transaction id | echo the client's number back so it can pair reply to call |
@@ -260,22 +261,23 @@ build the vertical against acceptance tests.
 
 ## 8. Where you'll build this
 
-Three `todo!()`s across two files:
+The `NotImplementedError`s across three files:
 
-- [`amf::decode`](../src/amf.rs) and [`amf::encode`](../src/amf.rs) — the codec
+- [`amf.decode`](../src/live_ingest/amf.py) and [`amf.encode`](../src/live_ingest/amf.py) — the codec
   (§2), pure functions, property-test them hard.
-- [`Session::handle`](../src/session.rs) — the dispatcher and state machine
+- [`PublishSession.handle`](../src/live_ingest/session.py) — the dispatcher and state machine
   (§3–5): route by `type_id`, run the dance, gate on
-  [`LiveRegistry::authorize`](../src/live.rs), extract the codec config, feed
+  [`LiveRegistry.authorize`](../src/live_ingest/live.py), extract the codec config (with
+  [flv.py](../src/live_ingest/flv.py)'s four parsers, also `NotImplementedError`s), feed
   samples onward.
 
 The accept loop, session lifecycle, and stream-teardown (`mark_ended`,
 `registry.close`) are already wired around you in
-[session.rs](../src/session.rs).
+[ingest.py](../src/live_ingest/ingest.py) and [session.py](../src/live_ingest/session.py).
 
 This doc unlocks V2's **Done when ALL true** ([SPEC.md](../SPEC.md)): AMF0
-round-trips + never panics on truncated input · full publish sequence with a
+round-trips + never crashes on truncated input · full publish sequence with a
 real broadcaster · media gated on state · codec config extracted · unknown key
-refused. Proof: `amf0_roundtrips_publish_command`,
-`media_rejected_before_publish`, and a live `ffmpeg` publish reaching the media
+refused. Proof: `test_roundtrip_publish_command`,
+`test_media_rejected_before_publish`, and a live `ffmpeg` publish reaching the media
 phase, noted in `docs/13-design.md`.

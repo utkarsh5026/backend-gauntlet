@@ -36,8 +36,8 @@ export function Home() {
 
           <p className="m-0 max-w-[62ch] text-fg-muted">
             Twenty-two infrastructure primitives — queues, caches, brokers, consensus — built from
-            scratch in Rust to learn how they really work. Scaffolded SPECs; the interesting logic
-            left as <code className="text-warn">todo!()</code>.
+            scratch in Python to learn how they really work. Scaffolded SPECs; the interesting logic
+            left as <code className="text-warn">raise NotImplementedError</code>.
           </p>
 
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[0.85rem]">

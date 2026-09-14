@@ -39,7 +39,7 @@ function git(args: string[]): string {
   return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
 }
 
-/** 'projects/06-object-store/src/foo.rs' -> '06' */
+/** 'projects/06-object-store/src/object_store/foo.py' -> '06' */
 function projectIdFromPath(path: string): string | null {
   return path.match(/^projects\/(\d+)-[^/]+\//)?.[1] ?? null;
 }

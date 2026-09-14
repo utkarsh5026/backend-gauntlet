@@ -5,11 +5,11 @@
 directory and launches one mprocs session with a pane per moving part:
 
   deps     docker compose up (foreground, streams service logs)     — if compose file
-  server   compose up -d --wait → sqlx migrate run → cargo watch -x run
+  server   compose up -d --wait → uv run <console script>
   <web>    bun install (first run) + bun run dev                    — per frontend dir
 
 Nothing is configured per project: panes are derived from what exists on disk
-(docker-compose.yml, src/main.rs, migrations/, web|dashboard|ui|frontend/).
+(docker-compose.yml, pyproject.toml + src/<pkg>/main.py, web|dashboard|ui|frontend/).
 Passing several NNs merges their stacks into one session with `NN:`-prefixed
 panes — host-port scoping (54NN, 63NN, …) keeps them collision-free.
 
@@ -45,7 +45,7 @@ def overview() -> None:
     print("usage: make dev NN=01   (multi: NN=\"01 03\")\n")
     print(f"  {'project':<28} panes")
     for proj in sorted(PROJECTS.iterdir()):
-        if not (proj / "Cargo.toml").exists():
+        if not (proj / "pyproject.toml").exists():
             continue
         panes = discover_dev_panes(proj)
         print(f"  {proj.name:<28} {', '.join(panes) or '—'}")
@@ -66,7 +66,7 @@ def main(argv: list[str]) -> None:
             discover_dev_panes(proj, prefix=f"{proj.name[:2]}:" if multi else "")
         )
     if not procs:
-        sys.exit("error: nothing to run (no compose file, src/main.rs, or frontend found)")
+        sys.exit("error: nothing to run (no compose file, src/<pkg>/main.py, or frontend found)")
 
     if show:
         print(json.dumps({"procs": procs}, indent=2))

@@ -17,7 +17,7 @@ Create a high-quality commit for the current changes. Optional hint: **$ARGUMENT
      or area (e.g. `01-url-shortener`, `ci`, `workspace`, `common-config`).
    - Body (when non-trivial): *why* the change exists and any notable decisions —
      not a restatement of the diff. Wrap at ~72 cols.
-   - Note unfinished `todo!()` scaffolding as intentional when relevant.
+   - Note unfinished `NotImplementedError` scaffolding as intentional when relevant.
 5. End the message with this trailer (own line, blank line before it):
    `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 6. Show the proposed message, then commit with `git commit` (use a HEREDOC for the

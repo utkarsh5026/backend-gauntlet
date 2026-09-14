@@ -7,15 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: "Force full workspace + all frontends"
+        description: "Force all frontends"
         type: boolean
         default: false
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  # sqlx macros compile from per-project `.sqlx/` caches (.cargo/config.toml).
-  SQLX_OFFLINE: "true"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -30,9 +24,6 @@ jobs:
     name: detect changes
     runs-on: ubuntu-latest
     outputs:
-      rust_all: ${{ steps.resolve.outputs.rust_all }}
-      rust_any: ${{ steps.resolve.outputs.rust_any }}
-      packages: ${{ steps.resolve.outputs.packages }}
       frontend_any: ${{ steps.resolve.outputs.frontend_any }}
       frontend_dirs: ${{ steps.resolve.outputs.frontend_dirs }}
       python_any: ${{ steps.filter.outputs.python }}
@@ -41,9 +32,8 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          # Single catch-all → JSON file list. Package scope is decided in
-          # tools/ci_resolve_packages.py (avoids dorny `!` negation false-positives
-          # and keeps clippy/nextest on only the crates you touched).
+          # Single catch-all → JSON file list. Frontend scope is decided in
+          # tools/ci_resolve_packages.py (avoids dorny `!` negation false-positives).
           list-files: json
           filters: |
             any:
@@ -56,7 +46,7 @@ jobs:
               - 'uv.lock'
               - 'bootstrap.py'
               - 'tools/tests/**'
-      - name: Resolve package / frontend scope
+      - name: Resolve frontend scope
         id: resolve
         env:
           # boolean inputs arrive as strings on workflow_dispatch; empty on PR/push.
@@ -75,48 +65,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  lint:
-    name: fmt + clippy + hakari
-    needs: changes
-    if: needs.changes.outputs.rust_any == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gauntlet
-          cache-all-crates: true
-      - name: rustfmt
-        run: cargo fmt --all -- --check
-      - name: clippy
-        # NOTE: not using `-D warnings` yet — scaffolds have intentional
-        # dead-code warnings from unimplemented `todo!()`s.
-        env:
-          RUST_ALL: ${{ needs.changes.outputs.rust_all }}
-          PACKAGES: ${{ needs.changes.outputs.packages }}
-        run: |
-          if [ "$RUST_ALL" = "true" ]; then
-            cargo clippy --workspace --all-targets
-          else
-            # shellcheck disable=SC2086
-            set -- $PACKAGES
-            args=()
-            for p in "$@"; do args+=(-p "$p"); done
-            cargo clippy "${args[@]}" --all-targets
-          fi
-      - name: install cargo-hakari
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-hakari
-      - name: workspace-hack up to date
-        # Always on any Rust change — hakari is workspace-global.
-        run: |
-          cargo hakari generate --diff --quiet
-          cargo hakari manage-deps --dry-run --quiet
-
   python:
     name: ruff + pyright + pytest
     needs: changes
@@ -128,8 +76,7 @@ jobs:
         with:
           enable-cache: true
       - name: sync the uv workspace
-        # --frozen: the committed uv.lock is authoritative, exactly like the
-        # Rust side builds against Cargo.lock. A stale lock fails here.
+        # --frozen: the committed uv.lock is authoritative. A stale lock fails here.
         run: uv sync --all-packages --frozen
       - name: shared packages
         # The `common-*` helpers are fully implemented and reused by every
@@ -175,63 +122,6 @@ jobs:
             echo "::endgroup::"
           done
 
-  test:
-    name: nextest
-    needs: changes
-    if: needs.changes.outputs.rust_any == 'true'
-    runs-on: ubuntu-latest
-    # Shared Postgres/Redis for sqlx::test / integration tests. Host ports are
-    # the container defaults (not the project-scoped 54NN/63NN used locally).
-    # POSTGRES_USER can create DBs, so any crate's #[sqlx::test] works.
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: shortener
-          POSTGRES_PASSWORD: shortener
-          POSTGRES_DB: shortener
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U shortener"
-          --health-interval 5s --health-timeout 3s --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 3s --health-retries 5
-    env:
-      DATABASE_URL: postgres://shortener:shortener@localhost:5432/shortener
-      REDIS_URL: redis://localhost:6379
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gauntlet
-          cache-all-crates: true
-      - name: install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-      - name: test
-        # nextest typechecks as it builds tests — no separate `cargo check`.
-        env:
-          RUST_ALL: ${{ needs.changes.outputs.rust_all }}
-          PACKAGES: ${{ needs.changes.outputs.packages }}
-        run: |
-          if [ "$RUST_ALL" = "true" ]; then
-            cargo nextest run --workspace --all-targets
-          else
-            # shellcheck disable=SC2086
-            set -- $PACKAGES
-            args=()
-            for p in "$@"; do args+=(-p "$p"); done
-            cargo nextest run "${args[@]}" --all-targets
-          fi
-
   frontend:
     name: bun frontends
     needs: changes
@@ -261,43 +151,25 @@ jobs:
             echo "::endgroup::"
           done <<< "$FRONTEND_DIRS"
 
-  supply-chain:
-    name: cargo deny
-    needs: changes
-    if: needs.changes.outputs.rust_any == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
-          arguments: --all-features
-
   # Single required-check target: skipped jobs count as OK.
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, secrets, lint, python, test, frontend, supply-chain]
+    needs: [changes, secrets, python, frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate job results
         env:
           SECRETS: ${{ needs.secrets.result }}
-          LINT: ${{ needs.lint.result }}
           PYTHON: ${{ needs.python.result }}
-          TEST: ${{ needs.test.result }}
           FRONTEND: ${{ needs.frontend.result }}
-          DENY: ${{ needs.supply-chain.result }}
           CHANGES: ${{ needs.changes.result }}
         run: |
           set -euo pipefail
           ok() { [ "$1" = "success" ] || [ "$1" = "skipped" ]; }
-          echo "changes=$CHANGES secrets=$SECRETS lint=$LINT python=$PYTHON test=$TEST frontend=$FRONTEND deny=$DENY"
+          echo "changes=$CHANGES secrets=$SECRETS python=$PYTHON frontend=$FRONTEND"
           [ "$CHANGES" = "success" ]
           [ "$SECRETS" = "success" ]
-          ok "$LINT"
           ok "$PYTHON"
-          ok "$TEST"
           ok "$FRONTEND"
-          ok "$DENY"
           echo "All CI gates passed"

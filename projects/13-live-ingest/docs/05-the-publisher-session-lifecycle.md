@@ -1,11 +1,12 @@
 # How a Publisher Session Works — One Connection, From Hello to Video
 
-> A beginner-friendly guide to `session.rs`: what a "session" actually *is*, why it's
-> a state machine, and how it stitches together the three things you already built —
+> A beginner-friendly guide to `session.py`: what a "session" actually *is*, why it's
+> a state machine, and how it stitches together the three things it is built on —
 > the handshake, the chunk reader, and the AMF0 codec.
 >
 > No prior knowledge assumed. Anchored to real code in
-> [session.rs](../src/session.rs) and [live.rs](../src/live.rs). For the AMF0 *wire
+> [session.py](../src/live_ingest/session.py), [ingest.py](../src/live_ingest/ingest.py) and
+> [live.py](../src/live_ingest/live.py). For the AMF0 *wire
 > format* itself, see the sibling doc
 > [01-amf0-and-the-publish-state-machine.md](./01-amf0-and-the-publish-state-machine.md);
 > for the byte framing under it, [00-rtmp-chunk-stream.md](./00-rtmp-chunk-stream.md).
@@ -14,7 +15,7 @@
 
 ## 0. The one sentence to hold onto
 
-**A `Session` is everything the server remembers about one broadcaster's TCP
+**A `PublishSession` is everything the server remembers about one broadcaster's TCP
 connection — and it's a *state machine* because RTMP is a scripted conversation
 (`connect` → `createStream` → `publish` → media) that must happen in order, with an
 auth gate right before the video is allowed to flow.**
@@ -41,62 +42,67 @@ But a live-ingest server has to answer real questions about that hose:
 | Where does this broadcaster's video go so viewers find it? | You have to *route* it somewhere shared. |
 
 So you need a per-connection scratchpad that holds the answers as you discover them.
-That scratchpad is the **`Session`**.
+That scratchpad is the **`PublishSession`**.
 
 ---
 
-## 2. What a `Session` actually is
+## 2. What a `PublishSession` actually is
 
-Look at the struct — it is literally "the answers to the questions above"
-([session.rs](../src/session.rs)):
+Look at `__init__` — it is literally "the answers to the questions above"
+([session.py](../src/live_ingest/session.py)):
 
-```rust
-pub struct Session {
-    id: u64,                          // which connection (for logs)
-    stream: TcpStream,                // THE hose — this one broadcaster's socket
-    registry: Arc<LiveRegistry>,      // shared: the map of all live streams
-    cfg: Arc<IngestConfig>,           // config: allowed keys, window size…
-    state: State,                     // ← where we are in the conversation
-    stream_key: Option<String>,       // filled once they publish (who they are)
-    live: Option<Arc<LiveStream>>,    // filled once publishing (where video goes)
-}
+```python
+class PublishSession:
+    def __init__(self, session_id, reader, writer, registry, settings):
+        self.id = session_id  # which connection (for logs)
+        self.reader = reader  # THE hose, inbound — this broadcaster's socket
+        self.writer = writer  # …and outbound, for replies
+        self.registry = registry  # shared: the map of all live streams
+        self.settings = settings  # config: allowed keys, window size…
+        self.chunks = ChunkStreamReader()  # V1's per-connection chunk state
+        self.state = SessionState.CONNECTED  # ← where we are in the conversation
+        self.stream_key: str | None = None  # filled once they publish (who they are)
+        self.live: LiveStream | None = None  # filled once publishing (where video goes)
 ```
 
-Two of these fields are `Option` for a reason that matters: `stream_key` and `live`
+Two of these fields are `X | None` for a reason that matters: `stream_key` and `live`
 are **`None` until the broadcaster has earned them**. You don't know the key until the
 `publish` command arrives, and you don't hand them a place to write video until that key
 is authorized. The types encode the lifecycle: an un-authorized session *cannot* have a
-`live` window to push into, because it's `None`.
+`live` window to push into, because it's `None` — and pyright strict will not
+let `handle` call `self.live.push_part` without first proving it isn't.
 
-`id`, `registry`, and `cfg` come from the outside (the server). `state`, `stream_key`,
+`id`, `registry`, and `settings` come from the outside (the server). `state`, `stream_key`,
 `live` are the session's own evolving memory.
 
-### One connection = one Session = one task
+### One connection = one PublishSession = one task
 
-Where do sessions come from? The `accept_loop` at the bottom of the file
-([session.rs](../src/session.rs)) is the server's front door:
+Where do sessions come from? `RtmpIngest` ([ingest.py](../src/live_ingest/ingest.py)) is the
+server's front door. `asyncio.start_server` calls its `_on_connection` once per
+accepted socket, *inside a task it created for that connection*:
 
-```rust
-Ok((stream, peer)) => {
-    let id = next_id; next_id += 1;
-    let _ = stream.set_nodelay(true);                 // (see box below)
-    let session = Session::new(id, stream, registry.clone());
-    tokio::spawn(session.run());                       // ← its own async task
-}
+```python
+async def _on_connection(self, reader, writer):
+    session_id = next(self._ids)  # mint an id
+    structlog.contextvars.bind_contextvars(rtmp_session=session_id)  # this task's logs only
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # (see box below)
+    session = PublishSession(session_id, reader, writer, self._registry, self._settings)
+    await session.run()  # ← already its own task
 ```
 
-Every time a broadcaster connects, the loop:
-1. mints a new `id`,
-2. builds a fresh `Session` (starting in `State::Connected` — see `new`),
-3. `tokio::spawn`s `session.run()` — **its own independent task**.
+Every time a broadcaster connects, asyncio:
+1. creates a task for that connection and calls `_on_connection` in it, which
+2. mints a new `id` and builds a fresh `PublishSession` (starting in `SessionState.CONNECTED`),
+3. awaits `session.run()` — **inside that independent task**.
 
-So 500 broadcasters = 500 `Session`s = 500 concurrent tasks, each with its own socket
-and its own `state`. They share only the `Arc<LiveRegistry>` (the map of live streams)
-and `Arc<IngestConfig>` — both behind `Arc` (a reference count) so cloning them is cheap
-and safe to share across tasks. The accept loop itself never blocks on a slow
-broadcaster: it spawns and immediately goes back to `accept()`.
+So 500 broadcasters = 500 `PublishSession`s = 500 concurrent tasks, each with its own
+socket and its own `state`. They share only the `LiveRegistry` (the map of live streams)
+and the `Settings` — plain references, safe to share because every task runs on the
+same event-loop thread and none of the registry's methods `await` mid-mutation (see
+[live.py](../src/live_ingest/live.py)). The listener never blocks on a slow broadcaster: a session
+waiting on its socket is a suspended coroutine, not a busy thread.
 
-> **Why `set_nodelay(true)`?** TCP normally batches small writes (Nagle's algorithm) to
+> **Why `TCP_NODELAY`?** TCP normally batches small writes (Nagle's algorithm) to
 > save packets. RTMP's control replies (`_result`, `onStatus`) are tiny, and the
 > broadcaster is *waiting* for them before it proceeds. Batching would add latency to
 > every handshake. Turning Nagle off sends them immediately. This is the same reason
@@ -107,50 +113,45 @@ broadcaster: it spawns and immediately goes back to `accept()`.
 ## 3. The lifecycle: what `run()` does
 
 `run()` is the whole life of one connection, start to finish
-([session.rs](../src/session.rs)):
+([session.py](../src/live_ingest/session.py)):
 
-```rust
-async fn run(mut self) {
-    // (a) prove it's a real RTMP peer
-    if let Err(e) = rtmp::handshake(&mut self.stream).await { … return; }
+```python
+async def run(self) -> None:
+    # (a) prove it's a real RTMP peer
+    await handshake(self.reader, self.writer)
 
-    // (b) set up framing
-    let mut reader = ChunkStreamReader::new(MAX_MESSAGE_SIZE);
+    # (b) framing — self.chunks, a ChunkStreamReader, was built in __init__
 
-    // (c) the message loop
-    loop {
-        match reader.read_message(&mut self.stream).await {
-            Ok(msg) => { if self.handle(&mut reader, msg).await.is_err() { break; } }
-            Err(e)  => { break; }   // socket closed or protocol error → done
-        }
-    }
-
-    // (d) teardown
-    if let (Some(key), Some(live)) = (&self.stream_key, &self.live) {
-        live.mark_ended();
-        self.registry.close(key);
-    }
-}
+    try:
+        # (c) the message loop — ends when something raises
+        while True:
+            message = await self.chunks.read_message(self.reader)
+            await self.handle(message)
+    finally:
+        # (d) teardown — runs however the loop ended
+        if self.live is not None:
+            self.live.mark_ended()
+        if self.stream_key is not None:
+            self.registry.close(self.stream_key)
 ```
 
 Four phases, and notice how each pulls in a piece you already built:
 
-- **(a) Handshake** — `rtmp::handshake` (V1). Until this returns `Ok`, you don't trust
-  the peer at all. A wrong version byte or a bad C2 echo and the function errors, `run`
-  returns, the task ends, the socket closes. (This is exactly what your
-  `make smoke-rtmp` proved end-to-end.)
+- **(a) Handshake** — `rtmp.handshake` (V1). Until this returns, you don't trust
+  the peer at all. A wrong version byte or a bad C2 echo and it raises
+  `HandshakeError`, `run` lets it propagate, [ingest.py](../src/live_ingest/ingest.py) logs it, the
+  task ends, the socket closes. (`make smoke-rtmp` proves it against a real `ffmpeg`.)
 - **(b) Framing** — `ChunkStreamReader` (V1). RTMP splits every logical message into
   ≤128-byte chunks; the reader reassembles them back into whole `Message`s. `run`
   doesn't care about chunks — it just asks for the next *message*.
 - **(c) The loop** — pull one `Message`, `handle` it, repeat. This is the heart. A
   `Message` has a `type_id` (command? audio? video?) and a `payload` (the bytes). The
   loop is dumb on purpose; all the intelligence is in `handle`.
-- **(d) Teardown** — when the loop breaks (socket closed, or `handle` returned an
-  error), *if* this session had actually reached publishing, tell the shared world:
+- **(d) Teardown** — when the loop ends (socket closed, or `handle` raised), *if* this session had actually reached publishing, tell the shared world:
   `live.mark_ended()` (so the viewer playlist gets `#EXT-X-ENDLIST` — "the stream is
   over") and `registry.close(key)` (remove it from the live map). If the session never
   published, `stream_key`/`live` are still `None` and there's nothing to clean up — the
-  `if let (Some, Some)` guard skips it.
+  `is not None` guards skip it.
 
 The loop is the load-bearing idea: **the chunk reader turns the byte hose into a stream
 of discrete `Message`s, and the session is a loop that reacts to one message at a
@@ -160,9 +161,9 @@ time.**
 
 ## 4. `handle`: match the message, reply, advance the state
 
-`handle` is the dispatcher — currently the `todo!()` you're about to build
-([session.rs](../src/session.rs)). Its shape (from the SPEC and the doc-comment
-worklist) is a match on `msg.type_id`:
+`handle` is the dispatcher — currently the `NotImplementedError` you're about to build
+([session.py](../src/live_ingest/session.py)). Its shape (from the SPEC and the doc-comment
+worklist) is a dispatch on `message.type_id`:
 
 ```
 AMF0_COMMAND (20)  → decode the AMF0 → look at the command NAME → run the state machine
@@ -172,16 +173,16 @@ other control      → handle or ignore per spec
 ```
 
 The command messages are where the *conversation* happens, and this is where your AMF0
-codec (V2) earns its keep: `amf::decode(&msg.payload)` turns the raw bytes into a
-`Vec<Amf0>`, and the **first value is the command name** — a string like `"connect"`.
+codec (V2) earns its keep: `amf.decode(message.payload)` turns the raw bytes into a
+`list[AmfValue]`, and the **first value is the command name** — a string like `"connect"`.
 That name, combined with the current `state`, decides two things:
 
-1. **What reply to send** — build a response with `amf::encode(...)` and write it back
-   to `self.stream`.
+1. **What reply to send** — build a response with `amf.encode(...)` and write it back
+   to `self.writer`.
 2. **What state to move to** — reassign `self.state`.
 
 That is the entire pattern. It's a request/response RPC (remote procedure call) running
-over the socket, and the `State` enum is your memory of how far the RPC dance has
+over the socket, and the `SessionState` enum is your memory of how far the RPC dance has
 progressed.
 
 ---
@@ -189,16 +190,15 @@ progressed.
 ## 5. Why a state machine? (the important part)
 
 A "state machine" sounds fancy; it's just **a variable that remembers where you are,
-plus rules for which inputs are legal now**. Here it's the `State` enum
-([session.rs](../src/session.rs)):
+plus rules for which inputs are legal now**. Here it's the `SessionState` enum
+([session.py](../src/live_ingest/session.py)):
 
-```rust
-pub enum State {
-    Connected,      // handshake done; waiting for `connect`
-    AppConnected,   // `connect` answered; waiting for `createStream`
-    StreamCreated,  // `createStream` answered; waiting for `publish`
-    Publishing,     // authorized — media is flowing
-}
+```python
+class SessionState(StrEnum):
+    CONNECTED = "connected"  # handshake done; waiting for `connect`
+    APP_CONNECTED = "app_connected"  # `connect` answered; waiting for `createStream`
+    STREAM_CREATED = "stream_created"  # `createStream` answered; waiting for `publish`
+    PUBLISHING = "publishing"  # authorized — media is flowing
 ```
 
 Why not just accept whatever comes? Because RTMP setup is **ordered**, and skipping a
@@ -206,20 +206,18 @@ step is either a broken client or an attack:
 
 | Without a state machine | With the state machine |
 |---|---|
-| Audio arrives before `publish` → you'd packetize video from an *unauthenticated* peer. | Media is rejected unless `state == Publishing`. |
+| Audio arrives before `publish` → you'd packetize video from an *unauthenticated* peer. | Media is rejected unless `state is SessionState.PUBLISHING`. |
 | A second `connect` mid-stream → ambiguous; could corrupt the session. | Out-of-order command is rejected/ignored — documented which. |
 | Any key streams to any name → stream takeover. | The `publish` handler checks the key **before** flipping to `Publishing`. |
 
 The single most important line of reasoning: **`Publishing` is a gate, and the auth
 check is the lock on it.** The transition into `Publishing` only happens inside the
 `publish` handler, and only *after* `registry.authorize(key)` returns true
-([live.rs](../src/live.rs)):
+([live.py](../src/live_ingest/live.py)):
 
-```rust
-pub fn authorize(&self, key: &str) -> bool {
-    self.cfg.stream_keys.is_empty()                    // empty allow-list ⇒ any key (dev)
-        || self.cfg.stream_keys.iter().any(|k| k == key)
-}
+```python
+def authorize(self, key: str) -> bool:
+    return not self._allowed or key in self._allowed  # empty allow-list ⇒ any key (dev)
 ```
 
 An unknown key → `authorize` returns false → the session refuses and closes, never
@@ -237,27 +235,27 @@ the right column is `self.state` *after* the step.
 ```
   ffmpeg                         your Session (run → handle)          state
   ─────                          ──────────────────────────          ─────
-  [TCP SYN] ───────────────────▶ accept_loop: new Session(id=0)
-                                 tokio::spawn(run)                    Connected
-  C0/C1 ───────────────────────▶ rtmp::handshake  (V1)
+  [TCP SYN] ───────────────────▶ RtmpIngest: new PublishSession(id=0)
+                                 run() in its own task                Connected
+  C0/C1 ───────────────────────▶ rtmp.handshake  (V1)
         ◀────────────── S0/S1/S2
-  C2 ──────────────────────────▶ echo verified → Ok                  Connected
+  C2 ──────────────────────────▶ echo verified → returns             Connected
                                  ── enter message loop ──
   connect("live") ─────────────▶ read_message → AMF0_COMMAND
-                                 amf::decode → name "connect"
+                                 amf.decode → name "connect"
         ◀── _result (+ Window Ack, Set Peer BW, Set Chunk Size)      AppConnected
   releaseStream / FCPublish ───▶ (bookkeeping commands — ack/ignore) AppConnected
   createStream() ──────────────▶ name "createStream"
         ◀────────── _result(streamId = 1)                            StreamCreated
   publish("mykey","live") ─────▶ name "publish" → authorize("mykey")
                                  ✓ → registry.open("mykey")
-                                 self.live = Some(stream)
-                                 self.stream_key = Some("mykey")
+                                 self.live = stream
+                                 self.stream_key = "mykey"
         ◀── onStatus NetStream.Publish.Start                         Publishing
   [video seq header] ──────────▶ Publishing ✓ → extract avcC (V3)
   [audio seq header] ──────────▶ Publishing ✓ → extract ASC  (V3)
   [video][audio][video]… ──────▶ Publishing ✓ → fmp4 packager → live.push_part()
-  [TCP FIN] ───────────────────▶ read_message → Err → loop breaks
+  [TCP FIN] ───────────────────▶ read_message raises EOFError → loop ends
                                  live.mark_ended(); registry.close("mykey")
 ```
 
@@ -287,7 +285,7 @@ mention them.
 | **nginx-rtmp** (C, the classic OSS ingest) | One `ngx_rtmp_session_t` per connection with a state field, driven by the same `connect`/`createStream`/`publish` handlers. | `on_publish` HTTP callback: instead of a static key list, it POSTs to *your* app to authorize — exactly where our `registry.authorize` is, but as a webhook. |
 | **SRS** / **node-media-server** | Same per-connection session object + command dispatch; node-media-server literally has a `connect`/`createStream`/`publish` switch like our `handle`. | Relay/edge clustering, HTTP-FLV & WebRTC output from the same ingest. |
 | **OBS Studio** (the *client*) | Uses `librtmp` under the hood; walks the identical sequence from the other side and **blocks waiting for each reply** before sending the next command. | This is *why* replies must be byte-correct and timely — OBS shows "Failed to connect" if your `_result` is malformed or slow. |
-| **ffmpeg** (`-f flv rtmp://…`) | `librtmp`/`rtmpproto.c`: sends `connect`, waits for `_result`, sends `releaseStream`+`FCPublish`, `createStream`, then `publish`. | If your server never replies to `connect`, ffmpeg hangs then errors `Input/output error` — the exact symptom you saw before `handle` was implemented. |
+| **ffmpeg** (`-f flv rtmp://…`) | `librtmp`/`rtmpproto.c`: sends `connect`, waits for `_result`, sends `releaseStream`+`FCPublish`, `createStream`, then `publish`. | If your server never replies to `connect`, ffmpeg hangs then errors `Input/output error` — the exact symptom you'll see before `handle` is implemented. |
 | **Twitch / YouTube / Cloudflare Stream ingest** | RTMP(S) ingest endpoints that are, at the edge, this same handshake + `connect`/`publish` state machine. | The **stream key** *is* the auth token (a long random secret), checked against your account — the production version of `authorize`. They then transcode to multiple renditions and repackage to HLS/DASH, exactly the V3/V4 you're heading toward. |
 
 Where our version deliberately stops:
@@ -295,7 +293,7 @@ Where our version deliberately stops:
 - **Auth** — ours is a static allow-list (`STREAM_KEYS`) or "any key" in dev. Real
   ingests verify a signed/random secret against an account, often via an HTTP callback
   (`on_publish`) so the key can be rotated and revoked without redeploying. The
-  `todo!()` in `authorize` even says so ([live.rs](../src/live.rs)).
+  `TODO` on `authorize` even says so ([live.py](../src/live_ingest/live.py)).
 - **Backpressure & limits** — production ingests cap concurrent publishers, bytes/sec,
   and message size (we cap the last with `MAX_MESSAGE_SIZE = 16 MiB` so a lying length
   can't OOM us), and drop or throttle abusive peers.
@@ -316,10 +314,10 @@ every byte.
 | It looks like… | …but it actually is |
 |---|---|
 | "The server receives a video stream." | The server runs a scripted RPC conversation, and video is only the *last* phase after three commands and an auth check. |
-| A `Session` is the video. | A `Session` is per-connection *memory*: where we are (`state`), who they are (`stream_key`), where video goes (`live`). |
+| A `PublishSession` is the video. | A `PublishSession` is per-connection *memory*: where we are (`state`), who they are (`stream_key`), where video goes (`live`). |
 | The state machine is bureaucracy. | It's the **security boundary** — `Publishing` is a gate whose lock is the stream-key check. |
 | `handle` "processes messages." | `handle` = match the command name + current state → send a reply → advance the state. |
-| One server handles all broadcasters in one place. | One `tokio` task *per connection*, each with its own socket and `state`, sharing only the `Arc`'d registry. |
+| One server handles all broadcasters in one place. | One `asyncio` task *per connection*, each with its own socket and `state`, sharing only the registry — all on one loop thread. |
 | The first audio/video is the first frame. | The first A/V messages are the **codec config** (avcC / ASC), mined once for the init segment. |
 
 ---
@@ -328,17 +326,17 @@ every byte.
 
 | Subtopic | File / item |
 |---|---|
-| The per-connection scratchpad | `Session` struct — [session.rs](../src/session.rs) |
-| The lifecycle states | `enum State` — [session.rs](../src/session.rs) |
-| Front door: one task per connection | `accept_loop` — [session.rs](../src/session.rs) |
-| The four phases of a connection | `Session::run` — [session.rs](../src/session.rs) |
-| The dispatcher you're building | `Session::handle` (`todo!()`) — [session.rs](../src/session.rs) |
-| Proving the peer is real (V1) | `rtmp::handshake` — [rtmp.rs](../src/rtmp.rs) |
-| Byte hose → whole messages (V1) | `ChunkStreamReader::read_message` — [rtmp.rs](../src/rtmp.rs) |
-| Command bytes → values (V2) | `amf::decode` / `amf::encode` — [amf.rs](../src/amf.rs) |
-| The auth gate | `LiveRegistry::authorize` — [live.rs](../src/live.rs) |
-| Where video is routed once publishing | `LiveRegistry::open` / `LiveStream::push_part` — [live.rs](../src/live.rs) |
-| Teardown signal to viewers | `LiveStream::mark_ended` / `LiveRegistry::close` — [live.rs](../src/live.rs) |
+| The per-connection scratchpad | `PublishSession` class — [session.py](../src/live_ingest/session.py) |
+| The lifecycle states | `SessionState` — [session.py](../src/live_ingest/session.py) |
+| Front door: one task per connection | `RtmpIngest._on_connection` — [ingest.py](../src/live_ingest/ingest.py) |
+| The four phases of a connection | `PublishSession.run` — [session.py](../src/live_ingest/session.py) |
+| The dispatcher you're building | `PublishSession.handle` (`NotImplementedError`) — [session.py](../src/live_ingest/session.py) |
+| Proving the peer is real (V1) | `rtmp.handshake` — [rtmp.py](../src/live_ingest/rtmp.py) |
+| Byte hose → whole messages (V1) | `ChunkStreamReader.read_message` — [rtmp.py](../src/live_ingest/rtmp.py) |
+| Command bytes → values (V2) | `amf.decode` / `amf.encode` — [amf.py](../src/live_ingest/amf.py) |
+| The auth gate | `LiveRegistry.authorize` — [live.py](../src/live_ingest/live.py) |
+| Where video is routed once publishing | `LiveRegistry.open` / `LiveStream.push_part` — [live.py](../src/live_ingest/live.py) |
+| Teardown signal to viewers | `LiveStream.mark_ended` / `LiveRegistry.close` — [live.py](../src/live_ingest/live.py) |
 
 ---
 

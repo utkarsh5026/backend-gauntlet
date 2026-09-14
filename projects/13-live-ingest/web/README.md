@@ -17,7 +17,7 @@ The dev server proxies `/live` to the backend's HTTP delivery plane on
 watch it here:
 
 ```bash
-cargo run -p live-ingest             # binds HTTP :8080 + RTMP :1935
+make run                             # from projects/13-live-ingest: HTTP :8080 + RTMP :1935
 ffmpeg -re -i in.mp4 -c copy -f flv rtmp://localhost:1935/live/testkey
 ```
 

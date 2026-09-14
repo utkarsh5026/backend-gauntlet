@@ -27,10 +27,8 @@ HOME_ROOMY = Path.home() / ".config" / "glow" / "styles" / "roomy.json"
 
 SKIP_DIR_NAMES = {
     "node_modules",
-    "target",
     ".git",
     "dist",
-    ".sqlx",
     "__pycache__",
     ".venv",
     "venv",

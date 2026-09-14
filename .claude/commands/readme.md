@@ -35,13 +35,13 @@ Absorb the whole project before writing a word:
 - **`bench/`** and any benchmark docs — **real numbers are the crown jewels.**
   Pull actual measured figures (RPS, p99, hit ratios) with their context.
   Never invent or round-trip numbers that aren't in the repo.
-- **`src/`** (module list + `main.rs` wiring), **`tests/`**, **`migrations/`**,
+- **`src/`** (module list + `main.py` wiring), **`tests/`**, **`migrations/`**,
   **`docker-compose.yml`**, **`makefile.py`**, and **`web/`** if present — to
   describe the architecture and the run/dev story accurately.
 - `make status NN=<NN>` for the current progress snapshot.
 
 Cross-check claims against code: a vertical only counts as "built" if its
-boxes are ticked *and* the module isn't a `todo!()` shell.
+boxes are ticked *and* the module isn't a `NotImplementedError` shell.
 
 ## 3. Voice & honesty rules
 
@@ -56,7 +56,7 @@ boxes are ticked *and* the module isn't a `todo!()` shell.
   tradeoff, the number. "I had to make overwrite an atomic pointer flip so a
   reader never sees a torn object" beats "robust and performant".
 - This is a learning repo — say so with pride. "Built from scratch, no
-  `cargo add` for the interesting parts" is the flex.
+  `uv add` for the interesting parts" is the flex.
 - No hype-words (blazingly fast, production-ready, enterprise-grade), no
   spoiling SPEC solutions beyond what the code already reveals, no lying
   about numbers.
@@ -73,7 +73,7 @@ Use GitHub-flavored markdown's full toolkit, in service of readability:
   one, don't leave a broken link). Then an `<h1>` with the project's emoji +
   name, a one-line tagline in *italics* that captures the essence, then a
   short badge row
-  (`img.shields.io` static badges: Rust, the key deps/infra, a
+  (`img.shields.io` static badges: Python, the key deps/infra, a
   `status: active|paused|done` badge from the SPEC status block). Center the
   hero with `<div align="center">`.
 - **Opening story (2–3 paragraphs):** why I built this, what the hard problem
@@ -96,7 +96,7 @@ Use GitHub-flavored markdown's full toolkit, in service of readability:
 - **"What's next":** future tense, my ambitions — unstarted verticals and the
   juiciest From-the-field items.
 - **Run it:** the minimal honest path — `docker compose up -d`, `make dev`,
-  `cargo run -p <crate>` — with the project-scoped host ports called out.
+  `make run` — with the project-scoped host ports called out.
   Test with `make verify`. Keep this short; it's a learning repo, not a
   product install guide.
 - **Deep dives:** link every `docs/*.md` with a one-line first-person hook

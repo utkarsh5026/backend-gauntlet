@@ -6,7 +6,7 @@
   "tasks": [
     {
       "label": "api-gateway: run",
-      "detail": "make run — cargo run with .env loaded (gateway on :8080)",
+      "detail": "make run — the console script with .env loaded (gateway on :8080)",
       "type": "shell",
       "command": "make run",
       "group": {
@@ -17,7 +17,7 @@
         "reveal": "always",
         "panel": "dedicated"
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": []
     },
     {
       "label": "api-gateway: dev",
@@ -28,15 +28,13 @@
         "reveal": "always",
         "panel": "dedicated"
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": []
     },
     {
       "label": "api-gateway: test",
+      "detail": "make test — pytest",
       "type": "shell",
-      "command": "cargo test -p api-gateway",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "command": "make test",
       "group": {
         "kind": "test",
         "isDefault": true
@@ -46,52 +44,47 @@
         "panel": "shared",
         "clear": true
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": []
     },
     {
-      "label": "api-gateway: check",
+      "label": "api-gateway: types",
+      "detail": "make types — pyright strict",
       "type": "shell",
-      "command": "cargo check -p api-gateway",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "command": "make types",
       "group": "build",
       "presentation": {
         "reveal": "always",
         "panel": "shared"
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": []
     },
     {
-      "label": "api-gateway: clippy",
+      "label": "api-gateway: lint",
+      "detail": "make lint — ruff check",
       "type": "shell",
-      "command": "cargo clippy -p api-gateway --all-targets -- -D warnings",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "command": "make lint",
       "group": "build",
       "presentation": {
         "reveal": "always",
         "panel": "shared"
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": ["$ruff"]
     },
     {
       "label": "api-gateway: fmt",
+      "detail": "make fmt — ruff format",
       "type": "shell",
-      "command": "cargo fmt -p api-gateway",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "command": "make fmt",
       "group": "none",
       "presentation": {
         "reveal": "silent",
         "panel": "shared"
-      }
+      },
+      "problemMatcher": []
     },
     {
       "label": "api-gateway: verify",
-      "detail": "make verify — fmt-check → clippy → check → test",
+      "detail": "make verify — fmt-check → lint → types → test",
       "type": "shell",
       "command": "make verify",
       "group": "test",
@@ -100,7 +93,7 @@
         "panel": "shared",
         "clear": true
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": []
     },
     {
       "label": "api-gateway: backends up",
@@ -182,9 +175,10 @@
       "problemMatcher": []
     },
     {
-      "label": "workspace: check all",
+      "label": "workspace: uv sync",
+      "detail": "uv sync --all-packages — every workspace member into the root .venv",
       "type": "shell",
-      "command": "cargo check --workspace",
+      "command": "uv sync --all-packages",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -192,7 +186,7 @@
         "reveal": "always",
         "panel": "shared"
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": []
     },
     {
       "label": "workspace: status",

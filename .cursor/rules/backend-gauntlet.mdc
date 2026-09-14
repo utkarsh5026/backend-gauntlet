@@ -6,31 +6,33 @@ alwaysApply: true
 
 # backend-gauntlet — Cursor rules
 
-This is a **LEARNING repo**. The owner is strengthening Rust + backend + scale skills
-by implementing infrastructure primitives themselves. The full project conventions
-live in `CLAUDE.md` at the repo root — read it.
+This is a **LEARNING repo**. The owner is strengthening backend + scale skills by
+implementing infrastructure primitives themselves, in Python. The full project
+conventions live in `CLAUDE.md` at the repo root — read it.
 
 ## Hard rule: do not solve the exercises
-Projects are scaffolded with `todo!()` markers and a `SPEC.md` "ticket". **Do NOT
-implement `todo!()` bodies or solve SPEC challenges unless explicitly asked.** Default
-to, in order: explain the concept → give graduated hints (not full solutions) →
-review the user's own code → scaffold structure only. `todo!()` panicking at runtime
-is by design, not a bug to fix.
+Projects are scaffolded with `raise NotImplementedError` markers and a `SPEC.md`
+"ticket". **Do NOT implement those bodies or solve SPEC challenges unless explicitly
+asked.** Default to, in order: explain the concept → give graduated hints (not full
+solutions) → review the user's own code → scaffold structure only.
+`NotImplementedError` at runtime is by design, not a bug to fix.
 
 ## Conventions
-- Cargo workspace: dependency versions live ONLY in the root `[workspace.dependencies]`;
-  member crates use `name = { workspace = true }`.
-- `crates/common-*` are fully-implemented shared helpers (the exception to the rule
-  above) — reuse them for telemetry (`common-telemetry`) and config (`common-config`).
+- uv workspace: every project and `packages/common-*` is an explicit member of the
+  root `pyproject.toml`; the single root `uv.lock` is committed. uv only — never pip.
+- `packages/common-*` are fully-implemented shared helpers (the exception to the rule
+  above) — reuse them for telemetry (`common_telemetry`) and config (`common_config`).
 - Each `projects/NN-name/SPEC.md` is two-axis: Vertical (Vx internals to build from
   scratch) + Horizontal checklist (protocols/caching/security/observability). No spoilers.
-- Errors: `thiserror`/`anyhow`; axum handlers return `Result<T, AppError>` and use `?`.
-- Use `sqlx` compile-time-checked queries; never string-concatenate SQL.
+- src layout `src/<package>/`: `main.py` (wiring), `config.py`, `errors.py`,
+  `routes.py`, `state.py`, one module per vertical.
+- Errors are exceptions: raise `AppError` subclasses; `errors.py` maps them to HTTP.
+- SQL is always parameterized; never string-concatenate SQL.
 - Never log secrets/API keys; never commit `.env` (gitignored).
-- Idiomatic async Rust (tokio/axum); match surrounding style; format with `cargo fmt`.
+- Idiomatic async Python (asyncio/FastAPI); pyright strict and ruff clean; match
+  surrounding style.
 
 ## Useful commands
-`make hooks` (once per clone — fmt gate on commit/push) · `make preflight` ·
-`cargo check --workspace` · `cargo clippy --workspace -- -D warnings` ·
-`cargo fmt --all` · `cargo run -p <crate>`. Per project: `docker compose up -d`,
-`sqlx migrate run`.
+`make setup` · `make hooks` (once per clone — ruff gate on commit/push) ·
+`make preflight` · `make status`. Per project: `make verify`, `make run`,
+`docker compose up -d`.

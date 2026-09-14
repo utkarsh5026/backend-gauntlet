@@ -915,8 +915,7 @@ class Bootstrap:
         if "no space left" in lowered or "os error 28" in lowered:
             return [
                 "The disk is full. Free some space and re-run.",
-                "Large removable caches: ./target (Rust builds), ./.venv, uv's cache "
-                "(`uv cache clean`).",
+                "Large removable caches: ./.venv and uv's cache (`uv cache clean`).",
             ]
         if "certificate" in lowered or "tls" in lowered or "ssl" in lowered:
             return [
@@ -1007,17 +1006,10 @@ class Bootstrap:
 
         self.console.ok("core.hooksPath = .githooks")
 
-        # Be honest about what these hooks actually gate: they run cargo fmt.
-        # On a Python-only machine they would fail every single commit.
-        if shutil.which("cargo") is None:
-            self.console.warn(
-                "These hooks run `cargo fmt` (the Rust side) and cargo is not installed — "
-                "every commit will fail. Either install Rust, or bypass per commit with "
-                "SKIP_GIT_HOOKS=1, or unset them:  git config --unset core.hooksPath"
-            )
-            self.record("hooks", "warn", "installed, but cargo is missing")
-        else:
-            self.record("hooks", "ok", "core.hooksPath=.githooks")
+        # The hooks run `uv run ruff`, and uv is the one tool this script has
+        # already guaranteed by the time it gets here — so they cannot be
+        # installed into a state where every commit fails.
+        self.record("hooks", "ok", "core.hooksPath=.githooks (ruff via uv)")
 
     # ── 7. doctor ───────────────────────────────────────────────────────────
     def doctor(self) -> None:
@@ -1031,7 +1023,6 @@ class Bootstrap:
             ("bun", "the web/ frontends (project 20)"),
             ("grpcurl", "`make smoke` against the gRPC rate limiter (02)"),
             ("glow", "`make md` — markdown in the terminal"),
-            ("cargo", "the Rust half of the repo (not needed for Python work)"),
         ]
 
         missing = []
@@ -1197,7 +1188,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--hooks",
         action="store_true",
-        help="also point git's core.hooksPath at .githooks (these run cargo fmt)",
+        help="also point git's core.hooksPath at .githooks (these run ruff format + lint)",
     )
     parser.add_argument(
         "--no-uv-install",

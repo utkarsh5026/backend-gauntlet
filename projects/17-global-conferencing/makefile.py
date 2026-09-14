@@ -74,7 +74,7 @@ register_setup(runner)
 register_python_checks(runner)
 run_server = register_python_run(runner)
 # web/ exists → full-stack `dev` (server + Vite) plus `web-install` / `frontend`.
-register_dev_stack(runner, use_cargo_watch=False)
+register_dev_stack(runner)
 
 MESH = (
     # region, node id, http, media, cascade

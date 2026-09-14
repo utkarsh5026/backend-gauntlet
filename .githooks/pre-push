@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Blocks pushes that would fail CI's fmt (+ hakari when available) lint gate.
+# Blocks pushes that would fail CI's ruff format + lint checks.
 # Install once: make hooks
 # Bypass (rare): SKIP_GIT_HOOKS=1 git push ...
 set -euo pipefail

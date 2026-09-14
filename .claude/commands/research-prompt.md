@@ -6,7 +6,7 @@ argument-hint: <project, e.g. "13" or "13-live-ingest"; omit to infer from branc
 Produce a **ready-to-paste deep-research prompt** for the project **$ARGUMENTS**.
 
 This is a LEARNING repo (see CLAUDE.md). Each project reimplements from scratch the
-primitives you'd normally `cargo add` or rent as a managed service. Before (or
+primitives you'd normally `uv add` or rent as a managed service. Before (or
 alongside) building, the user wants to understand the **real world**: how production
 systems and real companies solve this exact problem today, and what's being invented
 right now on the frontier. That understanding gets captured in the project's
@@ -61,7 +61,7 @@ The prompt you generate must:
 - **Set the role & goal:** a systems engineer's deep dive into `<domain>` — how it
   works from first principles, **how production systems and real companies build it
   today**, and **what's being invented on the frontier (2025–2026)**. State that the
-  reader is implementing the core primitives from scratch in Rust to learn, so the
+  reader is implementing the core primitives from scratch in Python to learn, so the
   research should favor *mechanisms, invariants, tradeoffs, and hard-won operational
   lessons* over marketing or product tours.
 - **Name the concrete scope** you distilled in §2 — the specific protocols/formats/

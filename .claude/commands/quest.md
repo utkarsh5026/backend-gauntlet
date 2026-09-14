@@ -13,7 +13,7 @@ touch `src/` implementation during a quest.
 ## Teaching style — first principles, every phase
 
 Whenever this quest teaches *anything* — a kickoff gap, a design tradeoff in the
-sketch, a Rust error in the build phase — teach it **from first principles**:
+sketch, a Python error in the build phase — teach it **from first principles**:
 
 - **Assume no prior knowledge.** Define every term the moment it first appears;
   never lean on jargon as if it explains itself.
@@ -44,7 +44,7 @@ sketch, a Rust error in the build phase — teach it **from first principles**:
    current one (`python3 tools/status.py NN`). Read the SPEC vertical's full section —
    prose, concept-to-internalize, and its **"Done when ALL true"** block — plus the
    module it names and whatever code already exists there.
-2. **Resume check:** if `tests/<module>_acceptance.rs` already exists, this quest is
+2. **Resume check:** if `tests/test_<module>_acceptance.py` already exists, this quest is
    in progress — run the tests, show the health bar, and jump to Phase 3.
 
 ## Phase 1 — Kickoff (Socratic, short)
@@ -78,20 +78,21 @@ current code does, request by request"). Calibrate by the answers:
 ## Phase 3 — Contract (the one place you write code)
 
 Translate the vertical's **Done when ALL true** boxes into **failing acceptance
-tests** in `tests/<module>_acceptance.rs` — written BEFORE their implementation,
+tests** in `tests/test_<module>_acceptance.py` — written BEFORE their implementation,
 so they physically cannot spoil it:
 
 - **Black-box only:** drive the public surface (HTTP endpoints, the module's
   public API). Never assert internals, private types, or a particular algorithm.
 - **One test per criterion**, named so the SPEC's Proof line can cite it
-  (`stampede_cold_key_hits_db_once`, not `test_v2_3`).
+  (`test_stampede_cold_key_hits_db_once`, not `test_v2_3`).
 - Criteria a test can't capture get sorted honestly: doc-based criteria → a note
   to check at victory; bench/latency targets → they belong to the 🐉 boss fight,
   out of quest scope (scaffold `bench/` at most).
-- Tests may need live deps — use the project's `docker compose up -d` and mark
-  them `#[ignore]`-free but document the requirement at the top of the file.
+- Tests may need live deps — use the project's `docker compose up -d`; don't
+  `pytest.mark.skip` them, document the requirement at the top of the file instead.
 - **Run them. Show the red.** Confirm each fails for the *right* reason
-  (`todo!()` panic or missing behavior — not a compile error in the test itself).
+  (`NotImplementedError` or missing behavior — not an import error or a typo in
+  the test itself).
 
 Present the health bar: `⬜⬜⬜⬜⬜ 0/5 — the contract is signed. Build.`
 
@@ -100,7 +101,7 @@ Present the health bar: `⬜⬜⬜⬜⬜ 0/5 — the contract is signed. Build.`
 - The user implements. You do not edit `src/` — not to fix, not to "just align a
   signature". If they paste an error, point at symptom and where to look, `/hint`
   style; graduated L1→L3 only when asked, full solution only if they ask outright.
-- After each `cargo test -p <crate>` run, report the health bar
+- After each `make test` run, report the health bar
   (`🟩🟩🟩⬜⬜ 3/5`) and which criteria just turned green.
 - If a test turns out to be wrong or over-specified, say so openly, fix the
   *test*, and explain why — the contract can be renegotiated, never quietly.
@@ -109,8 +110,8 @@ Present the health bar: `⬜⬜⬜⬜⬜ 0/5 — the contract is signed. Build.`
 
 When all acceptance tests are green:
 
-1. Verify the gates: `cargo clippy --workspace -- -D warnings` green, doc-based
-   criteria actually satisfied, no `todo!()` left in the module.
+1. Verify the gates: `make verify` green (ruff, pyright strict, pytest), doc-based
+   criteria actually satisfied, no `raise NotImplementedError` left in the module.
 2. Flip the vertical's `- [ ]` boxes to `- [x]` in SPEC.md and set each **Proof**
    line to the acceptance test that demonstrates it.
 3. Mini `/spec-review` of what they wrote — two or three sharpest observations

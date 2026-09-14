@@ -1,6 +1,6 @@
 ---
 description: Scaffold the next project in the roadmap following the two-axis SPEC convention
-argument-hint: <which project, e.g. "23" or "dynamodb"> [--rust]
+argument-hint: <which project, e.g. "23" or "dynamodb">
 ---
 
 Scaffold a new project: **$ARGUMENTS**
@@ -8,10 +8,8 @@ Scaffold a new project: **$ARGUMENTS**
 Follow the conventions in CLAUDE.md exactly. This is a LEARNING repo — scaffold
 structure and a SPEC, but leave the interesting logic unimplemented. Do not solve it.
 
-**Python is the default.** The roadmap is moving off Rust (see `/pythonize`); new
-projects are Python unless `--rust` is passed. In Python the worklist marker is
-`raise NotImplementedError` — the exact analogue of `todo!()`, and `tools/status.py`
-counts it the same way.
+**Projects are Python.** The worklist marker is `raise NotImplementedError`, and
+`tools/status.py` counts it per vertical.
 
 1. Identify the project from `README.md`'s roadmap. Confirm the number/name and its
    place in the tier if ambiguous. If it is not on the roadmap yet, add its row.
@@ -44,7 +42,7 @@ counts it the same way.
      `.python-version` (3.13+), and `migrations/` if it uses a DB.
      **Host ports are project-scoped** (postgres `54NN`, redis `63NN`, …) — only
      the host side; container-internal ports stay canonical.
-   - `src/<package_name>/` (crate name with underscores), **src layout**:
+   - `src/<package_name>/` (package name with underscores), **src layout**:
      `main.py` (wiring COMPLETE — config, lifespan, router, graceful shutdown,
      `common_telemetry` middleware + metrics routes), `config.py` (pydantic-settings,
      one field per `.env.example` var), `errors.py` (AppError→HTTP), `routes.py`,
@@ -81,12 +79,3 @@ counts it the same way.
    (ruff, pyright strict, pytest). A clean run with every vertical still raising is
    the expected scaffold state.
 7. Summarize what was created and the suggested first move — do not start implementing.
-
-## If `--rust` was passed
-
-Scaffold Rust instead: `Cargo.toml` (deps via `{ workspace = true }`, new shared
-deps added to the root `[workspace.dependencies]` first), `src/` with `main.rs`
-(wiring complete), `error.rs`, and one module per vertical with `todo!()` bodies
-wired to `common-telemetry` / `common-config`. Add the crate to the workspace
-`members` list, run `cargo hakari manage-deps`, and verify with
-`cargo check --workspace` (only dead-code warnings are acceptable).

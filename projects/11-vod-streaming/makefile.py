@@ -83,7 +83,7 @@ register_setup(runner)
 register_python_checks(runner)
 run_server = register_python_run(runner)
 register_smoke_healthz(runner)
-register_dev_stack(runner, use_cargo_watch=False)
+register_dev_stack(runner)
 
 
 @runner.task("sync", "📦", "Setup", "Install/refresh the virtualenv from uv.lock")
