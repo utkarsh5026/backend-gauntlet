@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "The AWS wire envelope — errors, target dispatch, batches, Query protocol, ARNs, cursors (Tier 8)."
 requires-python = ">=3.13"
 dependencies = [
-    "starlette>=0.41",
+    "starlette>=1.7.0",
     "structlog>=24.4",
 ]
 
