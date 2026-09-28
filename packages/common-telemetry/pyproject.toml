@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "structlog>=24.4",
     "prometheus-client>=0.21",
-    "starlette>=0.41",
+    "starlette>=1.7.0",
 ]
 
 [build-system]
