@@ -32,7 +32,7 @@ transcode-pipeline = "transcode_pipeline.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # httpx's ASGITransport runs the app on the test's own loop (see conftest).
     "httpx>=0.28",

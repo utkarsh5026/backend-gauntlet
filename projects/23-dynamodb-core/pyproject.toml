@@ -20,7 +20,7 @@ dynamodb-core = "dynamodb_core.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # V1 key-encoding and V3 concurrency proofs want property tests.

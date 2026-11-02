@@ -23,7 +23,7 @@ lambda-compute = "lambda_compute.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # V4's concurrency accounting and V6's batching windows want property tests.

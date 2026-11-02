@@ -40,7 +40,7 @@ ledger-payments-core = "ledger_payments_core.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # V1's Proof is a property test over random balanced batches, and V4's backoff
     # curve wants one too. hypothesis replaces the Rust side's `proptest`.

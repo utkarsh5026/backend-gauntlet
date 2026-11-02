@@ -23,7 +23,7 @@ iam-sts = "iam_sts.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # V1's whole proof is "a request signed by a real AWS SDK verifies unmodified".

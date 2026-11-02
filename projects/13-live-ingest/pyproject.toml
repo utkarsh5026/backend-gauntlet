@@ -30,7 +30,7 @@ live-ingest = "live_ingest.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # Test-only: this process makes no outbound HTTP calls. `ASGITransport`
     # drives the app on the *test's* event loop, which is what lets a test open

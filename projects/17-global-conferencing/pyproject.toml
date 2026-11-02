@@ -35,7 +35,7 @@ global-conferencing = "global_conferencing.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # The SPEC asks for property tests on the placement state machine ("one
     # home per room") and on relay loop-prevention. Both are claims about

@@ -45,7 +45,7 @@ object-store-index = "object_store.index_main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "hypothesis>=6.115",
     "ruff>=0.8",

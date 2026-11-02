@@ -23,7 +23,7 @@ message-broker = "message_broker.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # V1 asks for a framing round-trip proof and V3 for key-stability /

@@ -31,7 +31,7 @@ realtime-pubsub = "realtime_pubsub.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # Drives the app over ASGI, so the HTTP surface is tested without binding a
     # socket. WebSocket tests use Starlette's TestClient instead — see

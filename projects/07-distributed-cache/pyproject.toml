@@ -22,7 +22,7 @@ distributed-cache = "distributed_cache.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # The V1 proof asks for a property test (a random op sequence never exceeds
     # capacity) — that's what hypothesis is for.

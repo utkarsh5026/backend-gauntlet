@@ -31,7 +31,7 @@ job-queue = "job_queue.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # Drives the app over ASGI, so handlers are tested without binding a socket.
     "httpx>=0.28",
