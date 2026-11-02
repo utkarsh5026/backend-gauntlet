@@ -24,7 +24,7 @@ sqs-queue = "sqs_queue.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # The protocol horizontal's bar is "a real AWS SDK works against this

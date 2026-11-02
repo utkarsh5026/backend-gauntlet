@@ -21,7 +21,7 @@ full-text-search = "full_text_search.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # The SPEC asks for three property tests by name: analysis idempotence (V1),
     # BM25 monotonicity in tf (V3), and merge preserving live postings (V4).

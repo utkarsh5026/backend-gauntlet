@@ -33,7 +33,7 @@ api-gateway = "api_gateway.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # V2 wants longest-prefix precedence to hold for *any* route table, and V3

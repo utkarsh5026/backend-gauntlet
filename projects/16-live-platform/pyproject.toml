@@ -44,7 +44,7 @@ live-platform = "live_platform.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # V1's Proof asks for a property test over the legal-transition matrix and
     # idempotent replay. hypothesis's `RuleBasedStateMachine` drives random

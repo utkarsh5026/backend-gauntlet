@@ -32,7 +32,7 @@ bittorrent = "bittorrent.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     # The SPEC names a property test by name: `prop_bencode_roundtrips` (V1).
     # Canonical encoding is a claim about *every* value, not about a corpus, and

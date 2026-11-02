@@ -29,7 +29,7 @@ raft-kv = "raft_kv.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.2.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     # V1 asks for a one-leader-per-term invariant under randomized timing and V2
